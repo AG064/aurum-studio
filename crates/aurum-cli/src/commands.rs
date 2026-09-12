@@ -46,6 +46,7 @@ struct Options {
     once: bool,
     no_editor: bool,
     play: bool,
+    agent: Option<String>,
     interval_ms: u64,
     port: u16,
     no_open: bool,
@@ -68,6 +69,14 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--once" => options.once = true,
             "--no-editor" => options.no_editor = true,
             "--play" => options.play = true,
+            "--agent" => {
+                index += 1;
+                options.agent = Some(
+                    args.get(index)
+                        .ok_or_else(|| "--agent requires a client name".to_string())?
+                        .clone(),
+                );
+            }
             "--no-open" => options.no_open = true,
             "--port" => {
                 index += 1;
@@ -1340,6 +1349,52 @@ pub fn dev(args: &[String]) -> ExitCode {
         }
     }
 
+    // ---- agent -----------------------------------------------------------
+    //
+    // An MCP client starts the server itself. `aurum mcp` speaks over stdio to
+    // whoever spawned it, so a copy launched from here would have nobody on the
+    // other end of its pipe and would sit until the loop ended. What an agent
+    // cannot guess is the two things this writes into the client's own
+    // configuration: where the project is, and where the running editor
+    // publishes what it is running. The second is what makes the difference
+    // between an agent driving a headless engine and an agent driving the one
+    // on screen.
+    if let Some(clients) = options.agent.as_deref() {
+        let mut invocation = aurum_mcp::connect::Invocation::current(Some(&project.root));
+        // Only offered when the directory exists, because a bridge path that
+        // points at nothing is worse than no bridge path: the server would
+        // report an editor that is not there.
+        if let Some(bridge) = project
+            .godot_project_dir()
+            .map(|godot| godot.join(".godot").join("aurum"))
+            .filter(|path| path.is_dir())
+        {
+            invocation.args.push("--editor-bridge".to_string());
+            invocation.args.push(bridge.display().to_string());
+        }
+        for name in clients.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+            let Some(client) = aurum_mcp::connect::Client::parse(name) else {
+                eprintln!("aurum dev: {}", aurum_mcp::connect::unknown_client(name));
+                continue;
+            };
+            match aurum_mcp::connect::install(client, &project.root, &invocation) {
+                Ok(message) => println!("{:<16} {message}", client.name()),
+                Err(message) => eprintln!("{:<16} {message}", client.name()),
+            }
+        }
+        if options.json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event": "agent",
+                    "clients": clients,
+                    "command": invocation.command,
+                    "args": invocation.args,
+                })
+            );
+        }
+    }
+
     // ---- watch -----------------------------------------------------------
     let mut watcher = Watcher::new(&project.root);
     watcher.scan();
@@ -1356,6 +1411,11 @@ pub fn dev(args: &[String]) -> ExitCode {
             "watching {} ({} files). Ctrl+C to stop; {leaving}.",
             project.root.display(),
             watcher.tracked()
+        );
+        println!(
+            "an agent attaches with `aurum mcp --root {}`; \
+             `aurum dev --agent <client>` writes that into a client for you",
+            project.root.display()
         );
     }
 
@@ -1790,7 +1850,8 @@ fn command_usage(command: &str) -> &'static str {
         "dev" => {
             "usage: aurum dev [project] [--godot <path>] [--release] [--force]\n\
              \n\
-             [--once] [--no-editor] [--play] [--interval <ms>] [--json]\n\
+             [--once] [--no-editor] [--play] [--interval <ms>]\n\
+             [--agent <client>[,<client>...]] [--json]\n\
              \n\
              Builds, launches the editor, and rebuilds when the Rust side moves.\n\
              Godot reloads its own content. --play also supervises the game, so a\n\
@@ -1810,6 +1871,31 @@ fn command_usage(command: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// `--agent` names the clients an MCP connection is written into, and it
+    /// takes a value. Parsed here rather than at the call site because the
+    /// failure it prevents is the quiet kind: a flag that swallows the next
+    /// argument would make `aurum dev --agent` mean `aurum dev` with a project
+    /// called nothing.
+    #[test]
+    fn agent_takes_a_client_name_and_refuses_to_be_given_none() {
+        let options = parse(&["--agent".to_string(), "codex,claude-code".to_string()])
+            .expect("--agent with a value parses");
+        assert_eq!(options.agent.as_deref(), Some("codex,claude-code"));
+
+        let bare = parse(&["--agent".to_string()]);
+        assert!(bare.is_err(), "a bare --agent must not parse");
+        assert!(bare.unwrap_err().contains("client name"));
+    }
+
+    /// Without the flag nothing is written into any client, which is what keeps
+    /// `dev` from editing a user's editor configuration behind their back.
+    #[test]
+    fn no_agent_flag_means_no_client_is_touched() {
+        let options = parse(&[]).expect("no arguments parses");
+        assert!(options.agent.is_none());
+    }
     use super::*;
 
     #[test]

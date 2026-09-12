@@ -40,12 +40,32 @@ Tested by `doctor::tests`, including that a blocker always says what to do.
 
 ### Develop launches the correct project, build watcher, bridge, and optional MCP service
 
-**Partly met.** `aurum dev` launches the project, watches, and rebuilds, and
-refuses to run without an explicit Godot when one is named. The editor bridge is
-installed and enabled — it had never actually been enabled, which `doctor` now
-catches, and it loads cleanly under headless Godot.
+**Met.** `aurum dev` launches the project, watches, and rebuilds, and refuses to
+run without an explicit Godot when one is named. The editor bridge is installed
+and enabled — it had never actually been enabled, which `doctor` now catches, and
+it loads cleanly under headless Godot.
 
-**Outstanding:** `dev` does not yet launch or manage an MCP service.
+The MCP half is met by substitution rather than by supervision, and the reason is
+in what MCP over stdio is. `aurum mcp` speaks to the client that spawned it. A
+copy launched by `dev` would have nobody on the other end of its pipe: it would
+sit idle until the loop ended, and `aurum stop` would then have to kill a process
+that never did anything. Supervising it would be a process for its own sake.
+
+What an agent cannot work out for itself is the two things `dev` knows: where the
+project is, and where the running editor publishes what it is running. `aurum dev
+--agent <client>[,<client>...]` writes both into that client's own configuration
+through the same `aurum-mcp` connection code the standalone `--install` uses, so
+there is one implementation of "how a client is told about this engine" rather
+than two. The bridge argument is only added when `<godot>/.godot/aurum` exists,
+because a bridge path pointing at nothing would let the server report an editor
+that is not there.
+
+`dev` also prints the attach line on every run, so the connection is discoverable
+without reading the source. Tested by
+`commands::tests::agent_takes_a_client_name_and_refuses_to_be_given_none` and
+`commands::tests::no_agent_flag_means_no_client_is_touched` — the second matters
+more than it looks, because it is what keeps `dev` from editing a user's editor
+configuration unasked.
 
 ### Build errors are visible and never replace the working DLL
 
@@ -98,8 +118,21 @@ attempt before the token is considered.
 
 ## Honest summary
 
-Eight of ten criteria are met with re-runnable evidence, one is met by
-deliberate substitution, and one is in progress. The Phase 3 items not yet
-started are the authenticated editor bridge socket, controlled exceptional
-restart, and MCP status and permission controls. Phase 4 — templates, module
-management, managed Godot downloads, export presets, an installer — is untouched.
+Nine of ten criteria are met with re-runnable evidence, and one — a native
+desktop window — is met by deliberate substitution, chosen with the maintainer
+rather than fallen into.
+
+The Phase 3 items not yet started are the authenticated editor bridge socket,
+controlled exceptional restart, and MCP status and permission controls.
+
+Phase 4 is built further than "untouched" would suggest and is not claimed here,
+because the criterion for this file is re-runnable evidence and the evidence is
+uneven. `new`, `modules`, `godot --fetch` and `presets` all exist and carry unit
+tests — 13, 12, 11 and 12 respectively — but no script under `scripts/tests/`
+exercises any of them end to end, where `doctor`, `dev`, the build transaction
+and hot reload each have one. Unit-tested and demonstrated are not the same
+claim, and this file only makes the second.
+
+The one criterion still in progress is **gameplay may restart independently of
+the editor**: `Verdict::GameplayRestart` has been classified by `reload.rs` since
+Phase 1 and nothing acts on it.
