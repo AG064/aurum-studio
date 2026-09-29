@@ -1238,6 +1238,7 @@ pub fn catalog() -> Vec<Tool> {
     ];
     tools.extend(crate::content_tools::catalog());
     tools.extend(crate::editor_tools::catalog());
+    tools.extend(crate::project_tools::catalog());
     tools
 }
 

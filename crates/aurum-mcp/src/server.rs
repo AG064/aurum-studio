@@ -4,7 +4,7 @@
 //! to stdout — a stray `println!` corrupts the protocol stream — so all
 //! diagnostics go to stderr.
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 
 use serde_json::{json, Value};
 
@@ -39,14 +39,36 @@ pub struct ServerConfig {
 /// Generic over the streams so the whole protocol can be exercised in-memory
 /// by tests, with no subprocess involved.
 pub fn serve<R: BufRead, W: Write>(
-    reader: R,
+    mut reader: R,
     writer: &mut W,
     engine: &mut Engine,
     paths: &PathGuard,
     config: ServerConfig,
 ) -> std::io::Result<()> {
-    for line in reader.lines() {
-        let line = line?;
+    loop {
+        const MAX_MESSAGE: u64 = 4 * 1024 * 1024;
+        let mut bytes = Vec::new();
+        if (&mut reader)
+            .take(MAX_MESSAGE + 1)
+            .read_until(b'\n', &mut bytes)?
+            == 0
+        {
+            break;
+        }
+        if bytes.len() as u64 > MAX_MESSAGE {
+            writeln!(
+                writer,
+                "{}",
+                failure(
+                    Value::Null,
+                    &RpcError::invalid_params("MCP message exceeds 4 MiB")
+                )
+            )?;
+            writer.flush()?;
+            return Ok(());
+        }
+        let line = String::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         if line.trim().is_empty() {
             continue;
         }

@@ -14,6 +14,8 @@ pub const INDEX_HTML: &str = include_str!("../ui/index.html");
 
 /// The page's behaviour.
 pub const APP_JS: &str = include_str!("../ui/app.js");
+pub const WORKSPACE_JS: &str = include_str!("../ui/workspace.js");
+pub const WORKSPACE_CSS: &str = include_str!("../ui/workspace.css");
 
 /// The page's appearance.
 pub const STYLE_CSS: &str = include_str!("../ui/style.css");
@@ -131,7 +133,16 @@ mod tests {
     fn every_button_asks_for_a_command_the_server_accepts() {
         // A button naming a command the server does not know is a dead control
         // that only fails when somebody presses it.
-        const ACCEPTED: [&str; 5] = ["doctor", "build", "start-editor", "start-game", "stop"];
+        const ACCEPTED: [&str; 8] = [
+            "doctor",
+            "build",
+            "start-editor",
+            "start-game",
+            "stop",
+            "develop",
+            "end-develop",
+            "restart-editor",
+        ];
 
         let mut seen = 0;
         for piece in INDEX_HTML.split("data-command=\"").skip(1) {

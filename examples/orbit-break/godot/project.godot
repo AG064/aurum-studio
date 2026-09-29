@@ -1,0 +1,33 @@
+config_version=5
+
+[application]
+config/name="Orbit Break"
+config/icon="res://icon.svg"
+config/description="A five-wave arena survival game built through Aurum Studio."
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+config/use_custom_user_dir=true
+config/custom_user_dir_name="OrbitBreak"
+
+[display]
+window/size/viewport_width=1280
+window/size/viewport_height=800
+window/size/window_width_override=1152
+window/size/window_height_override=720
+window/stretch/mode="canvas_items"
+window/handheld/orientation=0
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/default_filters/use_nearest_mipmap_filter=false
+environment/defaults/default_clear_color=Color(0.018, 0.028, 0.06, 1)
+
+[audio]
+driver/enable_input=false
+
+[input_devices]
+pointing/emulate_mouse_from_touch=false
+
+[physics]
+common/physics_ticks_per_second=60

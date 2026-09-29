@@ -1,184 +1,161 @@
-# Aurum
+<p align="center"><img src="docs/media/aurum-banner.svg" alt="Aurum Studio. Build games with people and agents." width="100%"></p>
 
-> A modular game engine foundation built on Godot 4.7 + Rust.
+<p align="center">
+  <a href="https://github.com/AG064/aurum-studio/actions/workflows/ci.yml"><img src="https://github.com/AG064/aurum-studio/actions/workflows/ci.yml/badge.svg" alt="Build and test status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-dac28c?labelColor=151a22" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/desktop-Windows%20verified-79cfb2?labelColor=151a22" alt="Windows desktop verified">
+  <img src="https://img.shields.io/badge/agents-MCP%20%2B%20CLI-dac28c?labelColor=151a22" alt="MCP and CLI agent interfaces">
+</p>
 
-Aurum is one engine for many game genres. You write game logic in GDScript
-and the engine layer in Rust. Hot-reload stays fast because GDScript
-and scenes are unchanged — only the Rust crate boundary is slower.
+# Aurum Studio
 
-[![CI](https://github.com/AG064/aurum-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/AG064/aurum-studio/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
-[![Godot](https://img.shields.io/badge/godot-4.7-blue.svg)](https://godotengine.org)
+**A local game-development workspace for people and AI agents.** Create a project, edit its scenes and code, run headless gameplay tests, and package a playable game through one application.
 
-## What you get
+Godot 4.7 handles rendering and resources underneath. Aurum owns the project workflow, the local interface, and the agent-facing operations. You do not need to keep a Godot editor open. Use GDScript for gameplay and Rust GDExtensions when native code is useful.
 
-- **`aurum-core`** — pure Rust ECS, event bus, typed state with save/load,
-  fixed timestep. No Godot dependency; fully tested with `cargo test`.
-- **`aurum-godot`** — GDExtension shim. Exposes a single `AurumNode` Node
-  class to GDScript with a clean entity/component/event/state API.
-- **`aurum-2d`** — 2D components (Position2D, Velocity2D, AABB) +
-  AABB collision math + kinematic step. **Working 2D demo.**
-- **`aurum-3d`** — 3D components and kinematic step. **Working 3D demo.**
-- **`aurum-space`** — fixed-step 6DOF flight, ship resources, and bounded
-  universe coordinates. Pure Rust and reusable by space games.
-- **`aurum-vn`** — story interpreter with full GDScript shim
-  (`Aurum.story_*`). Includes a minimal visual novel demo that ports
-  the original `godot/vn/` story format onto the new engine.
-- **`aurum-mcp`** — headless MCP server. Lets an AI model drive the engine
-  with no Godot process: entities, components, events, state, the space
-  simulation, and save/load. Adds no external dependencies.
-- **`aurum-vr`** / **`aurum-text`** — stubs for VR and text-only genres.
-- **`aurum-cli`** — the `aurum` command line, providing `aurum mcp`.
-- **`godot/`** — Godot project with the add-on, a dev console,
-  and two tutorial demos:
-  - **2D squares** — movement + collision + score
-  - **3D bounce** — gravity + jumping
+[Get started](#get-started-on-windows) · [Play the example](#a-game-you-can-run) · [Connect an agent](#headless-by-design) · [Documentation](#documentation)
 
-## Quick start
+![Aurum Studio managing the Orbit Break project, with packaging and platform export controls](docs/media/studio.png)
 
-```pwsh
-# 1. Build the engine + copy the DLL to the Godot project
-pwsh scripts/build.ps1
+## What you can do
 
-# 2. Run the 2D demo
-pwsh scripts/build.ps1 -Run
+| Workflow | Available today |
+| --- | --- |
+| Create and edit | Runnable 2D/3D starters, scene hierarchy, node properties, scripts, resources, persistent drafts and undo |
+| Work with agents | Standard local MCP, CLI and HTTP using the same project operations; runtime class and property discovery |
+| Test real gameplay | Explicit test scenes, bounded runs, game arguments, fixed simulation rate and required JSON verdicts |
+| Iterate safely | Hash-checked saves, transactional scene edits, failed-build preservation and managed previews |
+| Ship a game | Portable Windows packaging with the runtime included; configurable presets for six export targets |
+| Use native code | Rust extension builds, atomic library installation and explicit reload boundaries |
 
-# 3. Open the Godot editor
-pwsh scripts/build.ps1 -DebugBuild -RunEditor
-```
+No model subscription, provider account or API key is built into Aurum. Bring your preferred MCP-compatible agent. Project operations run locally; HTTP control stays on loopback with a session token.
 
-The build script defaults to the Godot project at `./godot/`. To use a
-project at a different path, pass `-GodotProject <path>`.
+## A game you can run
 
-## Repository layout
+**[Orbit Break](examples/orbit-break)** is included as a complete source example, not a mockup: a 3D survival arena with five waves, three enemy types, upgrades, dash, repair pickups, sound, local scores and a boss.
 
-```
-aurum-studio/                  # Cargo workspace root
-├── Cargo.toml                 # workspace manifest
-├── crates/
-│   ├── aurum-core/            # pure Rust engine (tested)
-│   ├── aurum-godot/           # GDExtension shim
-│   ├── aurum-2d/              # 2D game module
-│   ├── aurum-3d/              # 3D game module
-│   ├── aurum-space/           # space flight and universe coordinates
-│   ├── aurum-vn/              # VN story interpreter
-│   ├── aurum-vr/              # VR (stub)
-│   ├── aurum-text/            # text-only (stub)
-│   └── aurum-cli/             # CLI tools (stub)
-├── scripts/
-│   ├── build.ps1              # build + copy DLL + (optional) run
-│   └── dev.ps1                # self-contained debug watcher
-├── .vscode/tasks.json         # VS Code task definitions
-├── .github/workflows/ci.yml   # GitHub Actions CI
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── MODULES.md
-│   └── GETTING_STARTED.md
-├── godot/                     # the Godot project (one folder per repo)
-│   ├── project.godot
-│   ├── addons/aurum/          # the engine add-on (bin/ is built, source is here)
-│   ├── scripts/               # shared GDScript (runtime, dev console)
-│   ├── templates/             # starter projects per genre
-│   └── demos/
-│       ├── 2d_squares/        # the 2D tutorial
-│       └── 3d_bounce/         # the 3D tutorial
-├── CHANGELOG.md
-├── CONTRIBUTING.md
-└── LICENSE
-```
+![Orbit Break in play: pilot integrity, wave progression, auto-fire and dash controls](docs/media/orbit-break-gameplay.png)
 
-> **Note** — game projects that build on Aurum live in their own
-> repositories. The `aurum-vn` module is consumed by
-> [`the-regular-novel`](https://github.com/AG064/the-regular-novel);
-> the `aurum-2d` / `aurum-3d` / core runtime can be used by any
-> 2D or 3D game. See `docs/GETTING_STARTED.md` for the recommended
-> project layout.
+The example has **31 gameplay checks**, a complete winning autopilot campaign, and a stationary-run check that must lose. Its tuning file can change during play without replacing the game process. [Verification scope](docs/DELIVERY.md) explains what was tested and what remains unverified.
 
-## How it fits together
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│ Your game (in a separate repo, sibling to aurum-studio)     │
-│ - Scenes, UI, art, audio                                     │
-│ - GDScript game logic (hot-reloads in <100ms)                │
-└──────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Engine add-on (addons/aurum/, copied into the game repo)    │
-│ - The `AurumNode` Node (the only Rust surface to GDScript)      │
-│ - The `Aurum` autoload (ergonomic shim around AurumNode)        │
-│ - The compiled GDExtension DLL (aurum_godot.dll)            │
-└──────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Genre module (aurum-2d, aurum-3d, aurum-vn, ...)             │
-│ - Genre-specific components, systems, helpers                │
-│ - Optional: a GDScript shim that exposes the module         │
-└──────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Engine shim (aurum-godot)                                    │
-│ - AurumNode Node class (the only Rust surface to GDScript)      │
-│ - JSON-blob component store (GDScript-friendly)             │
-│ - Bridges the typed event bus to Godot signals              │
-└──────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Engine core (aurum-core)                                     │
-│ - ECS, events, state, save/load, time                        │
-│ - Pure Rust, no Godot, fully tested                          │
-└──────────────────────────────────────────────────────────────┘
-```
-
-## Hot-reload story
-
-| Layer                              | Normal feedback | How                                      |
-|------------------------------------|-----------------|------------------------------------------|
-| GDScript                           | Immediate       | Godot reloads scripts                    |
-| `.tscn` scenes and resources       | Immediate       | Godot reloads editor resources           |
-| Safe Rust implementation changes   | Debug build     | Reloadable GDExtension, same editor PID  |
-| Native Godot API structure changes | Controlled      | Exceptional editor restart               |
-
-Run `pwsh scripts/dev.ps1` for the self-contained debug watcher. It does not
-require `cargo-watch`. After a verified debug DLL install, the watcher publishes
-its hash and the enabled Aurum editor plugin performs the checked native reload.
-A failed build keeps the last working DLL. A rejected native reload warns that a
-controlled editor restart may be required. See `docs/HOT_RELOAD.md` for the
-tested boundary and live product-path evidence.
-
-## Known issues
-
-**Godot 4.7 exits with an access violation at the end of the first headless
-import of any project that loads a GDExtension.** The import itself finishes —
-the editor settings are saved before it dies — so the only symptom is a
-non-zero exit code from `godot --headless --path . --import`.
-
-It is not this engine's code. It reproduces with a fifteen-line GDExtension
-that registers a single empty `Node` subclass, and it does not happen on a
-second import, on a windowed import, or in a project with no extension at all.
-Running the import twice leaves the second run a clean no-op, which is what
-`aurum build` and `scripts/setup.ps1` in a downstream project do.
-
-Reproduction, in a project with one `.gdextension`:
+After installing Aurum, from this repository:
 
 ```powershell
-Remove-Item -Recurse -Force .godot
-godot --headless --path . --import   # import completes; exit code is -1073741819
-godot --headless --path . --import   # nothing to do; exit code is 0
+aurum studio ./examples/orbit-break
+# Select Game in Studio, or launch directly:
+aurum run ./examples/orbit-break
 ```
 
-## Naming
+To test and produce a standalone Windows package, without running tests in the source tree:
 
-- **Aurum** is Latin for "gold".
-- The engine core is "the gold" — the precious, stable thing.
-- Genre modules are like alloys — they share the same metal base but
-  take different forms for different uses.
+```powershell
+pwsh ./examples/orbit-break/tools/verify.ps1 -Package `
+  -OutputDirectory ./examples/orbit-break/dist/windows
+```
 
-## License
+Then open `examples/orbit-break/Play Orbit Break.vbs`. See the [example guide](examples/orbit-break/README.md) for controls and runtime configuration. Generated game binaries are not checked into Git.
 
-MIT.
+## Get started on Windows
+
+Prerequisites: PowerShell 7, Rust with the Windows C++ build tools, and the full **Godot 4.7 Windows executable**, not the small console launcher. Source builds were verified with Rust 1.98. The installer copies the runtime so subsequent use does not require a separate engine installation.
+
+```powershell
+git clone https://github.com/AG064/aurum-studio.git
+cd aurum-studio
+pwsh ./scripts/install.ps1 `
+  -GodotBinary C:/Tools/Godot_v4.7-stable_win64.exe `
+  -StudioHome "$env:LOCALAPPDATA/AurumStudio"
+```
+
+Open **Aurum Studio** from Start. In a new terminal, `aurum` opens the same workspace. The installer preserves projects and state, backs up replaced binaries, and supports `-WhatIf`. Building the application needs Rust; using the script-only project starters does not.
+
+```powershell
+aurum new C:/Projects/MyGame --template 3d
+aurum studio C:/Projects/MyGame
+aurum dev C:/Projects/MyGame --play
+```
+
+`dev` is headless by default. `--play` adds a managed game preview; `--editor` opens the optional native editor. See [getting started](docs/GETTING_STARTED.md) for the native Rust template and existing-project import.
+
+## Headless by design
+
+The compact MCP profile exposes three tools: `aurum_project_query`, `aurum_project_action` and `aurum_mcp_status`. Agents discover the installed runtime's classes instead of depending only on remembered engine APIs.
+
+```json
+{
+  "mcpServers": {
+    "aurum": {
+      "command": "aurum",
+      "args": ["mcp", "--root", "C:/Projects/MyGame", "--tools", "studio"]
+    }
+  }
+}
+```
+
+Use the absolute executable path if the client does not inherit your terminal's PATH. Add `--read-only` to withhold writes. Client configuration is changed only when you explicitly request installation.
+
+The same test can run through MCP, Studio or the CLI:
+
+```json
+{
+  "op": "play",
+  "scene": "tests/acceptance.tscn",
+  "frames": 120,
+  "fixed_fps": 60,
+  "user_args": ["--acceptance"],
+  "report": true
+}
+```
+
+A required verdict must be freshly written by the game. Missing reports, false verdicts, runtime errors and timeouts fail the operation. For tests that modify files, use a disposable project copy as the example verifier does. [Agent operations and report contract](docs/AGENT_PLAYTESTS.md).
+
+```mermaid
+flowchart LR
+    Studio[Studio interface] --> API[Shared project operations]
+    Agent[MCP agent] --> API
+    CLI[Command line] --> API
+    API --> Files[Scenes, scripts and resources]
+    API --> Runtime[Managed Godot runtime]
+    Runtime --> Tests[Gameplay reports]
+    Runtime --> Package[Playable packages]
+```
+
+`--tools all` additionally exposes procedural content and the Rust simulation tools. The simulation is a separate session, not a connection to a running game's memory. Running a project executes its scripts and native code with your permissions; the tool boundary is not an operating-system sandbox.
+
+## What reloads, and what does not
+
+Studio stays open while you work. Game-managed data, such as Orbit Break's tuning, can reload without losing the current run. Compatible native implementation changes can reload in the editor, and failed builds preserve the working library.
+
+Arbitrary script and scene changes currently use a validated preview restart. Native registration or schema changes can require a controlled editor restart. **Universal zero-restart development is not claimed.** [Reload behavior](docs/HOT_RELOAD.md).
+
+## Platform status
+
+Windows is the verified desktop and portable-game target. Presets can be configured for Windows, Linux, macOS, Web, Android and iOS. Other targets still need matching export templates and, where applicable, SDKs and signing. A preset is not a verified device build.
+
+Mobile and headset delivery have not been device-tested. The Rust VR and text modules remain placeholders. Aurum uses the existing Godot backend rather than a maintained engine fork. [Current status and boundaries](docs/STUDIO_STATUS.md).
+
+## Verify and contribute
+
+The full local gate copies the working tree to a temporary location before running tests:
+
+```powershell
+pwsh ./scripts/tests/verify_studio.ps1 `
+  -GodotBinary C:/Tools/Godot_v4.7-stable_win64.exe `
+  -NativeReload -ReleaseInstall
+```
+
+Add `-Offline` when Cargo dependencies are already cached. The gate covers strict Rust tests, formatting, Clippy, real scene persistence, headless gameplay, editor undo/redo, native reload recovery and a temporary installation. [Contributing](CONTRIBUTING.md).
+
+## Documentation
+
+- [Getting started](docs/GETTING_STARTED.md)
+- [Daily workflow and project operations](docs/WORKFLOW.md)
+- [Headless testing and platform exports](docs/AGENT_PLAYTESTS.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Verification record](docs/DELIVERY.md)
+- [Status and limitations](docs/STUDIO_STATUS.md)
+- [Engine modules](docs/MODULES.md)
+
+The engine workspace also includes ECS, state/events, 2D/3D helpers, space flight, visual-novel interpretation and procedural content libraries. The original PowerShell helpers remain available for existing automation.
+
+[MIT licensed](LICENSE). Portable game packages include the underlying runtime's license and third-party notices. Screenshots show the working application and included example; the banner is a repository-native SVG.

@@ -38,6 +38,7 @@ pub mod connect;
 pub mod content_tools;
 pub mod editor_tools;
 pub mod engine;
+pub mod project_tools;
 pub mod protocol;
 pub mod server;
 pub mod tools;

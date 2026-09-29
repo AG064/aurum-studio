@@ -135,12 +135,28 @@ pub fn discover_godot(
         return None;
     }
 
+    if let Some(path) = std::env::var_os("AURUM_GODOT").map(PathBuf::from) {
+        if path.is_file() {
+            return Some(path);
+        }
+        return None;
+    }
+    if let Some(home) = std::env::var_os("AURUM_STUDIO_HOME") {
+        if let Some(found) = find_godot_in(&PathBuf::from(home).join("runtime"), flavor) {
+            return Some(found);
+        }
+    }
+
     for name in GODOT_NAMES {
         if let Some(found) = find_on_path(name) {
             return Some(found);
         }
     }
 
+    discover_project_godot(project_root, flavor)
+}
+
+fn discover_project_godot(project_root: &Path, flavor: GodotFlavor) -> Option<PathBuf> {
     let mut directories: Vec<PathBuf> = Vec::new();
     if let Some(parent) = project_root.parent() {
         directories.push(parent.join("godot"));
@@ -433,9 +449,9 @@ mod tests {
         )
         .unwrap();
 
-        // No PATH lookup can match a stub file, so this exercises the sibling
-        // rule rather than whatever Godot the machine happens to have.
-        let found = discover_godot(None, &project_root, GodotFlavor::PreferConsole);
+        // Test the fallback independently of the caller's configured runtime
+        // and PATH. An installed Aurum must not make this fixture nondeterministic.
+        let found = discover_project_godot(&project_root, GodotFlavor::PreferConsole);
         assert!(
             found.as_ref().is_some_and(|p| p.starts_with(&godot_dir)),
             "expected a sibling discovery, got {found:?}"

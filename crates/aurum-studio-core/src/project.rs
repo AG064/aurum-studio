@@ -250,6 +250,32 @@ pub struct Project {
 }
 
 impl Project {
+    /// Add Aurum configuration when importing an existing Godot project.
+    /// Existing configuration is never overwritten.
+    pub fn import(root: &Path) -> Result<Self, ConfigError> {
+        if !root.join("aurum.toml").exists() {
+            let root = root
+                .canonicalize()
+                .map(clean_path)
+                .map_err(|e| ConfigError::Io(e.to_string()))?;
+            let config = ProjectConfig {
+                name: root
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+                ..ProjectConfig::default()
+            };
+            if discover_layout(&root, &config).godot_project.is_none() {
+                return Err(ConfigError::Io(
+                    "project.godot was not found; create a new project instead".into(),
+                ));
+            }
+            crate::files::write_atomic(&root.join("aurum.toml"), config.to_toml().as_bytes())
+                .map_err(|e| ConfigError::Io(e.to_string()))?;
+        }
+        Self::open(root)
+    }
     /// Open a project rooted at `root`.
     ///
     /// The root is canonicalized so later containment checks compare like with
@@ -260,7 +286,24 @@ impl Project {
             .map(clean_path)
             .map_err(|e| ConfigError::Io(format!("could not open '{}': {e}", root.display())))?;
         let config = ProjectConfig::load(&root)?;
+        if let Some(destination) = &config.addon_destination {
+            crate::files::confined(&root, destination).map_err(|problem| ConfigError::Field {
+                field: "addon_destination",
+                problem,
+            })?;
+        }
         let layout = discover_layout(&root, &config);
+        if let Some(path) = &layout.godot_project {
+            let canonical = path
+                .canonicalize()
+                .map(clean_path)
+                .map_err(|e| ConfigError::Io(e.to_string()))?;
+            if !canonical.starts_with(&root) {
+                return Err(ConfigError::Io(
+                    "the Godot project resolves outside the imported root".into(),
+                ));
+            }
+        }
         Ok(Self {
             root,
             config,
@@ -271,6 +314,14 @@ impl Project {
     /// The directory Godot should be pointed at.
     pub fn godot_project_dir(&self) -> Option<&Path> {
         self.layout.godot_project.as_deref().and_then(Path::parent)
+    }
+
+    pub fn build_workspace(&self) -> &Path {
+        self.layout
+            .cargo_manifest
+            .as_deref()
+            .and_then(Path::parent)
+            .unwrap_or(&self.root)
     }
 }
 
@@ -299,6 +350,11 @@ pub fn discover_layout(root: &Path, config: &ProjectConfig) -> Layout {
     let cargo = root.join("Cargo.toml");
     if cargo.is_file() {
         layout.cargo_manifest = Some(cargo);
+    } else if let Some(hint) = &config.engine_path_hint {
+        let cargo = root.join(hint).join("Cargo.toml");
+        if cargo.is_file() {
+            layout.cargo_manifest = Some(cargo);
+        }
     }
 
     // The add-on directory is configured, else looked for in the usual places.

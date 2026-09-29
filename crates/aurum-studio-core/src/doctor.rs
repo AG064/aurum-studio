@@ -249,6 +249,36 @@ fn editor_plugin_state(project: &Project) -> EditorPluginState {
 /// Read-only: nothing here creates, modifies, or deletes anything, so running
 /// `doctor` on a project is always safe and always repeatable.
 pub fn diagnose(project: &Project, toolchain: &Toolchain, godot_hint: Option<&Path>) -> Report {
+    if project.config.rust_package.is_none() {
+        let mut findings = vec![
+            Finding::ok("config", "Aurum script project"),
+            Finding::ok("headless", "Scene tools do not require an editor plugin"),
+        ];
+        if project.godot_project_dir().is_some() {
+            findings.push(Finding::ok("godot_project", "project.godot found"));
+        } else {
+            findings.push(
+                Finding::blocked("godot_project", "project.godot is missing")
+                    .with_remedy("import an existing project or create a new Aurum project"),
+            );
+        }
+        if toolchain.godot.is_some() || crate::project_ops::engine_binary(project).is_ok() {
+            findings.push(Finding::ok(
+                "runtime",
+                "Aurum rendering runtime is available",
+            ));
+        } else {
+            findings.push(
+                Finding::blocked("runtime", "rendering runtime is missing")
+                    .with_remedy("configure AURUM_GODOT or install the runtime through Aurum"),
+            );
+        }
+        return Report {
+            project_root: project.root.clone(),
+            name: project.config.name.clone(),
+            findings,
+        };
+    }
     let mut findings = Vec::new();
 
     // ----- project layout -------------------------------------------------
@@ -606,6 +636,7 @@ mod tests {
             root: PathBuf::from("/project"),
             config: ProjectConfig {
                 name: "test".into(),
+                rust_package: Some("aurum-godot".into()),
                 ..Default::default()
             },
             layout,

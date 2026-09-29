@@ -31,7 +31,7 @@ pub const MAX_HEADERS: usize = 100;
 /// The most bytes of header block accepted, across all lines.
 pub const MAX_HEADER_BYTES: usize = 64 * 1024;
 /// The largest request body accepted.
-pub const MAX_BODY: usize = 1024 * 1024;
+pub const MAX_BODY: usize = 4 * 1024 * 1024;
 
 /// Why a request could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]

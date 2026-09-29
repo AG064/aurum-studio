@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::hash::{files_match, sha256_file};
+use crate::hash::sha256_file;
 use crate::process::{Command, Outcome};
 
 /// Which Cargo profile a build uses.
@@ -136,7 +136,10 @@ impl BuildRequest {
         }
         // Cargo's colours and progress bars make captured output harder to
         // read and harder to test.
-        command = command.arg("--color").arg("never");
+        command = command
+            .arg("--color")
+            .arg("never")
+            .arg("--message-format=json-render-diagnostics");
         command
     }
 }
@@ -326,30 +329,9 @@ pub fn install(staged_source: &Path, destination: &Path) -> Result<Artifact, Bui
         .len();
 
     // ---- commit boundary: everything fallible above has succeeded --------
-    let backup = destination.with_extension(format!(
-        "{}.previous",
-        destination
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("tmp")
-    ));
-
-    if destination.exists() {
-        let _ = std::fs::remove_file(&backup);
-        if let Err(e) = std::fs::rename(destination, &backup) {
-            let _ = std::fs::remove_file(&staged);
-            return Err(BuildError::Install(locked_message(destination, &e)));
-        }
-        if let Err(e) = std::fs::rename(&staged, destination) {
-            // Put the original back before reporting.
-            let _ = std::fs::rename(&backup, destination);
-            let _ = std::fs::remove_file(&staged);
-            return Err(BuildError::Install(locked_message(destination, &e)));
-        }
-        let _ = std::fs::remove_file(&backup);
-    } else {
-        std::fs::rename(&staged, destination)
-            .map_err(|e| BuildError::Install(locked_message(destination, &e)))?;
+    if let Err(error) = crate::files::replace(&staged, destination) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(BuildError::Install(locked_message(destination, &error)));
     }
 
     Ok(Artifact {
@@ -418,37 +400,58 @@ const TEXT_FILE_BUSY: i32 = 26;
 const TEXT_FILE_BUSY: i32 = -1;
 pub fn run(
     request: &BuildRequest,
-    force: bool,
+    _force: bool,
     cargo_timeout: Duration,
 ) -> Result<BuildReport, BuildError> {
-    let source = request.source_artifact();
-
-    // A rebuild that produces identical bytes should not touch the installed
-    // library at all: every replacement is a chance to lose a file lock race
-    // for no benefit. Rewriting it would also invalidate the reload marker and
-    // cost the editor a reload it did not need.
-    if !force
-        && request.destination.is_file()
-        && source.is_file()
-        && files_match(&source, &request.destination).unwrap_or(false)
-    {
-        let installed = artifact_of(&request.destination)?;
-        return Ok(BuildReport {
-            source: artifact_of(&source)?,
-            installed,
-            replaced: false,
-            built: false,
-            output: String::new(),
-        });
-    }
-
+    // Only Cargo knows whether dependencies or source files changed.
     let command = request.command();
     let outcome: Outcome = run_cargo_with_retry(&command, cargo_timeout)?;
+    let mut diagnostics = outcome.stderr.clone();
+    for line in outcome.stdout.lines() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(rendered) = value["message"]["rendered"].as_str() {
+                if !diagnostics.contains(rendered) {
+                    diagnostics.push_str(rendered);
+                }
+            }
+        } else if diagnostics.is_empty() {
+            diagnostics.push_str(line);
+            diagnostics.push('\n');
+        }
+    }
 
     if !outcome.success() {
         // The destination was never touched, which is the whole point.
-        return Err(BuildError::Cargo(outcome.failure_detail()));
+        return Err(BuildError::Cargo(if diagnostics.trim().is_empty() {
+            outcome.failure_detail()
+        } else {
+            diagnostics
+        }));
     }
+
+    let source = outcome
+        .stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|value| {
+            value["reason"] == "compiler-artifact"
+                && value["target"]["name"] == request.package.replace('-', "_")
+        })
+        .filter_map(|value| {
+            value["filenames"].as_array().and_then(|files| {
+                files
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .find(|file| {
+                        Path::new(file)
+                            .extension()
+                            .is_some_and(|extension| extension == dynamic_library_extension())
+                    })
+                    .map(PathBuf::from)
+            })
+        })
+        .next_back()
+        .unwrap_or_else(|| request.source_artifact());
 
     if !source.is_file() {
         return Err(BuildError::NoArtifact(source));
@@ -460,16 +463,47 @@ pub fn run(
     // Capture what was installed *before* the swap, so "replaced" reports
     // whether the content actually changed rather than merely that a build ran.
     let previous = sha256_file(&request.destination).ok();
-    let installed = install(&source, &request.destination)?;
+    let installed = if previous.as_deref() == Some(source_artifact.sha256.as_str()) {
+        artifact_of(&request.destination)?
+    } else {
+        install(&source, &request.destination)?
+    };
     let replaced = previous.as_deref() != Some(installed.sha256.as_str());
+    let mut output = diagnostics;
+    if request.profile.is_debug() {
+        if let Err(error) = publish_reload_marker(&request.destination, &installed.sha256) {
+            output.push_str(&format!(
+                "\nInstalled successfully; reload notification failed: {error}"
+            ));
+        }
+    }
 
     Ok(BuildReport {
         source: source_artifact,
         installed,
         replaced,
         built: true,
-        output: outcome.stdout,
+        output,
     })
+}
+
+fn publish_reload_marker(destination: &Path, hash: &str) -> std::io::Result<()> {
+    let Some(bin) = destination
+        .parent()
+        .filter(|p| p.file_name().is_some_and(|n| n == "bin"))
+    else {
+        return Ok(());
+    };
+    let Some(project) = bin.parent().and_then(Path::parent).and_then(Path::parent) else {
+        return Ok(());
+    };
+    let Some(name) = destination.file_stem() else {
+        return Ok(());
+    };
+    let marker = project
+        .join(".godot/aurum")
+        .join(format!("{}.reload", name.to_string_lossy()));
+    crate::files::write_atomic(&marker, hash.to_uppercase().as_bytes())
 }
 
 fn artifact_of(path: &Path) -> Result<Artifact, BuildError> {
@@ -824,7 +858,7 @@ mod tests {
         // The up-to-date path never reaches the install at all, and must not
         // claim to have replaced anything.
         let third = run(&request, false, Duration::from_secs(30)).unwrap();
-        assert!(!third.built);
+        assert!(third.built, "Cargo must check source freshness");
         assert!(!third.replaced);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -854,17 +888,16 @@ mod tests {
         std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
         std::fs::write(&artifact, b"identical bytes").unwrap();
 
-        let request = request_for(&dir, fake_cargo(&dir, "exit 1"));
+        let request = request_for(&dir, fake_cargo(&dir, "exit 0"));
         std::fs::create_dir_all(request.destination.parent().unwrap()).unwrap();
         std::fs::write(&request.destination, b"identical bytes").unwrap();
 
-        // A fake cargo that always fails: if the up-to-date check works, it is
-        // never invoked.
+        // Cargo must still evaluate source freshness even when artifacts match.
         let report = run(&request, false, Duration::from_secs(30)).unwrap();
-        assert!(!report.built, "cargo should have been skipped");
+        assert!(report.built, "cargo must check the source");
         assert!(!report.replaced);
         assert!(
-            report.summary().contains("up to date"),
+            report.summary().contains("already current"),
             "{}",
             report.summary()
         );

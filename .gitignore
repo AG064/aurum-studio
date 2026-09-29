@@ -1,5 +1,9 @@
 # Rust build output
 /target/
+/.aurum/
+/dist/
+**/.aurum/
+**/dist/
 **/target/
 Cargo.lock.bak
 
@@ -40,6 +44,7 @@ logs/
 # Environment / secrets (defensive — none expected in this repo, but in case)
 .env
 .env.local
+.env.*
 *.pem
 *.key
 

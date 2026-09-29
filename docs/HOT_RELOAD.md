@@ -1,67 +1,36 @@
-# Aurum hot reload
+# Reload behavior
 
-## Phase 0 decision
+Studio and `aurum dev` share one supervisor. Default development runs without a visible editor. `--editor` starts the optional native editor; `--play` starts a managed game preview.
 
-Direct GDExtension reload is the selected Phase 0 architecture. Godot 4.7 completed five consecutive safe Rust implementation reloads in one editor process.
+## Native build path
 
-The accepted path is the ordinary Aurum watcher and editor integration. The
-acceptance harness did not call `GDExtensionManager.reload_extension` itself.
+1. Cargo checks the source and dependency graph.
+2. Studio reads the produced artifact from Cargo's structured output.
+3. The library is hashed and staged beside its destination.
+4. An atomic replacement commits the verified library.
+5. A debug hash marker is published under `.godot/aurum/`.
+6. The editor plugin observes the marker and reloads the extension.
+7. The live fingerprint reports which build is executing.
 
-## No editor restart
+Matching an old build artifact with an installed library never bypasses Cargo's source check. Identical new bytes avoid an unnecessary replacement. A failed build leaves the last working library installed. A failed reload notification reports that installation succeeded but reload has not been confirmed.
 
-The normal Aurum development loop keeps the Godot editor alive for:
+## Restart boundaries
 
-- GDScript implementation changes.
-- Scene, resource, and shader changes supported by Godot reload.
-- Pure Rust simulation and algorithm changes behind the stable `AurumNode` API.
-- Rust method-body changes that do not alter registered Godot classes or method signatures.
+| Change | Behavior |
+| --- | --- |
+| GDScript, scenes, resources | Validate in the background; the native editor handles supported reloads |
+| Rust implementation behind stable native declarations | Rebuild and reload the native extension |
+| Registered native methods, fields, classes, entry points or mappings | Report an exceptional editor restart requirement |
+| Managed gameplay affected by changed code/content | Refresh gameplay independently of Studio and the editor |
 
-Development uses `aurum_godot.debug.dll`. Release packaging uses `aurum_godot.dll`.
+Declarations are compared against the previous source snapshot so changing an ordinary method body does not automatically become a structural change. Deleted files are included. Studio never force-closes an unrelated process.
 
-## How native reload is triggered
-
-After `build.ps1` validates a staged debug DLL and atomically installs it, it
-publishes that staged SHA-256 hash to
-`.godot/aurum/aurum_godot.debug.reload`. Marker publication failure is reported
-as a warning and does not invalidate an already verified DLL installation.
-
-The enabled Aurum `EditorPlugin` polls the marker at a bounded interval and
-waits for a stable debounce. For each new hash it requires exactly one loaded
-Aurum manifest, calls `GDExtensionManager.reload_extension`, and accepts only
-Godot status `OK`. Reentrancy and same-hash failure guards prevent retry storms.
-A failed native reload warns that a controlled editor restart may be required.
-
-## Gameplay restart only
-
-A running game may be stopped and relaunched after a change invalidates live scene instances. This does not restart the editor.
-
-## Exceptional editor restart
-
-An editor restart may still be required after changing native class registration, inheritance, Godot-facing methods, properties, signals, initialization levels, entry symbols, library mappings, or the Godot API version.
-
-## Commands
+## Prove the real workflow
 
 ```powershell
-pwsh scripts/dev.ps1
-pwsh scripts/dev.ps1 -RunEditor
-pwsh scripts/tests/phase0_contract.ps1
-pwsh scripts/tests/debug_reload_product_contract.ps1
-pwsh scripts/tests/phase0_hot_reload_smoke.ps1 -Iterations 5
+pwsh scripts/tests/verify_studio.ps1 -GodotBinary A:/Tools/Godot_v4.7-stable_win64.exe -Offline -NativeReload
 ```
 
-Build failures and DLL preparation failures keep the last working installed DLL.
-After an atomic DLL replacement returns successfully, the build treats that
-replacement as installed and product-marker publication remains nonfatal. These
-paths do not terminate the editor.
+The current native gate runs the actual Rust CLI supervisor, modifies source in a temporary workspace, observes new fingerprints under one editor PID, injects a compiler error, checks that the working DLL remains unchanged, and verifies recovery. It restores the temporary source and stops its owned processes.
 
-## Acceptance evidence
-
-The product-path gate used `dev.ps1 -Once` for each install and the enabled
-Aurum plugin for reload. Evidence is stored at
-`target/aurum-hot-reload-smoke/b809ef3d704f4e5e8c49d2a5e2ae2044/evidence.json`.
-Schema 3 records initial state plus five reloads under editor PID `50228`, six exact
-requested and observed fingerprints, six distinct DLL hashes, six matching
-marker hashes, ten of ten Inspector cleanups, verified editor shutdown, and no
-recorded error. Inspector provenance is bound to the uniquely cached
-`@modelcontextprotocol/inspector@2.4.0` package and its verified JavaScript entry
-SHA-256 `21CA6E6E031713E5AE040ECF71F8FD0B0EF9A4ECE4131FD03D3B01AEAE5415F4`.
+The older `studio_hot_reload.ps1` and Phase 0 scripts test the PowerShell path. They remain useful historical tools but are not substitutes for the current CLI/Studio acceptance gate.

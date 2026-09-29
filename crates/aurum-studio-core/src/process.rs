@@ -125,6 +125,11 @@ impl Command {
     /// buffer, which a real Cargo invocation always does.
     pub fn run(&self, timeout: Duration) -> std::io::Result<Outcome> {
         let mut command = StdCommand::new(&self.program);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
         command
             .args(&self.args)
             .stdin(Stdio::null())
@@ -151,7 +156,27 @@ impl Command {
             std::thread::spawn(move || {
                 let mut buffer = Vec::new();
                 if let Some(pipe) = pipe.as_mut() {
-                    let _ = pipe.read_to_end(&mut buffer);
+                    let mut chunk = [0u8; 8192];
+                    let mut truncated = false;
+                    loop {
+                        match pipe.read(&mut chunk) {
+                            Ok(0) => break,
+                            Ok(count) => {
+                                let keep = (2 * 1024 * 1024usize)
+                                    .saturating_sub(buffer.len())
+                                    .min(count);
+                                buffer.extend_from_slice(&chunk[..keep]);
+                                truncated |= keep < count;
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                                continue
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    if truncated {
+                        buffer.extend_from_slice(b"\nERROR: captured output exceeded 2 MiB; further output was discarded\n");
+                    }
                 }
                 let _ = sender.send((is_stdout, buffer));
             })

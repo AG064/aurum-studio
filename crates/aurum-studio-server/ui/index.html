@@ -7,6 +7,7 @@
 <meta name="color-scheme" content="dark">
 <title>Aurum Studio</title>
 <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/workspace.css">
 </head>
 <body>
 <div class="ambient" aria-hidden="true"></div>
@@ -54,21 +55,29 @@
   </section>
 
   <section class="controls">
+    <div class="toolbar workspace-actions">
+      <label for="project-select">Workspace</label>
+      <select id="project-select" aria-label="Registered projects"></select>
+      <button id="import-project">Import</button>
+      <button id="new-project">New project</button>
+      <button id="develop" class="primary">Develop</button>
+      <button id="validate-project">Validate</button>
+    </div>
     <div class="toolbar">
       <span class="toolbar-label">Build</span>
       <button data-command="doctor" title="Check the project and report what is wrong">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span>Doctor</span>
       </button>
-      <button data-command="build" class="primary" title="Build the debug extension and install it">
+      <button data-native data-command="build" class="primary" title="Build the debug extension and install it">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10m0 0l-4-4m4 4l4-4M3.5 16.5V19a2 2 0 002 2h13a2 2 0 002-2v-2.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span>Build</span>
       </button>
-      <button data-command="build" data-args='{"force":true}' title="Rebuild even when the artifact is already current">
+      <button data-native data-command="build" data-args='{"force":true}' title="Rebuild even when the artifact is already current">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 11-2.4-5.7M20.5 3.5v4.2h-4.2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span>Rebuild</span>
       </button>
-      <button data-command="build" data-args='{"release":true}' title="Build the optimised release extension">
+      <button data-native data-command="build" data-args='{"release":true}' title="Build the optimised release extension">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.6l8.5 4.7v9.4L12 21.4 3.5 16.7V7.3z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/><path d="M3.5 7.3L12 12l8.5-4.7M12 12v9.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>
         <span>Release</span>
       </button>
@@ -91,6 +100,55 @@
     </div>
   </section>
 
+  <section class="workspace" aria-label="Project workspace">
+    <nav class="workspace-tabs" aria-label="Workspace panels">
+      <button data-panel="scene" aria-selected="true">Scene</button>
+      <button data-panel="files" aria-selected="false">Files</button>
+      <button data-panel="agents" aria-selected="false">Agents</button>
+      <button data-panel="export" aria-selected="false">Export</button>
+      <span id="workspace-status" role="status" aria-live="polite">Ready</span>
+    </nav>
+    <div id="panel-scene" class="workspace-panel">
+      <div class="row"><label for="scene-path">Scene</label><input id="scene-path" value="main.tscn" placeholder="main.tscn"><button id="inspect-scene">Open</button><button id="create-scene">New scene</button><button id="set-main-scene">Make start scene</button><button id="undo-scene">Undo last save</button></div>
+      <div class="workspace-columns">
+        <div><div class="eyebrow">Scene tree</div><div id="scene-tree" class="scene-tree">Open a scene to inspect it.</div></div>
+        <div class="inspector">
+          <div class="eyebrow">Selected node</div><input id="selected-node" value="." aria-label="Node path">
+          <div class="row position-inputs"><label>X <input id="pos-x" type="number" step="0.1" value="0"></label><label>Y <input id="pos-y" type="number" step="0.1" value="0"></label><label>Z <input id="pos-z" type="number" step="0.1" value="0"></label><button id="apply-position">Apply</button></div>
+          <div class="row"><input id="node-name" value="NewNode" aria-label="New node name"><select id="node-type" aria-label="New node type"><option>Node3D</option><option>MeshInstance3D</option><option>Camera3D</option><option>DirectionalLight3D</option><option>Node2D</option><option>Control</option></select><button id="add-node">Add child</button></div>
+          <details><summary>Properties and scripting</summary><textarea id="node-properties" rows="4" aria-label="Properties as JSON">{}</textarea><button id="apply-properties">Apply properties</button><div class="row"><input id="node-script" placeholder="res://player.gd" aria-label="Script path"><button id="attach-script">Attach script</button></div><button id="remove-node" class="danger">Remove selected node</button></details>
+          <p class="workspace-hint">Edits save through the runtime's scene format. Failed batches leave the saved scene unchanged.</p>
+        </div>
+      </div>
+    </div>
+    <div id="panel-files" class="workspace-panel" hidden>
+      <div class="row"><input id="file-path" placeholder="godot/main.gd" aria-label="Project-relative file path"><button id="new-file">New file</button><button id="open-file">Open</button><button id="save-file" class="primary">Save</button><button id="undo-file">Undo last save</button><button id="refresh-files">Refresh files</button></div>
+      <div class="row"><span id="draft-status" role="status">Saved files are unchanged until you save.</span><button id="open-saved-file">View saved version</button><button id="restore-draft">Restore draft</button></div>
+      <div class="workspace-columns file-columns"><div id="file-list" class="file-list"></div><textarea id="file-editor" spellcheck="false" aria-label="Source editor" placeholder="Select a file, or enter a new file path."></textarea></div>
+    </div>
+    <div id="panel-agents" class="workspace-panel" hidden>
+      <h2>Connect an agent</h2><p>Any MCP client can inspect and edit this project through Aurum. A visible editor is not required.</p>
+      <div class="row"><label><input id="agent-readonly" type="checkbox"> Read-only access</label><button id="copy-agent">Copy configuration</button></div>
+      <pre id="agent-config"></pre><p class="workspace-hint">The Studio tool profile exposes project queries and actions with a compact catalog. Use the all profile for simulation and procedural content tools. The headless simulation session is separate from project gameplay.</p>
+      <h3>Headless gameplay test</h3>
+      <div class="row"><input id="test-scene" placeholder="Main scene (or tests/acceptance.tscn)" aria-label="Test scene"><input id="test-args" value="[]" aria-label="Game arguments as a JSON array"><label><input id="test-report" type="checkbox"> Require JSON verdict</label><button id="headless-play">Run test</button></div>
+      <p class="workspace-hint">Arguments are a JSON array, for example ["--acceptance"]. A required report fails if missing, invalid, or marked ok: false. Test on a disposable project copy when game code writes files.</p>
+      <pre id="test-result" aria-live="polite"></pre>
+    </div>
+    <div id="panel-export" class="workspace-panel" hidden>
+      <h2>Package your project</h2>
+      <p>A portable Windows package includes the runtime. The recipient can launch game.exe without installing an engine.</p>
+      <div class="row"><label for="package-path">Output folder</label><input id="package-path" value="dist/windows" placeholder="dist/windows"><button id="package-project" class="primary">Package Windows app</button></div>
+      <p class="workspace-hint">Choose a new output folder for each build. Existing exports are never overwritten. The portable package uses the bundled runtime; platform-specific exports can use your existing presets and installed export templates.</p>
+      <div class="row"><button id="refresh-presets">Read export presets</button><button data-command="restart-editor">Restart optional editor</button></div>
+      <h3>Platform export</h3>
+      <div class="row"><select id="export-platform" aria-label="Export platform"><option>Windows Desktop</option><option>Linux</option><option>macOS</option><option>Web</option><option>Android</option><option>iOS</option></select><button id="configure-export">Create or reuse preset</button><input id="export-preset" placeholder="Preset name" aria-label="Export preset name"></div>
+      <div class="row"><input id="platform-output" placeholder="dist/android/game.apk" aria-label="Platform export destination"><label><input id="export-debug" type="checkbox" checked> Debug build</label><button id="export-project">Export preset</button></div>
+      <p class="workspace-hint">These targets require matching export templates. Mobile targets also need their SDK and signing setup. XR projects use platform exports with the appropriate XR configuration and plugins. A configured preset is not a verified device build.</p>
+      <pre id="export-result"></pre>
+    </div>
+  </section>
+
   <section class="console">
     <div class="console-head">
       <span class="console-title">Activity</span>
@@ -107,12 +165,14 @@
   </section>
 
   <footer>
-    <span class="foot-note">Godot is the workhorse. Studio decides what to run, when, and whether it worked.</span>
+    <span class="foot-note">Aurum Studio. Projects, development, and headless agents in one place.</span>
     <span class="foot-local">Loopback only &middot; token required</span>
     <button id="shutdown" class="ghost">Shut down</button>
   </footer>
 </div>
 
 <script src="/app.js"></script>
+<script src="/workspace.js"></script>
+<dialog id="project-dialog"><form id="project-form"><h2 id="project-dialog-title">New project</h2><label>Folder<input id="project-folder" required placeholder="A:/Projects/MyGame"></label><label id="project-name-label">Name<input id="project-new-name" value="my-game"></label><label id="project-template-label">Template<select id="project-template"><option value="3d">3D starter</option><option value="2d">2D starter</option></select></label><p id="project-dialog-error" role="alert"></p><div class="row"><button type="button" id="cancel-project">Cancel</button><button type="submit" class="primary">Open project</button></div></form></dialog>
 </body>
 </html>

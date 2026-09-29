@@ -6,6 +6,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Playable MVP workflow
+
+- Added required JSON gameplay verdicts, bounded game arguments, and fixed-rate headless tests across CLI, HTTP, and MCP.
+- Fixed explicit test-scene selection and an environment-dependent runtime discovery test.
+- Added six-platform preset configuration and Studio export/test controls with full failure diagnostics.
+- Exercised the workflow with the sibling Orbit Break Windows MVP, including a complete campaign, touch events, live tuning, and portable packaging.
+- Mobile and XR device builds remain unverified; preset configuration does not imply device readiness.
+
+### Aurum Studio 0.2
+
+- Added the integrated project, scene, file, agent, and export interface.
+- Added shared headless project operations, runtime schema discovery, and a compact MCP profile.
+- Fixed native build freshness, atomic installation, reload notification, failure reporting, and scene persistence.
+- Added saved-file undo, persistent drafts, live editor undo/redo, and safe project-bound requests.
+- Added runnable 2D/3D starters and repaired the native starter.
+- Added portable Windows packaging and a state-preserving installer with an included runtime.
+- Added isolated end-to-end acceptance for headless work, live editing, native reload recovery, and packaging.
+
 ### Added
 
 - **`aurum-mcp`** — headless Model Context Protocol server. Drives the engine

@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 aurum-content = { path = "../aurum-content" }
 aurum-core = { path = "../aurum-core" }
+aurum-studio-core = { path = "../aurum-studio-core" }
 aurum-space = { path = "../aurum-space" }
 aurum-vn = { path = "../aurum-vn" }
 serde = { workspace = true }

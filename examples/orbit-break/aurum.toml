@@ -1,0 +1,4 @@
+schema_version = 1
+name = "orbit-break"
+godot_version = "4.7"
+modules = []

@@ -71,6 +71,7 @@ pub struct AurumEditor {
     /// Optional because the file pump remains a supported transport: a project
     /// that has not started a socket keeps working exactly as before.
     bridge: Option<bridge_socket::BridgeServer>,
+    command_handler: Option<Callable>,
 }
 
 #[godot_api]
@@ -80,6 +81,7 @@ impl INode for AurumEditor {
             base,
             scene_root: None,
             bridge: None,
+            command_handler: None,
         }
     }
 }
@@ -222,6 +224,10 @@ fn variant_to_json(value: &Variant) -> serde_json::Value {
 
 #[godot_api]
 impl AurumEditor {
+    #[func]
+    fn set_command_handler(&mut self, handler: Callable) {
+        self.command_handler = Some(handler);
+    }
     // ----- editor context -------------------------------------------------
 
     /// Hand over the edited scene root. Called by the editor plugin.
@@ -360,6 +366,7 @@ impl AurumEditor {
 
         let mut parent = parent;
         parent.add_child(&node);
+        node.set_owner(root);
 
         success(serde_json::json!({
             "name": node.get_name().to_string(),
@@ -501,6 +508,8 @@ impl AurumEditor {
         old_parent.remove_child(&node);
         let mut new_parent = new_parent;
         new_parent.add_child(&node);
+        let mut node = node;
+        node.set_owner(root);
 
         success(serde_json::json!({
             "node": requested,
@@ -556,7 +565,11 @@ impl AurumEditor {
 
         let mut handled = 0i64;
         for file in files {
-            let Ok(text) = std::fs::read_to_string(&file) else {
+            let processing = file.with_extension("processing");
+            if std::fs::rename(&file, &processing).is_err() {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&processing) else {
                 continue;
             };
             let id = file
@@ -569,8 +582,11 @@ impl AurumEditor {
             // The request is removed only after its response is written, so a
             // crash mid-request leaves it to be retried rather than lost.
             let target = response_path.join(format!("{id}.json"));
-            if std::fs::write(&target, response.to_string()).is_ok() {
-                let _ = std::fs::remove_file(&file);
+            let staged = target.with_extension("json.tmp");
+            if std::fs::write(&staged, response.to_string()).is_ok()
+                && std::fs::rename(&staged, &target).is_ok()
+            {
+                let _ = std::fs::remove_file(&processing);
                 handled += 1;
             }
         }
@@ -678,6 +694,20 @@ impl AurumEditor {
         let Some(op) = request.get("op").and_then(|v| v.as_str()) else {
             return failure("request is missing 'op'");
         };
+        if !matches!(op, "describe_scene" | "node_count") {
+            if let Some(handler) = self
+                .command_handler
+                .as_ref()
+                .filter(|handler| handler.is_valid())
+            {
+                return handler
+                    .call(&[GString::from(text).to_variant()])
+                    .try_to::<GString>()
+                    .unwrap_or_else(|_| {
+                        failure("editor command handler returned an invalid response")
+                    });
+            }
+        }
         let argument = |key: &str| -> GString {
             gstring(
                 request

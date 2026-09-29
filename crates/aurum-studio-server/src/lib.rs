@@ -108,10 +108,12 @@ struct Shell {
     token: String,
     project_name: String,
     project_root: String,
+    selected_root: Arc<Mutex<PathBuf>>,
     supervisor: Arc<Supervisor>,
     hub: Arc<Hub>,
     running: Arc<AtomicBool>,
     connections: Arc<AtomicUsize>,
+    operations: Arc<AtomicUsize>,
 }
 
 impl Server {
@@ -136,6 +138,7 @@ impl Server {
 
         let project_name = config.project.config.name.clone();
         let project_root = config.project.root.display().to_string();
+        let selected_root = Arc::new(Mutex::new(config.project.root.clone()));
 
         let supervisor = Arc::new(Supervisor::start(SupervisorConfig::new(
             config.project,
@@ -161,10 +164,12 @@ impl Server {
                 token,
                 project_name,
                 project_root,
+                selected_root,
                 supervisor,
                 hub,
                 running,
                 connections: Arc::new(AtomicUsize::new(0)),
+                operations: Arc::new(AtomicUsize::new(0)),
             }),
             address,
         })
@@ -223,7 +228,10 @@ impl Server {
                 }
             }
         }
-        self.shell.supervisor.send(Command::Shutdown);
+        while self.shell.operations.load(Ordering::SeqCst) > 0 {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.shell.supervisor.wait_for_shutdown();
     }
 
     /// Ask the accept loop to finish.
@@ -495,7 +503,24 @@ enum Routed {
     },
 }
 
+struct Operation(Arc<AtomicUsize>);
+impl Drop for Operation {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
+    let _operation = if request.method == "POST" && request.path != "/api/stop" {
+        shell.operations.fetch_add(1, Ordering::SeqCst);
+        let guard = Operation(Arc::clone(&shell.operations));
+        if !shell.running.load(Ordering::SeqCst) {
+            return Routed::Once(Response::error(503, "Studio is stopping"));
+        }
+        Some(guard)
+    } else {
+        None
+    };
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => Routed::Once(
             Response::html(assets::INDEX_HTML).with_header("Cache-Control", "no-store"),
@@ -508,8 +533,45 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
             Response::new(200, "text/css; charset=utf-8", assets::STYLE_CSS)
                 .with_header("Cache-Control", "no-store"),
         ),
+        ("GET", "/workspace.js") => Routed::Once(
+            Response::new(200, "text/javascript; charset=utf-8", assets::WORKSPACE_JS)
+                .with_header("Cache-Control", "no-store"),
+        ),
+        ("GET", "/workspace.css") => Routed::Once(
+            Response::new(200, "text/css; charset=utf-8", assets::WORKSPACE_CSS)
+                .with_header("Cache-Control", "no-store"),
+        ),
 
         ("GET", "/api/state") => Routed::Once(Response::json(200, &state_json(shell))),
+        ("GET", "/api/projects") => Routed::Once(projects_response(shell, None)),
+        ("POST", "/api/projects") => Routed::Once(projects_response(shell, Some(request))),
+        ("POST", "/api/project") => {
+            let result = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .map_err(|e| e.to_string())
+                .and_then(|input| {
+                    let root = input
+                        .get("project")
+                        .and_then(serde_json::Value::as_str)
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| selected_root(shell));
+                    aurum_studio_core::project_ops::execute(&root, &input, false)
+                });
+            Routed::Once(match result {
+                Ok(value) => Response::json(200, &value),
+                Err(message) => {
+                    Response::json(400, &serde_json::json!({"ok":false,"error":message}))
+                }
+            })
+        }
+        ("GET", "/api/agent") => {
+            let command = std::env::current_exe()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| "aurum".into());
+            Routed::Once(Response::json(
+                200,
+                &serde_json::json!({"mcpServers":{"aurum":{"command":command,"args":["mcp","--root",selected_root(shell),"--tools","studio"]}}}),
+            ))
+        }
 
         ("POST", "/api/command") => Routed::Once(handle_command(request, &shell.supervisor)),
 
@@ -519,6 +581,12 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
         }
 
         ("POST", "/api/stop") => {
+            if shell.operations.load(Ordering::SeqCst) > 0 || shell.supervisor.is_busy() {
+                return Routed::Once(Response::error(
+                    409,
+                    "An operation is still running. Wait for it to finish before closing Studio.",
+                ));
+            }
             shell.running.store(false, Ordering::SeqCst);
             Routed::Once(Response::json(200, &serde_json::json!({"stopped": true})))
         }
@@ -545,6 +613,9 @@ fn handle_command(request: &Request, supervisor: &Arc<Supervisor>) -> Response {
 
     let command = match name {
         "doctor" => Command::Doctor,
+        "develop" => Command::Develop { editor: false },
+        "end-develop" => Command::EndDevelop,
+        "restart-editor" => Command::RestartEditor,
         "build" => Command::Build {
             force: parsed
                 .get("force")
@@ -582,11 +653,94 @@ fn handle_command(request: &Request, supervisor: &Arc<Supervisor>) -> Response {
 /// The page loads before the first event arrives, so it needs one request that
 /// answers "what am I looking at" rather than an empty screen.
 fn state_json(shell: &Arc<Shell>) -> serde_json::Value {
+    let selected = selected_root(shell);
+    let project = Project::open(&selected).ok();
+    let godot_directory = project.as_ref().and_then(|project| {
+        project
+            .godot_project_dir()
+            .and_then(|path| path.strip_prefix(&project.root).ok())
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+    });
+    let native_package = project
+        .as_ref()
+        .and_then(|project| project.config.rust_package.clone());
     serde_json::json!({
         "studio": env!("CARGO_PKG_VERSION"),
-        "project": shell.project_name,
-        "root": shell.project_root,
+        "project": project.map(|p|p.config.name).unwrap_or_else(||shell.project_name.clone()),
+        "root": selected.to_str().unwrap_or(&shell.project_root),
+        "native_package": native_package,
+        "godot_directory": godot_directory,
     })
+}
+
+fn selected_root(shell: &Shell) -> PathBuf {
+    shell
+        .selected_root
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+fn projects_response(shell: &Arc<Shell>, request: Option<&Request>) -> Response {
+    use aurum_studio_core::{templates, Registry};
+    let result = (|| -> Result<serde_json::Value, String> {
+        let registry_path =
+            Registry::resolve_path().ok_or("Studio state directory is not configured")?;
+        let mut registry = Registry::load(&registry_path).map_err(|e| e.to_string())?;
+        if let Some(request) = request {
+            let input: serde_json::Value =
+                serde_json::from_slice(&request.body).map_err(|e| e.to_string())?;
+            let path = PathBuf::from(input["path"].as_str().ok_or("project path is required")?);
+            let action = input["action"].as_str().ok_or("action is required")?;
+            if action == "create" {
+                let name = input["name"].as_str().ok_or("project name is required")?;
+                let template = input["template"].as_str().unwrap_or("3d");
+                if !matches!(template, "2d" | "3d") {
+                    return Err("Studio offers the 2d and 3d templates".into());
+                }
+                templates::create(
+                    &path,
+                    &templates::NewProject {
+                        name: name.into(),
+                        template: template.into(),
+                        engine: selected_root(shell),
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            if action == "forget" {
+                registry.remove(&path.display().to_string());
+            } else if matches!(action, "create" | "import" | "select") {
+                let project = if action == "import" {
+                    Project::import(&path)
+                } else {
+                    Project::open(&path)
+                }
+                .map_err(|e| e.to_string())?;
+                registry.register(&project.config.name, &project.root);
+                if !shell
+                    .supervisor
+                    .send(Command::SelectProject(project.root.clone()))
+                {
+                    return Err("supervisor is not running".into());
+                }
+                *shell
+                    .selected_root
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = project.root;
+            } else {
+                return Err("unknown project action".into());
+            }
+            registry.save(&registry_path).map_err(|e| e.to_string())?;
+        }
+        Ok(
+            serde_json::json!({"projects":registry.projects,"selected":selected_root(shell),"templates":["2d","3d"]}),
+        )
+    })();
+    match result {
+        Ok(value) => Response::json(200, &value),
+        Err(error) => Response::json(400, &serde_json::json!({"ok":false,"error":error})),
+    }
 }
 
 /// Write an event stream until the client goes away.

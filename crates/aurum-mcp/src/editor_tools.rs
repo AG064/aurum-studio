@@ -36,6 +36,9 @@ const OPERATIONS: &[(&str, &str)] = &[
     ("attach_script", "node, script — attach a res:// script."),
     ("remove_node", "node — remove a node and its subtree."),
     ("reparent_node", "node, parent — move a node."),
+    ("save_scene", "Save the scene open in the editor."),
+    ("undo", "Undo the previous scene edit."),
+    ("redo", "Redo the previous scene edit."),
 ];
 
 /// How long to wait for the editor to answer before giving up.
@@ -81,8 +84,21 @@ fn tool_editor_status(context: &mut ToolContext<'_>, _params: &Value) -> ToolRes
 
     let requests = root.join("requests");
     let responses = root.join("responses");
+    let heartbeat: Value = std::fs::read(root.join("status.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(Value::Null);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or_default();
+    let connected = heartbeat["updated_unix"]
+        .as_f64()
+        .is_some_and(|last| now >= last && now - last < 5.0);
     ok(json!({
         "configured": true,
+        "connected": connected,
+        "heartbeat": heartbeat,
         "bridge": root.display().to_string(),
         "requests_dir": requests.display().to_string(),
         "responses_dir": responses.display().to_string(),
@@ -130,26 +146,40 @@ fn tool_editor_op(context: &mut ToolContext<'_>, params: &Value) -> ToolResult {
     let id = next_request_id();
     let request_path = requests.join(format!("{id}.json"));
     let response_path = responses.join(format!("{id}.json"));
+    let staged = request_path.with_extension("json.tmp");
     std::fs::write(
-        &request_path,
+        &staged,
         serde_json::to_string(&Value::Object(request)).map_err(|e| ToolError::Io(e.to_string()))?,
     )
     .map_err(|e| ToolError::Io(format!("could not write '{}': {e}", request_path.display())))?;
+    std::fs::rename(&staged, &request_path).map_err(|e| ToolError::Io(e.to_string()))?;
 
     let deadline = Instant::now() + RESPONSE_TIMEOUT;
     loop {
         if let Ok(text) = std::fs::read_to_string(&response_path) {
-            let _ = std::fs::remove_file(&response_path);
             let parsed: Value = serde_json::from_str(&text)
                 .map_err(|e| ToolError::Engine(format!("the editor returned invalid JSON: {e}")))?;
+            let _ = std::fs::remove_file(&response_path);
+            if parsed.get("ok").and_then(Value::as_bool) == Some(false) {
+                return Err(ToolError::Engine(
+                    parsed
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("editor operation failed")
+                        .to_string(),
+                ));
+            }
             return ok(parsed);
         }
         if Instant::now() >= deadline {
-            // Leave the request in place: the editor may yet pick it up, and
-            // deleting it would make a slow editor silently lossy.
+            let outcome = if std::fs::remove_file(&request_path).is_ok() {
+                "the pending request was cancelled before the editor claimed it"
+            } else {
+                "the outcome is unknown; inspect the scene before retrying"
+            };
             return Err(ToolError::Engine(format!(
                 "the editor did not answer '{op}' within {}s; check that the Aurum Editor \
-                 plugin is enabled and the editor window is responsive",
+                 plugin is enabled and the editor window is responsive; {outcome}",
                 RESPONSE_TIMEOUT.as_secs()
             )));
         }
@@ -182,7 +212,7 @@ pub fn catalog() -> Vec<Tool> {
                 json!({
                     "op": {
                         "type": "string",
-                        "enum": ["describe_scene", "node_count", "create_node", "set_property", "attach_script", "remove_node", "reparent_node"],
+                        "enum": ["describe_scene", "node_count", "create_node", "set_property", "attach_script", "remove_node", "reparent_node", "save_scene", "undo", "redo"],
                         "description": "Which operation to run."
                     },
                     "parent": { "type": "string", "description": "Parent node path, for create_node and reparent_node." },
@@ -448,7 +478,10 @@ mod tests {
                 "set_property",
                 "attach_script",
                 "remove_node",
-                "reparent_node"
+                "reparent_node",
+                "save_scene",
+                "undo",
+                "redo"
             ]
         );
     }

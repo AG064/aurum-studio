@@ -21,13 +21,15 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 
-# Binary / lock files (no line-ending conversion)
-*.lock binary
+# Reviewable configuration and vector assets
+Cargo.lock text eol=lf
+*.godot text eol=lf
+*.svg text eol=lf
+
+# Binary files (no line-ending conversion)
 *.dll binary
 *.so binary
 *.dylib binary
 *.png binary
 *.jpg binary
-*.svg binary
 *.ico binary
-*.godot binary

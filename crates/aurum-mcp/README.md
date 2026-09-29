@@ -1,25 +1,35 @@
 # aurum-mcp
 
-A headless [Model Context Protocol](https://modelcontextprotocol.io) server for
-the Aurum engine.
+A local [Model Context Protocol](https://modelcontextprotocol.io) server for
+Aurum Studio and the Aurum engine libraries.
 
-It lets an AI model drive the engine directly — spawn entities, attach
-components, emit events, read and write state, step the space simulation, and
-save or load a session — with **no Godot process running**.
+For game-project work, use `--tools studio`: inspect and edit saved files and
+scenes, query the runtime schema, validate, run bounded gameplay tests and
+package a game. These operations invoke the managed Godot runtime headlessly;
+they do not require a visible editor.
+
+`--tools all` also provides the independent Rust simulation, procedural content
+authoring and optional live-editor bridge. Rust simulation tools run without
+a Godot process, but do not inspect or mutate a running game's memory.
 
 ## Why headless
 
-Aurum's authoritative simulation lives in Rust, not GDScript. That makes a
-headless server the *higher-fidelity* surface for an agent rather than a
-convenience: tool calls are typed, deterministic, fast, and runnable in CI.
+The Studio profile has three tools: `aurum_project_query`,
+`aurum_project_action` and `aurum_mcp_status`. Their operation schema is shared
+with the CLI and HTTP interface. Runtime discovery grounds class/property
+requests in the installed engine version. Structured gameplay reports let
+clients distinguish a successful process exit from a passing test.
 
-This is layer 3 of
+The Rust simulation is useful for deterministic engine-level work. Actual
+gameplay testing uses the project operations, not that separate simulation.
+
+The earlier simulation design is recorded in
 [`docs/superpowers/specs/2026-09-11-aurum-mcp-design.md`](../../docs/superpowers/specs/2026-09-11-aurum-mcp-design.md).
 
 ## Zero new dependencies
 
 The crate adds **no external packages** to the workspace. It uses only
-`aurum-core`, `aurum-space`, and the `serde` / `serde_json` / `thiserror`
+the workspace libraries and the `serde` / `serde_json` / `thiserror`
 dependencies the workspace already locked.
 
 The MCP stdio transport is newline-delimited JSON-RPC 2.0 — a small enough
@@ -33,8 +43,9 @@ cargo tree -p aurum-mcp --edges normal      # only workspace crates + serde stac
 ## Running it
 
 ```pwsh
-aurum mcp                                  # via the CLI
-aurum mcp --root ./saves --read-only       # confined file access, no mutations
+aurum mcp --root ./examples/orbit-break --tools studio
+aurum mcp --root ./examples/orbit-break --tools studio --read-only
+aurum mcp --root ./saves --tools all       # simulation and content authoring
 cargo run -p aurum-mcp -- --trace          # standalone, protocol echoed to stderr
 ```
 
@@ -49,7 +60,7 @@ re-checked through symlinks.
   "mcpServers": {
     "aurum": {
       "command": "aurum",
-      "args": ["mcp", "--root", "."]
+      "args": ["mcp", "--root", "C:/Projects/MyGame", "--tools", "studio"]
     }
   }
 }
@@ -59,12 +70,17 @@ Point it at the absolute path to `aurum.exe` if it is not on your `PATH`.
 
 ## Tools
 
-52 tools, all prefixed `aurum_`. Every read-only tool carries the
-`readOnlyHint` annotation, so a client can filter without a second code path.
+The Studio profile has three tools. The full catalog adds the groups below;
+clients can discover the exact enabled set with `tools/list`. Read-only tools
+carry the `readOnlyHint` annotation.
 
-They split into a **runtime** group (31 tools: entities, components, events,
-state, time, space, story, save/load) and a **content authoring** group (14
-tools: meshes, materials, nodes, animations, sprites, glTF import and export).
+The additional groups cover **Rust simulation** (entities, components, events,
+state, time, space, story, save/load), **content authoring** (meshes, materials,
+nodes, animations, sprites, glTF import/export) and the optional editor bridge.
+
+For project operation examples and the gameplay report contract, see
+[the agent guide](../../docs/AGENT_PLAYTESTS.md). The following tables describe
+the additional simulation and content tools, not the compact Studio catalog.
 
 | Read-only | Mutating |
 |---|---|

@@ -24,6 +24,7 @@ const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
     "target",
     ".godot",
+    ".aurum",
     "node_modules",
     ".vs",
     ".idea",
@@ -84,6 +85,8 @@ pub struct Watcher {
     root: PathBuf,
     stamps: HashMap<PathBuf, Stamp>,
     primed: bool,
+    sources: HashMap<PathBuf, String>,
+    verdicts: HashMap<PathBuf, crate::Classification>,
 }
 
 impl Watcher {
@@ -92,6 +95,8 @@ impl Watcher {
             root: root.into(),
             stamps: HashMap::new(),
             primed: false,
+            sources: HashMap::new(),
+            verdicts: HashMap::new(),
         }
     }
 
@@ -148,6 +153,37 @@ impl Watcher {
             Vec::new()
         };
 
+        for change in &changes {
+            let after = if change.path.extension().is_some_and(|e| e == "rs") {
+                std::fs::read_to_string(&change.path).ok()
+            } else {
+                None
+            };
+            let classification = crate::native_schema::classify(
+                &change.path,
+                self.sources.get(&change.path).map(String::as_str),
+                after.as_deref(),
+            );
+            self.verdicts
+                .entry(change.path.clone())
+                .and_modify(|old| {
+                    if classification.verdict > old.verdict {
+                        *old = classification.clone();
+                    }
+                })
+                .or_insert(classification);
+        }
+        for path in current
+            .keys()
+            .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+        {
+            if !self.primed || changes.iter().any(|c| &c.path == path) {
+                if let Ok(text) = std::fs::read_to_string(path) {
+                    self.sources.insert(path.clone(), text);
+                }
+            }
+        }
+        self.sources.retain(|path, _| current.contains_key(path));
         self.stamps = current;
         self.primed = true;
 
@@ -155,6 +191,18 @@ impl Watcher {
         // iteration order.
         changes.sort_by(|a, b| a.path.cmp(&b.path));
         changes
+    }
+
+    pub fn classify(&mut self, changes: &[Change]) -> crate::Classification {
+        changes
+            .iter()
+            .map(|change| {
+                self.verdicts
+                    .remove(&change.path)
+                    .unwrap_or_else(|| crate::reload::classify_path(&change.path))
+            })
+            .max_by_key(|classification| classification.verdict)
+            .unwrap_or_else(|| crate::reload::classify_path(Path::new("empty.txt")))
     }
 }
 
@@ -165,6 +213,9 @@ fn collect(directory: &Path, into: &mut HashMap<PathBuf, Stamp>) {
     };
 
     for entry in entries.filter_map(Result::ok) {
+        if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+            continue;
+        }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
 

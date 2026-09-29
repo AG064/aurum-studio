@@ -67,10 +67,20 @@ pub struct Template {
 /// One, deliberately. A second template is a promise to keep two layouts
 /// current, and the honest thing is to add it when somebody actually wants it
 /// rather than to ship a menu of guesses.
-pub const TEMPLATES: &[Template] = &[Template {
-    name: "minimal",
-    description: "a Rust extension, a Godot project, and nothing else",
-}];
+pub const TEMPLATES: &[Template] = &[
+    Template {
+        name: "3d",
+        description: "a ready-to-run 3D project with a camera, light, and rotating cube",
+    },
+    Template {
+        name: "2d",
+        description: "a ready-to-run 2D project with a rotating square",
+    },
+    Template {
+        name: "minimal",
+        description: "an advanced native Rust extension skeleton",
+    },
+];
 
 /// The default when none is named.
 pub const DEFAULT_TEMPLATE: &str = "minimal";
@@ -159,6 +169,39 @@ pub fn create(root: &Path, request: &NewProject) -> Result<Created, TemplateErro
         Err(error) => return Err(TemplateError::Io(error.to_string())),
     }
 
+    if template.name != "minimal" {
+        let scene = if template.name == "2d" {
+            include_str!("template_2d.tscn")
+        } else {
+            include_str!("template_3d.tscn")
+        };
+        let script = if template.name == "2d" {
+            "extends Node2D\n\nfunc _process(delta: float) -> void:\n    $Square.rotation += delta * 0.35\n"
+        } else {
+            "extends Node3D\n\nfunc _process(delta: float) -> void:\n    $Cube.rotation.y += delta * 0.35\n"
+        };
+        let files = [
+            ("aurum.toml", format!("schema_version = 1\nname = {:?}\ngodot_version = \"4.7\"\nmodules = []\n", request.name)),
+            ("godot/project.godot",format!("config_version=5\n\n[application]\nconfig/name={:?}\nrun/main_scene=\"res://main.tscn\"\n\n[display]\nwindow/size/viewport_width=1152\nwindow/size/viewport_height=648\n\n[rendering]\nrenderer/rendering_method=\"gl_compatibility\"\n",request.name)),
+            ("godot/main.tscn",scene.to_string()),
+            ("godot/main.gd",script.to_string()),
+            (".gitignore",".aurum/\n**/.godot/\ntarget/\n".into()),
+            ("README.md",format!("# {}\n\nOpen with `aurum studio .`. Agents connect with `aurum mcp --root . --tools studio`.\n",request.name)),
+        ];
+        let mut written = Vec::new();
+        for (relative, text) in files {
+            let path = root.join(relative);
+            crate::files::write_atomic(&path, text.as_bytes())
+                .map_err(|e| TemplateError::Io(e.to_string()))?;
+            written.push(PathBuf::from(relative));
+        }
+        return Ok(Created {
+            root: root.to_path_buf(),
+            name: request.name.clone(),
+            template: template.name,
+            files: written,
+        });
+    }
     let crate_name = request.name.replace('-', "_");
     let mut files: Vec<(String, String)> = render(&request.name, &crate_name, &request.engine)
         .into_iter()
@@ -236,12 +279,12 @@ fn render(name: &str, crate_name: &str, engine: &Path) -> Vec<(&'static str, Str
                  config_version=5\n\n\
                  [application]\n\n\
                  config/name=\"{name}\"\n\
+                 run/main_scene=\"res://main.tscn\"\n\
                  config/features=PackedStringArray(\"4.7\")\n\n\
                  [autoload]\n\n\
                  Aurum=\"*res://scripts/aurum_runtime.gd\"\n\n\
                  [editor_plugins]\n\n\
-                 enabled=PackedStringArray(\"res://addons/aurum/plugin.cfg\", \
-                 \"res://addons/aurum_editor/plugin.cfg\")\n"
+                 enabled=PackedStringArray(\"res://addons/aurum/plugin.cfg\")\n"
             ),
         ),
         (
@@ -250,10 +293,14 @@ fn render(name: &str, crate_name: &str, engine: &Path) -> Vec<(&'static str, Str
              #\n\
              # The autoload exists so scripts never look the node up by path:\n\
              # moving it in the scene tree cannot break them.\n\
-             extends AurumNode\n"
+             extends Node\n"
                 .to_string(),
         ),
-        (".gitignore", "target/\n.godot/\n*.tmp\n".to_string()),
+        (".gitignore", "target/\n**/.godot/\n.aurum/\ndist/\n*.tmp\n".to_string()),
+        ("godot/main.tscn", "[gd_scene format=3]\n[node name=\"Main\" type=\"Node\"]\n".into()),
+        ("godot/addons/aurum/bin/aurum.gdextension", format!("[configuration]\nentry_symbol=\"gdext_rust_init\"\ncompatibility_minimum=\"4.7\"\nreloadable=true\n[libraries]\nwindows.debug.x86_64=\"res://addons/aurum/bin/{crate_name}.debug.dll\"\nwindows.release.x86_64=\"res://addons/aurum/bin/{crate_name}.dll\"\nlinux.debug.x86_64=\"res://addons/aurum/bin/{crate_name}.debug.so\"\nlinux.release.x86_64=\"res://addons/aurum/bin/{crate_name}.so\"\nmacos.debug=\"res://addons/aurum/bin/{crate_name}.debug.dylib\"\nmacos.release=\"res://addons/aurum/bin/{crate_name}.dylib\"\n")),
+        ("godot/addons/aurum/plugin.cfg", "[plugin]\nname=\"Aurum reload\"\ndescription=\"Native reload notifications\"\nauthor=\"Aurum\"\nversion=\"1\"\nscript=\"plugin.gd\"\n".into()),
+        ("godot/addons/aurum/plugin.gd", format!("@tool\nextends EditorPlugin\nvar previous := \"\"\nfunc _process(_delta: float) -> void:\n    var path := \"res://.godot/aurum/{crate_name}.debug.reload\"\n    if not FileAccess.file_exists(path):\n        return\n    var value := FileAccess.get_file_as_string(path).strip_edges()\n    if value == previous:\n        return\n    var first := previous.is_empty()\n    previous = value\n    if not first:\n        var result := GDExtensionManager.reload_extension(\"res://addons/aurum/bin/aurum.gdextension\")\n        if result != OK:\n            push_warning(\"Aurum native reload requires an editor restart\")\n")),
         (
             "README.md",
             format!(
@@ -297,7 +344,6 @@ fn render_crate(_name: &str, crate_name: &str) -> Vec<(String, String)> {
                  //!\n\
                  //! Add classes here and register them the way `aurum-godot` does.\n\n\
                  use godot::init::{{gdextension, ExtensionLibrary, InitLevel}};\n\
-                 use godot::prelude::*;\n\n\
                  struct Extension;\n\n\
                  #[gdextension]\n\
                  unsafe impl ExtensionLibrary for Extension {{\n\

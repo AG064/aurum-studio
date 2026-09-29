@@ -7,20 +7,23 @@
 //! does not use.
 
 mod commands;
+mod project_command;
 
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-aurum — the Aurum engine command-line interface
+aurum - Aurum Studio and headless project operations
 
 USAGE:
     aurum <COMMAND> [OPTIONS]
 
 COMMANDS:
+    project [root]       Headless project operations. Use --request-json with
+                          an operation object; see `aurum project --help`.
     doctor [project]      Check a project and report healthy, warning, or
                           blocked state with evidence.
-    dev [project]         Build, launch the editor, and rebuild when the Rust
-                          side moves. Godot reloads its own content.
+    dev [project]         Watch and develop headlessly. Use --play for a preview
+                          or --editor for the optional native editor.
     build [project]       Build the GDExtension and install it. A failed build
                           leaves the installed library untouched.
     editor [project]      Launch Godot on the project, supervised.
@@ -42,7 +45,8 @@ COMMANDS:
     studio [project]      Start the local Studio shell and open it in a
                           browser. Loopback only; every request needs the
                           session token. See `aurum studio --help`.
-    import <path>         Register a project (read-only against the project).
+    import <path>         Register a project; add aurum.toml when importing
+                          a plain Godot project for the first time.
     projects              List registered projects.
     forget <name|path>    Remove a project from the registry.
     mcp                   Run the headless MCP server over stdio, so an AI
@@ -64,6 +68,7 @@ fn main() -> ExitCode {
 
     match args.first().map(String::as_str) {
         Some("mcp") => ExitCode::from(aurum_mcp::cli::run(&args[1..]) as u8),
+        Some("project") => project_command::run(&args[1..]),
         Some("doctor") => commands::doctor(&args[1..]),
         Some("build") => commands::build(&args[1..]),
         Some("dev") => commands::dev(&args[1..]),
@@ -79,7 +84,8 @@ fn main() -> ExitCode {
         Some("import") => commands::import(&args[1..]),
         Some("projects") => commands::projects(&args[1..]),
         Some("forget") => commands::forget(&args[1..]),
-        Some("-h") | Some("--help") | None => {
+        None => commands::studio(&[]),
+        Some("-h") | Some("--help") => {
             print!("{USAGE}");
             ExitCode::SUCCESS
         }

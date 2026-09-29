@@ -11,17 +11,14 @@ use std::process::ExitCode;
 use aurum_studio_core::build::{library_name, BuildRequest, Profile};
 use aurum_studio_core::build_queue::BuildLock;
 use aurum_studio_core::doctor::{diagnose, Health};
-use aurum_studio_core::gameplay::{respond, Game, Response};
 use aurum_studio_core::ownership::{OwnershipRecord, ProcessKind};
 use aurum_studio_core::project::clean_path;
 use aurum_studio_core::registry::Registry;
-use aurum_studio_core::reload::{Classification, Verdict};
 use aurum_studio_core::session::Session;
 use aurum_studio_core::supervise::{
     bridge_environment, launch, stop_session, terminate, LaunchRequest, StopOutcome,
 };
 use aurum_studio_core::toolchain::{discover, discover_godot_to_launch};
-use aurum_studio_core::watch::{Debouncer, Watcher};
 use aurum_studio_core::Project;
 use aurum_studio_server::{Server, ServerConfig};
 
@@ -45,6 +42,7 @@ struct Options {
     force: bool,
     once: bool,
     no_editor: bool,
+    visible_editor: bool,
     play: bool,
     agent: Option<String>,
     interval_ms: u64,
@@ -68,6 +66,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--force" => options.force = true,
             "--once" => options.once = true,
             "--no-editor" => options.no_editor = true,
+            "--headless" => options.no_editor = true,
+            "--editor" => options.visible_editor = true,
             "--play" => options.play = true,
             "--agent" => {
                 index += 1;
@@ -173,8 +173,42 @@ pub fn studio(args: &[String]) -> ExitCode {
         Ok(options) => options,
         Err(message) => return usage("studio", &message),
     };
+    if let Some(godot) = &options.godot {
+        std::env::set_var("AURUM_GODOT", godot);
+    }
 
-    let path = target(&options);
+    let mut path = target(&options);
+    if options.project.is_none()
+        && options.positional.is_empty()
+        && !path.join("aurum.toml").is_file()
+    {
+        if let Some(registry_path) = Registry::resolve_path() {
+            if let Ok(registry) = Registry::load(&registry_path) {
+                if let Some(entry) = registry
+                    .projects
+                    .iter()
+                    .rev()
+                    .find(|entry| entry.path.join("aurum.toml").is_file())
+                {
+                    path = entry.path.clone();
+                }
+            }
+            if !path.join("aurum.toml").is_file() {
+                path = registry_path.parent().unwrap().join("projects/welcome");
+                if !path.join("aurum.toml").is_file() {
+                    let request = aurum_studio_core::templates::NewProject {
+                        name: "welcome".into(),
+                        template: "3d".into(),
+                        engine: path.clone(),
+                    };
+                    if let Err(error) = aurum_studio_core::templates::create(&path, &request) {
+                        eprintln!("aurum: {error}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+        }
+    }
     let project = match Project::open(&path) {
         Ok(project) => project,
         Err(error) => {
@@ -292,8 +326,24 @@ pub fn build(args: &[String]) -> ExitCode {
 
     // A build needs a package to build and an add-on to install into.
     let Some(package) = project.config.rust_package.clone() else {
-        eprintln!("aurum build: aurum.toml has no 'rust_package'; there is nothing to build");
-        return ExitCode::from(exit::USAGE);
+        return match aurum_studio_core::project_ops::execute(
+            &project.root,
+            &serde_json::json!({"op":"validate"}),
+            false,
+        ) {
+            Ok(result) => {
+                println!("{result}");
+                if result["ok"] == true {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(exit::FAILED)
+                }
+            }
+            Err(error) => {
+                eprintln!("aurum build: {error}");
+                ExitCode::from(exit::FAILED)
+            }
+        };
     };
     let Some(addon) = project.layout.addon_directory.clone() else {
         eprintln!(
@@ -316,7 +366,14 @@ pub fn build(args: &[String]) -> ExitCode {
     let library = library_name(&package);
     let destination = addon.join("bin").join(profile.installed_filename(&library));
 
-    let request = BuildRequest::new(&project.root, &package, profile, &destination, cargo);
+    let mut request = BuildRequest::new(
+        project.build_workspace(),
+        &package,
+        profile,
+        &destination,
+        cargo,
+    );
+    request.locked = project.build_workspace().join("Cargo.lock").is_file();
 
     // One build writes a project's artifact at a time. The supervisor takes
     // the same lock, so a bare `aurum build` and a running Studio contend
@@ -698,7 +755,7 @@ fn engine_root() -> Option<PathBuf> {
 pub fn new(args: &[String]) -> ExitCode {
     let mut path: Option<PathBuf> = None;
     let mut name: Option<String> = None;
-    let mut template = aurum_studio_core::templates::DEFAULT_TEMPLATE.to_string();
+    let mut template = "3d".to_string();
     let mut engine = engine_root();
     let mut json = false;
 
@@ -752,9 +809,13 @@ pub fn new(args: &[String]) -> ExitCode {
             .unwrap_or_default()
     });
 
-    let Some(engine) = engine else {
-        eprintln!("aurum new: could not work out where the engine is; pass --engine <path>");
-        return ExitCode::from(exit::FAILED);
+    let engine = match engine {
+        Some(path) => path,
+        None if template != "minimal" => root.clone(),
+        None => {
+            eprintln!("aurum new: native projects require --engine <path>");
+            return ExitCode::from(exit::FAILED);
+        }
     };
 
     let request = aurum_studio_core::templates::NewProject {
@@ -1206,293 +1267,98 @@ pub fn dev(args: &[String]) -> ExitCode {
         Ok(options) => options,
         Err(message) => return usage("dev", &message),
     };
-    let path = target(&options);
-
-    let project = match Project::open(&path) {
+    let project = match Project::open(&target(&options)) {
         Ok(project) => project,
         Err(error) => {
             eprintln!("aurum dev: {error}");
             return ExitCode::from(exit::BLOCKED);
         }
     };
-
-    let Some(package) = project.config.rust_package.clone() else {
-        eprintln!("aurum dev: aurum.toml has no 'rust_package'; there is nothing to build");
-        return ExitCode::from(exit::USAGE);
-    };
-    let Some(addon) = project.layout.addon_directory.clone() else {
-        eprintln!("aurum dev: no Aurum add-on directory found");
-        return ExitCode::from(exit::BLOCKED);
-    };
-
-    let toolchain = discover(&project, options.godot.as_deref());
-    let Some(cargo) = toolchain.cargo.as_ref().map(|tool| tool.path.clone()) else {
-        eprintln!("aurum dev: Cargo was not found on PATH");
-        return ExitCode::from(exit::BLOCKED);
-    };
-
-    let profile = if options.release {
-        Profile::Release
-    } else {
-        Profile::Debug
-    };
-    let destination = addon
-        .join("bin")
-        .join(profile.installed_filename(&library_name(&package)));
-    let request = BuildRequest::new(&project.root, &package, profile, &destination, cargo);
-
-    // ---- initial build ---------------------------------------------------
-    if !options.json {
-        println!(
-            "building {} ({})",
-            package,
-            if profile.is_debug() {
-                "debug"
-            } else {
-                "release"
-            }
-        );
+    if let Some(godot) = &options.godot {
+        std::env::set_var("AURUM_GODOT", godot);
     }
-    match aurum_studio_core::build::run(&request, options.force, BUILD_TIMEOUT) {
-        Ok(report) => {
-            if options.json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "build",
-                        "package": package,
-                        "built": report.built,
-                        "replaced": report.replaced,
-                        "installed_sha256": report.installed.sha256,
-                        "summary": report.summary(),
-                    })
-                );
-            } else {
-                println!("  {}", report.summary());
-            }
-        }
-        Err(error) => {
-            // A failed first build is not fatal to the loop: the editor can
-            // still open, and a later edit may fix it. The installed library
-            // is untouched either way.
-            eprintln!("aurum dev: initial build failed; continuing to watch");
-            eprintln!("{error}");
-        }
-    }
-
     if options.once {
-        return ExitCode::from(exit::OK);
-    }
-
-    // ---- processes -------------------------------------------------------
-    //
-    // The editor and the game share one session, so `aurum stop` finds them
-    // together and a gameplay restart cannot leave the replaced game behind in
-    // a session of its own.
-    let mut session: Option<Session> = None;
-    if !options.no_editor || options.play {
-        match Session::create(&project.root) {
-            Ok(created) => session = Some(created),
-            Err(error) => {
-                // Degraded rather than blocked, per the design: builds and
-                // watching continue without processes attached.
-                eprintln!("aurum dev: could not start a session: {error}");
-                eprintln!("aurum dev: continuing without an editor or a game attached");
-            }
-        }
-    }
-
-    let mut editor: Option<OwnershipRecord> = None;
-    if !options.no_editor {
-        if let Some(session) = &session {
-            match launch_editor(session, &project, options.godot.as_deref()) {
-                Ok(record) => {
-                    if !options.json {
-                        println!(
-                            "editor running (pid {}), log {}",
-                            record.pid,
-                            session.log_path().display()
-                        );
-                    }
-                    editor = Some(record);
-                }
-                Err(message) => {
-                    // Degraded rather than blocked, per the design: builds and
-                    // watching continue without an editor attached.
-                    eprintln!("aurum dev: {message}");
-                    eprintln!("aurum dev: continuing without an editor attached");
-                }
-            }
-        }
-    }
-
-    let mut game: Option<Game> = None;
-    if options.play {
-        match session.as_ref() {
-            Some(session) => match launch_game(session, &project, options.godot.as_deref()) {
-                Ok((started, pid)) => {
-                    if options.json {
-                        println!("{}", serde_json::json!({ "event": "game", "pid": pid }));
-                    } else {
-                        println!(
-                            "game running (pid {pid}); a change that invalidates it restarts it"
-                        );
-                    }
-                    game = Some(started);
-                }
-                Err(message) => {
-                    eprintln!("aurum dev: {message}");
-                    eprintln!("aurum dev: continuing without a game attached");
-                }
-            },
-            None => eprintln!("aurum dev: --play needs a session the game can belong to"),
-        }
-    }
-
-    // ---- agent -----------------------------------------------------------
-    //
-    // An MCP client starts the server itself. `aurum mcp` speaks over stdio to
-    // whoever spawned it, so a copy launched from here would have nobody on the
-    // other end of its pipe and would sit until the loop ended. What an agent
-    // cannot guess is the two things this writes into the client's own
-    // configuration: where the project is, and where the running editor
-    // publishes what it is running. The second is what makes the difference
-    // between an agent driving a headless engine and an agent driving the one
-    // on screen.
-    if let Some(clients) = options.agent.as_deref() {
-        let mut invocation = aurum_mcp::connect::Invocation::current(Some(&project.root));
-        // Only offered when the directory exists, because a bridge path that
-        // points at nothing is worse than no bridge path: the server would
-        // report an editor that is not there.
-        if let Some(bridge) = project
-            .godot_project_dir()
-            .map(|godot| godot.join(".godot").join("aurum"))
-            .filter(|path| path.is_dir())
-        {
-            invocation.args.push("--editor-bridge".to_string());
-            invocation.args.push(bridge.display().to_string());
-        }
-        for name in clients.split(',').map(str::trim).filter(|n| !n.is_empty()) {
-            let Some(client) = aurum_mcp::connect::Client::parse(name) else {
-                eprintln!("aurum dev: {}", aurum_mcp::connect::unknown_client(name));
-                continue;
-            };
-            match aurum_mcp::connect::install(client, &project.root, &invocation) {
-                Ok(message) => println!("{:<16} {message}", client.name()),
-                Err(message) => eprintln!("{:<16} {message}", client.name()),
-            }
-        }
-        if options.json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "event": "agent",
-                    "clients": clients,
-                    "command": invocation.command,
-                    "args": invocation.args,
-                })
-            );
-        }
-    }
-
-    // ---- watch -----------------------------------------------------------
-    let mut watcher = Watcher::new(&project.root);
-    watcher.scan();
-    let mut debouncer = Debouncer::new(interval(options.interval_ms));
-
-    if !options.json {
-        let leaving = match (editor.is_some(), game.is_some()) {
-            (true, true) => "the editor and the game are left running",
-            (true, false) => "the editor is left running",
-            (false, true) => "the game is left running",
-            (false, false) => "nothing is left running",
+        let operation = if project.config.rust_package.is_some() {
+            "build"
+        } else {
+            "validate"
         };
+        let request = serde_json::json!({"op":operation,"release":options.release});
+        return match aurum_studio_core::project_ops::execute(&project.root, &request, false) {
+            Ok(result) => {
+                println!("{result}");
+                if result.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+                    ExitCode::from(exit::FAILED)
+                } else {
+                    ExitCode::SUCCESS
+                }
+            }
+            Err(error) => {
+                eprintln!("aurum dev: {error}");
+                ExitCode::from(exit::FAILED)
+            }
+        };
+    }
+    if let Some(clients) = &options.agent {
+        let mut invocation = aurum_mcp::connect::Invocation::current(Some(&project.root));
+        invocation.args.extend(["--tools".into(), "studio".into()]);
+        if let Some(godot) = project.godot_project_dir() {
+            invocation.args.extend([
+                "--editor-bridge".into(),
+                godot.join(".godot/aurum/editor").display().to_string(),
+            ]);
+        }
+        for name in clients.split(',').map(str::trim) {
+            let Some(client) = aurum_mcp::connect::Client::parse(name) else {
+                eprintln!("{}", aurum_mcp::connect::unknown_client(name));
+                return ExitCode::from(exit::USAGE);
+            };
+            if let Err(error) = aurum_mcp::connect::install(client, &project.root, &invocation) {
+                eprintln!("aurum dev: {error}");
+                return ExitCode::from(exit::FAILED);
+            }
+        }
+    }
+    let supervisor = aurum_studio_core::Supervisor::start(
+        aurum_studio_core::SupervisorConfig::new(project.clone(), options.godot.clone()),
+    );
+    supervisor.send(aurum_studio_core::StudioCommand::Develop {
+        editor: options.visible_editor && !options.no_editor,
+    });
+    if options.play {
+        supervisor.send(aurum_studio_core::StudioCommand::StartGame);
+    }
+    if !options.json {
         println!(
-            "watching {} ({} files). Ctrl+C to stop; {leaving}.",
-            project.root.display(),
-            watcher.tracked()
-        );
-        println!(
-            "an agent attaches with `aurum mcp --root {}`; \
-             `aurum dev --agent <client>` writes that into a client for you",
+            "Watching {}. Ctrl+C stops this watcher. Use --editor for the optional native editor.",
             project.root.display()
         );
     }
-
+    let mut fingerprint = editor_live_fingerprint(&project);
     loop {
-        debouncer.push(watcher.scan());
-        let Some(batch) = debouncer.take_if_settled() else {
-            std::thread::sleep(interval(options.interval_ms));
-            continue;
-        };
-
-        let classification = classify_batch(&batch);
-        if classification.verdict == Verdict::NoAction {
-            continue;
-        }
-
-        if options.json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "changed": batch.len(),
-                    "verdict": classification.verdict.label(),
-                    "reason": classification.reason,
-                })
-            );
-        } else {
-            println!(
-                "{} file(s) changed -> {}: {}",
-                batch.len(),
-                classification.verdict.label(),
-                classification.reason
-            );
-        }
-
-        let rebuild = batch
-            .iter()
-            .any(|change| aurum_studio_core::reload::rebuild_required(&change.path));
-
-        let mut installed = true;
-        let fingerprint_before = editor_live_fingerprint(&project);
-        let mut replaced = false;
-        if rebuild {
-            match aurum_studio_core::build::run(&request, false, BUILD_TIMEOUT) {
-                Ok(report) if report.replaced => {
-                    replaced = true;
-                    println!("  rebuilt: {}", report.summary());
-                }
-                Ok(_) => println!("  rebuilt: no change in the artifact"),
-                Err(error) => {
-                    // The working library is untouched, which is what lets the
-                    // loop keep going.
-                    installed = false;
-                    eprintln!("  build failed; the installed extension is unchanged");
-                    eprintln!("  {error}");
-                }
+        if let Some(event) = supervisor.recv_timeout(interval(options.interval_ms)) {
+            if options.json {
+                println!(
+                    "{}",
+                    serde_json::json!({"event":"development","message":event.describe()})
+                );
+            } else {
+                println!("{}", event.describe());
+            }
+            if matches!(
+                event,
+                aurum_studio_core::StudioEvent::BuildFinished { ok: true, .. }
+            ) && options.visible_editor
+            {
+                report_reload_evidence(&project, fingerprint.as_deref(), options.json);
+                fingerprint = editor_live_fingerprint(&project);
+            }
+            if matches!(event, aurum_studio_core::StudioEvent::Stopped) {
+                break;
             }
         }
-
-        // Only asked when the installed library actually changed. A build that
-        // produced identical bytes has nothing to reload, so demanding
-        // evidence for it would report a failure where nothing was attempted.
-        if replaced {
-            report_reload_evidence(&project, fingerprint_before.as_deref(), options.json);
-        }
-
-        // A verdict is acted on only once the build it implies has landed:
-        // restarting the game onto a half-installed change would leave it
-        // running something the user cannot see in the sources.
-        if installed {
-            let response = respond(&classification, game.as_mut(), options.force, STOP_TIMEOUT);
-            report_response(
-                classification.verdict,
-                &response,
-                editor.as_ref(),
-                options.json,
-            );
-        }
     }
+    ExitCode::SUCCESS
 }
 
 /// What the running editor reports about the extension it has loaded.
@@ -1558,112 +1424,7 @@ fn reload_evidence_message(after: Option<&str>, before: Option<&str>) -> String 
     }
 }
 
-/// Say what a verdict did, and no more than it did.
-///
-/// A gameplay restart is the only one this loop takes, so it is also the only
-/// one that reports a process moving. An editor restart is reported with the
-/// reason the classifier found and nothing else, because taking it is the
-/// user's decision and needs their unsaved work dealt with first.
-fn report_response(
-    verdict: Verdict,
-    response: &Response,
-    editor: Option<&OwnershipRecord>,
-    json: bool,
-) {
-    if *response == Response::Nothing {
-        return;
-    }
-
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "event": "outcome",
-                "verdict": verdict.label(),
-                "outcome": response.describe(),
-                "restarted": response.restarted(),
-            })
-        );
-        return;
-    }
-
-    println!("  {}", response.describe());
-    // The other half of the criterion, said where it can be checked against a
-    // process list: a gameplay restart is not an editor restart.
-    if response.restarted() {
-        if let Some(editor) = editor {
-            println!("  the editor (pid {}) was not touched", editor.pid);
-        }
-    }
-}
-
-/// Launch the editor into a dev session.
-fn launch_editor(
-    session: &Session,
-    project: &Project,
-    godot_hint: Option<&Path>,
-) -> Result<OwnershipRecord, String> {
-    let Some(godot_project) = project.godot_project_dir().map(Path::to_path_buf) else {
-        return Err("no project.godot was found".into());
-    };
-    let Some(godot) = discover_godot_to_launch(project, godot_hint) else {
-        return Err("Godot was not found; pass --godot <path>".into());
-    };
-
-    let mut request = LaunchRequest::godot(&godot, &godot_project, &project.root);
-    request.environment = bridge_environment(session, None);
-
-    let launched = launch(&request, session).map_err(|e| e.to_string())?;
-    Ok(launched.record)
-}
-
-/// Launch the game this session supervises, so a gameplay restart has
-/// something to replace.
-///
-/// Without `--editor` Godot runs the project's main scene, which is exactly
-/// what a gameplay restart replaces.
-fn launch_game(
-    session: &Session,
-    project: &Project,
-    godot_hint: Option<&Path>,
-) -> Result<(Game, u32), String> {
-    let Some(godot_project) = project.godot_project_dir().map(Path::to_path_buf) else {
-        return Err("no project.godot was found".into());
-    };
-    let Some(godot) = discover_godot_to_launch(project, godot_hint) else {
-        return Err("Godot was not found; pass --godot <path>".into());
-    };
-
-    let mut request = LaunchRequest::godot(&godot, &godot_project, &project.root);
-    request.environment = bridge_environment(session, None);
-
-    let mut game = Game::new(request, session.clone());
-    let pid = game.start().map_err(|e| e.to_string())?;
-    Ok((game, pid))
-}
-
-/// Classify a batch, reading Rust sources so schema changes are visible.
-fn classify_batch(batch: &[aurum_studio_core::watch::Change]) -> Classification {
-    let pairs: Vec<(PathBuf, Option<String>)> = batch
-        .iter()
-        .filter(|change| change.kind != aurum_studio_core::watch::ChangeKind::Removed)
-        .map(|change| {
-            // Only Rust sources need their contents: the schema markers live
-            // there, and reading every file in a batch would be wasteful.
-            let contents = (change.path.extension().is_some_and(|e| e == "rs"))
-                .then(|| std::fs::read_to_string(&change.path).ok())
-                .flatten();
-            (change.path.clone(), contents)
-        })
-        .collect();
-
-    aurum_studio_core::reload::classify_all(
-        pairs
-            .iter()
-            .map(|(path, contents)| (path.as_path(), contents.as_deref())),
-    )
-}
-
+/// Bound the CLI event polling interval.
 fn interval(milliseconds: u64) -> std::time::Duration {
     std::time::Duration::from_millis(milliseconds.clamp(50, 5_000))
 }
@@ -1731,7 +1492,7 @@ pub fn import(args: &[String]) -> ExitCode {
     };
     let path = target(&options);
 
-    let project = match Project::open(&path) {
+    let project = match Project::import(&path) {
         Ok(project) => project,
         Err(error) => {
             eprintln!("aurum import: {error}");
@@ -1850,15 +1611,15 @@ fn command_usage(command: &str) -> &'static str {
         "dev" => {
             "usage: aurum dev [project] [--godot <path>] [--release] [--force]\n\
              \n\
-             [--once] [--no-editor] [--play] [--interval <ms>]\n\
+             [--once] [--editor] [--no-editor] [--play] [--interval <ms>]\n\
              [--agent <client>[,<client>...]] [--json]\n\
              \n\
-             Builds, launches the editor, and rebuilds when the Rust side moves.\n\
-             Godot reloads its own content. --play also supervises the game, so a\n\
-             change that invalidates live gameplay restarts the game and never the\n\
-             editor. An editor restart is reported with its reason, never taken.\n\
-             --force rebuilds even when the artifact is current, and terminates a\n\
-             game that will not close when asked. Ctrl+C leaves both running."
+             Watches and validates content headlessly by default. --play starts\n\
+             a managed game preview; --editor opens the optional native editor.\n\
+             Validated script/scene changes restart the preview. Game-managed\n\
+             live data can reload without restarting. Native schema changes are\n\
+             reported and require a controlled editor restart. Ctrl+C stops the\n\
+             watcher and its managed session."
         }
         "editor" => "usage: aurum editor [project] [--godot <path>] [--json]",
         "run" => "usage: aurum run [project] [--godot <path>] [--json]",
@@ -1896,8 +1657,6 @@ mod tests {
         let options = parse(&[]).expect("no arguments parses");
         assert!(options.agent.is_none());
     }
-    use super::*;
-
     #[test]
     fn a_changed_fingerprint_is_the_only_thing_that_counts_as_evidence() {
         let changed = reload_evidence_message(Some("build-2"), Some("build-1"));

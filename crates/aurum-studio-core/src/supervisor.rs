@@ -46,14 +46,25 @@ pub const DEFAULT_EVENT_CAPACITY: usize = 512;
 pub enum Command {
     /// Re-check the project and report health.
     Doctor,
+    SelectProject(PathBuf),
+    Develop {
+        editor: bool,
+    },
+    EndDevelop,
+    RestartEditor,
     /// Build and install the extension.
-    Build { force: bool, release: bool },
+    Build {
+        force: bool,
+        release: bool,
+    },
     /// Launch the editor.
     StartEditor,
     /// Launch the game.
     StartGame,
     /// Stop everything this session started.
-    Stop { force: bool },
+    Stop {
+        force: bool,
+    },
     /// Stop the worker. Nothing after it is processed.
     Shutdown,
 }
@@ -240,7 +251,8 @@ impl SupervisorConfig {
 pub struct Supervisor {
     commands: Sender<Command>,
     events: Arc<Queue>,
-    worker: Option<JoinHandle<()>>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+    busy: Arc<AtomicBool>,
 }
 
 impl Supervisor {
@@ -254,9 +266,11 @@ impl Supervisor {
         let (commands, inbox) = mpsc::channel::<Command>();
         let events = Arc::new(Queue::new(capacity));
         let worker_events = Arc::clone(&events);
+        let busy = Arc::new(AtomicBool::new(false));
+        let worker_busy = Arc::clone(&busy);
 
         let worker = std::thread::spawn(move || {
-            run(config, inbox, &worker_events);
+            run(config, inbox, &worker_events, &worker_busy);
             // The stop is announced before closing so a consumer waiting for
             // it wakes, sees it, and then sees the queue close.
             worker_events.push(Event::Stopped);
@@ -266,7 +280,8 @@ impl Supervisor {
         Self {
             commands,
             events,
-            worker: Some(worker),
+            worker: Mutex::new(Some(worker)),
+            busy,
         }
     }
 
@@ -292,15 +307,23 @@ impl Supervisor {
     }
 
     /// Ask the worker to stop and wait for it.
-    pub fn shutdown(mut self) {
+    pub fn shutdown(self) {
         self.stop_worker();
     }
 
-    fn stop_worker(&mut self) {
+    pub fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::SeqCst)
+    }
+
+    pub fn wait_for_shutdown(&self) {
+        self.stop_worker();
+    }
+
+    fn stop_worker(&self) {
         // A send can fail because the worker already exited on its own, which
         // is not an error worth reporting: either way it is stopping.
         let _ = self.commands.send(Command::Shutdown);
-        if let Some(worker) = self.worker.take() {
+        if let Some(worker) = self.worker.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = worker.join();
         }
     }
@@ -315,8 +338,23 @@ impl Drop for Supervisor {
 }
 
 /// The worker loop.
-fn run(config: SupervisorConfig, inbox: Receiver<Command>, events: &Queue) {
+struct Busy<'a>(&'a AtomicBool);
+impl<'a> Busy<'a> {
+    fn new(flag: &'a AtomicBool) -> Self {
+        flag.store(true, Ordering::SeqCst);
+        Self(flag)
+    }
+}
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+fn run(mut config: SupervisorConfig, inbox: Receiver<Command>, events: &Queue, busy: &AtomicBool) {
     let mut session: Option<crate::session::Session> = None;
+    let mut watchers: Vec<crate::Watcher> = Vec::new();
+    let mut debouncer = crate::Debouncer::new(crate::watch::DEFAULT_QUIET);
 
     // A closed inbox means the `Supervisor` was dropped without a shutdown,
     // which is a normal way to stop.
@@ -328,14 +366,137 @@ fn run(config: SupervisorConfig, inbox: Receiver<Command>, events: &Queue) {
     loop {
         let command = match held.pop_front() {
             Some(command) => command,
-            None => match inbox.recv() {
+            None => match inbox.recv_timeout(crate::watch::DEFAULT_INTERVAL) {
                 Ok(command) => command,
-                Err(_) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    for watcher in &mut watchers {
+                        debouncer.push(watcher.scan());
+                    }
+                    if let Some(batch) = debouncer.take_if_settled() {
+                        let classification = watchers
+                            .iter_mut()
+                            .map(|watcher| watcher.classify(&batch))
+                            .max_by_key(|c| c.verdict);
+                        if let Some(classification) = classification {
+                            events.push(Event::ChangeClassified {
+                                verdict: classification.verdict,
+                                reason: classification.reason,
+                            });
+                            if classification.verdict == Verdict::EditorRestart {
+                                events.push(Event::Log("Native declarations changed. Save work and use Restart editor before installing this change.".into()));
+                            } else if batch
+                                .iter()
+                                .any(|change| crate::reload::rebuild_required(&change.path))
+                            {
+                                held.push_back(Command::Build {
+                                    force: false,
+                                    release: false,
+                                });
+                            } else if classification.verdict != Verdict::NoAction {
+                                let _busy = Busy::new(busy);
+                                match crate::project_ops::execute(
+                                    &config.project.root,
+                                    &serde_json::json!({"op":"validate"}),
+                                    false,
+                                ) {
+                                    Ok(result) => {
+                                        if result["ok"] == true {
+                                            events.push(Event::Log("Project validated".into()));
+                                            restart_preview(&config, &session, events);
+                                        } else {
+                                            events.push(Event::Error(format!(
+                                                "Validation failed: {result}"
+                                            )));
+                                        }
+                                    }
+                                    Err(message) => events.push(Event::Error(message)),
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
             },
         };
 
+        let _busy = Busy::new(busy);
         match command {
             Command::Shutdown => break,
+            Command::SelectProject(root) => match Project::open(&root) {
+                Ok(project) => {
+                    watchers.clear();
+                    debouncer = crate::Debouncer::new(crate::watch::DEFAULT_QUIET);
+                    session = crate::session::Session::latest_for(&project.root);
+                    config.project = project;
+                    events.push(Event::Log(format!(
+                        "Selected {}",
+                        config.project.root.display()
+                    )));
+                }
+                Err(error) => events.push(Event::Error(error.to_string())),
+            },
+            Command::Develop { editor } => {
+                watchers.clear();
+                let mut project_watcher = crate::Watcher::new(&config.project.root);
+                project_watcher.scan();
+                watchers.push(project_watcher);
+                if let Some(engine) = config
+                    .project
+                    .config
+                    .engine_path_hint
+                    .as_ref()
+                    .map(|hint| config.project.root.join(hint))
+                {
+                    if let Ok(engine) = engine.canonicalize().map(crate::project::clean_path) {
+                        if !engine.starts_with(&config.project.root) {
+                            let mut watcher = crate::Watcher::new(engine);
+                            watcher.scan();
+                            watchers.push(watcher);
+                        }
+                    }
+                }
+                held.push_back(Command::Build {
+                    force: false,
+                    release: false,
+                });
+                if editor {
+                    held.push_back(Command::StartEditor);
+                }
+                events.push(Event::Log("Develop is watching project sources. Content validation and native rebuilds run automatically.".into()));
+            }
+            Command::EndDevelop => {
+                watchers.clear();
+                debouncer = crate::Debouncer::new(crate::watch::DEFAULT_QUIET);
+                events.push(Event::Log("Development watch stopped".into()));
+            }
+            Command::RestartEditor => {
+                let mut safe = true;
+                if let Some(active) = &session {
+                    for record in crate::OwnershipRecord::read_all(&active.ownership_directory())
+                        .into_iter()
+                        .filter(|r| r.kind == ProcessKind::Editor)
+                    {
+                        let outcome = supervise::terminate(&record, false, config.stop_timeout);
+                        if !matches!(
+                            outcome,
+                            supervise::StopOutcome::Stopped | supervise::StopOutcome::NotRunning
+                        ) {
+                            safe = false;
+                            events.push(Event::Error(
+                                "Editor did not close. Save open work before restarting.".into(),
+                            ));
+                        }
+                    }
+                }
+                if safe {
+                    held.push_back(Command::Build {
+                        force: false,
+                        release: false,
+                    });
+                    held.push_back(Command::StartEditor);
+                }
+            }
 
             Command::Doctor => {
                 let toolchain =
@@ -384,6 +545,27 @@ fn run(config: SupervisorConfig, inbox: Receiver<Command>, events: &Queue) {
                 }
 
                 let Some(request) = build_request(&config.project, latest_release) else {
+                    if config.project.config.rust_package.is_none()
+                        && config.project.godot_project_dir().is_some()
+                    {
+                        match crate::project_ops::execute(
+                            &config.project.root,
+                            &serde_json::json!({"op":"validate"}),
+                            false,
+                        ) {
+                            Ok(result) => events.push(Event::BuildFinished {
+                                ok: result["ok"] == true,
+                                summary: result.to_string(),
+                                installed_sha256: None,
+                            }),
+                            Err(error) => events.push(Event::BuildFinished {
+                                ok: false,
+                                summary: error,
+                                installed_sha256: None,
+                            }),
+                        }
+                        continue;
+                    }
                     events.push(Event::Error(
                         "the project does not say which crate builds the extension, or where \
                          the add-on lives"
@@ -431,7 +613,12 @@ fn run(config: SupervisorConfig, inbox: Receiver<Command>, events: &Queue) {
                 // A result is reported whatever happens. A caller waiting on
                 // `BuildFinished` would otherwise wait forever.
                 match crate::build::run(&request, latest_force, config.build_timeout) {
-                    Ok(report) => push_build_success(events, &report),
+                    Ok(report) => {
+                        push_build_success(events, &report);
+                        if report.replaced {
+                            restart_preview(&config, &session, events);
+                        }
+                    }
                     Err(error) => events.push(Event::BuildFinished {
                         ok: false,
                         summary: describe_build_error(&error),
@@ -481,6 +668,20 @@ fn start_process(
     let Some(active) = session.as_ref() else {
         return;
     };
+    if let Some(record) = crate::OwnershipRecord::read_all(&active.ownership_directory())
+        .into_iter()
+        .find(|record| {
+            record.kind == kind
+                && crate::ownership::inspect(record.pid).is_some_and(|live| record.describes(&live))
+        })
+    {
+        events.push(Event::Log(format!(
+            "{} is already running (pid {})",
+            kind.label(),
+            record.pid
+        )));
+        return;
+    }
 
     let Some(godot_project) = config.project.godot_project_dir().map(Path::to_path_buf) else {
         events.push(Event::Error(
@@ -499,6 +700,9 @@ fn start_process(
 
     let mut request = supervise::LaunchRequest::godot(&godot, &godot_project, &config.project.root);
     request.kind = kind;
+    if kind == ProcessKind::Editor {
+        request.arguments.push("--editor".into());
+    }
     request.environment = supervise::bridge_environment(active, None);
 
     match supervise::launch(&request, active) {
@@ -508,6 +712,29 @@ fn start_process(
         }),
         Err(error) => events.push(Event::Error(error.to_string())),
     }
+}
+
+fn restart_preview(config: &SupervisorConfig, session: &Option<crate::Session>, events: &Queue) {
+    let Some(session) = session else { return };
+    let Some(record) = crate::OwnershipRecord::read_all(&session.ownership_directory())
+        .into_iter()
+        .find(|record| {
+            record.kind == ProcessKind::Game
+                && crate::ownership::inspect(record.pid).is_some_and(|live| record.describes(&live))
+        })
+    else {
+        return;
+    };
+    let Some(root) = config.project.godot_project_dir() else {
+        return;
+    };
+    let mut request =
+        supervise::LaunchRequest::godot(&record.executable, root, &config.project.root);
+    request.environment = supervise::bridge_environment(session, None);
+    let mut game = crate::Game::new(request, session.clone());
+    game.running = Some(record);
+    let result = game.restart(false, config.stop_timeout);
+    events.push(Event::Log(result.describe()));
 }
 
 fn build_request(project: &Project, release: bool) -> Option<BuildRequest> {
@@ -522,13 +749,15 @@ fn build_request(project: &Project, release: bool) -> Option<BuildRequest> {
     let destination = addon
         .join("bin")
         .join(profile.installed_filename(&crate::build::library_name(&package)));
-    Some(BuildRequest::new(
-        &project.root,
+    let mut request = BuildRequest::new(
+        project.build_workspace(),
         package,
         profile,
         destination,
         cargo,
-    ))
+    );
+    request.locked = project.build_workspace().join("Cargo.lock").is_file();
+    Some(request)
 }
 
 fn push_build_success(events: &Queue, report: &BuildReport) {

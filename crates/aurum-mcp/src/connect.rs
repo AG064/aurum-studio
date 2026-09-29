@@ -77,7 +77,10 @@ impl Client {
     pub fn config_path(self, project: &Path) -> Option<PathBuf> {
         let home = home_directory()?;
         Some(match self {
-            Self::Codex => home.join(".codex").join("config.toml"),
+            Self::Codex => std::env::var_os("CODEX_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".codex"))
+                .join("config.toml"),
             Self::ClaudeCode => project.join(".mcp.json"),
             Self::ClaudeDesktop => roaming()?.join("Claude").join("claude_desktop_config.json"),
             Self::Cursor => home.join(".cursor").join("mcp.json"),

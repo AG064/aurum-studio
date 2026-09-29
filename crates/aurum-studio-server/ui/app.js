@@ -244,8 +244,9 @@
   function handle(event) {
     switch (event.kind) {
       case 'health':
+        setBusy('');
         renderHealth(event);
-        say('health: ' + event.verdict + ' — ' + event.summary);
+        say('health: ' + event.verdict + ': ' + event.summary);
         break;
       case 'build-started':
         setBusy('building ' + event.package + ' (' + event.profile + ')');
@@ -259,15 +260,18 @@
         );
         break;
       case 'process-started':
+        setBusy('');
         say(event.process + ' started (pid ' + event.pid + ')', 'good');
         break;
       case 'process-stopped':
+        setBusy('');
         say(event.process + ': ' + event.description);
         break;
       case 'change':
         say(event.verdict + ': ' + event.reason);
         break;
       case 'log':
+        setBusy('');
         say(event.line);
         break;
       case 'error':

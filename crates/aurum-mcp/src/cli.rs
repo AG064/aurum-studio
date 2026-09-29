@@ -12,7 +12,7 @@ use crate::tools::PathGuard;
 
 /// Usage text shared by both binaries.
 pub const USAGE: &str = "\
-aurum mcp — headless Aurum engine over the Model Context Protocol
+aurum mcp - Aurum Studio over the Model Context Protocol
 
 USAGE:
     aurum mcp [OPTIONS]
@@ -22,6 +22,7 @@ The server speaks newline-delimited JSON-RPC 2.0 on stdin/stdout, which is the
 MCP stdio transport. Point an MCP client at this command as a local server.
 
 OPTIONS:
+    --tools <MODE>  studio: compact project tools; all: full engine catalog.
     --root <DIR>    Directory that aurum_save and aurum_load may write inside.
                     Defaults to the current working directory.
     --read-only     Refuse mutating tools and omit them from tools/list.
@@ -66,6 +67,7 @@ pub fn parse_args_slice(args: &[String]) -> Result<Option<Options>, String> {
     let mut root = None;
     let mut config = ServerConfig::default();
     let mut index = 0;
+    let mut connection: Option<(bool, String)> = None;
 
     while index < args.len() {
         let arg = args[index].as_str();
@@ -86,31 +88,34 @@ pub fn parse_args_slice(args: &[String]) -> Result<Option<Options>, String> {
                 let value = args
                     .get(index)
                     .ok_or_else(|| "--print-config requires a client name".to_string())?;
-                let client = crate::connect::Client::parse(value)
-                    .ok_or_else(|| crate::connect::unknown_client(value))?;
-                let invocation = crate::connect::Invocation::current(root.as_deref());
-                println!("{}", crate::connect::snippet(client, &invocation));
-                return Ok(None);
+                connection = Some((false, value.clone()));
             }
             "--install" => {
                 index += 1;
                 let value = args
                     .get(index)
                     .ok_or_else(|| "--install requires a client name".to_string())?;
-                let project = std::env::current_dir()
-                    .map_err(|e| format!("cannot read the working directory: {e}"))?;
-                let invocation = crate::connect::Invocation::current(root.as_deref());
-                for name in value.split(',').map(str::trim).filter(|n| !n.is_empty()) {
-                    let client = crate::connect::Client::parse(name)
-                        .ok_or_else(|| crate::connect::unknown_client(name))?;
-                    match crate::connect::install(client, &project, &invocation) {
-                        Ok(message) => println!("{:<16} {message}", client.name()),
-                        Err(message) => eprintln!("{:<16} {message}", client.name()),
-                    }
-                }
-                return Ok(None);
+                connection = Some((true, value.clone()));
             }
             "--read-only" => config.read_only = true,
+            "--tools" => {
+                index += 1;
+                let profile = args.get(index).ok_or("--tools requires studio or all")?;
+                match profile.as_str() {
+                    "studio" => {
+                        for tool in crate::tools::catalog() {
+                            if !tool.name.starts_with("aurum_project_")
+                                && tool.name != crate::tools::STATUS_TOOL
+                                && !config.denied.iter().any(|name| name == tool.name)
+                            {
+                                config.denied.push(tool.name.to_string());
+                            }
+                        }
+                    }
+                    "all" => {}
+                    _ => return Err("--tools must be studio or all".into()),
+                }
+            }
             "--trace" => config.trace = true,
             "--deny" => {
                 index += 1;
@@ -158,6 +163,46 @@ pub fn parse_args_slice(args: &[String]) -> Result<Option<Options>, String> {
         index += 1;
     }
 
+    if let Some((install, names)) = connection {
+        let project = root
+            .clone()
+            .unwrap_or(std::env::current_dir().map_err(|e| e.to_string())?)
+            .canonicalize()
+            .map_err(|e| e.to_string())?;
+        let clients = names
+            .split(',')
+            .map(str::trim)
+            .map(|name| {
+                crate::connect::Client::parse(name)
+                    .ok_or_else(|| crate::connect::unknown_client(name))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut invocation = crate::connect::Invocation::current(Some(&project));
+        if config.read_only {
+            invocation.args.push("--read-only".into());
+        }
+        if !config.denied.is_empty() {
+            invocation
+                .args
+                .extend(["--deny".into(), config.denied.join(",")]);
+        }
+        if let Some(bridge) = &config.editor_bridge {
+            invocation
+                .args
+                .extend(["--editor-bridge".into(), bridge.display().to_string()]);
+        }
+        for client in clients {
+            if install {
+                println!(
+                    "{}",
+                    crate::connect::install(client, &project, &invocation)?
+                );
+            } else {
+                println!("{}", crate::connect::snippet(client, &invocation));
+            }
+        }
+        return Ok(None);
+    }
     Ok(Some(Options { root, config }))
 }
 

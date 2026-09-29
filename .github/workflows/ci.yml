@@ -10,6 +10,9 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: cargo test (${{ matrix.os }})
@@ -22,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Run tests
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features --locked
 
   lint:
     name: cargo fmt + clippy
@@ -35,7 +38,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run clippy
-        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
 
   build:
     name: cargo build release (${{ matrix.os }})
@@ -48,13 +51,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Build
-        run: cargo build --release -p aurum-godot
+        run: cargo build --release -p aurum-cli -p aurum-godot -p aurum-editor --locked
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: aurum-godot-${{ matrix.os }}
+          name: aurum-${{ matrix.os }}
           path: |
+            target/release/aurum
+            target/release/aurum.exe
             target/release/aurum_godot.dll
             target/release/libaurum_godot.so
             target/release/libaurum_godot.dylib
-          if-no-files-found: ignore
+            target/release/aurum_editor.dll
+            target/release/libaurum_editor.so
+            target/release/libaurum_editor.dylib
+          if-no-files-found: error

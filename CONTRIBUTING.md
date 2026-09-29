@@ -15,12 +15,16 @@ games.
    it before writing code.
 2. **Fork the repo** and create a branch from `main`.
 3. **Write code + tests.** No PR without tests for new behavior.
-4. **Run the checks locally:**
-   ```bash
-   cargo fmt --all
-   cargo clippy --workspace --all-targets -- -D warnings
-   cargo test --workspace
+4. **Run checks in an isolated copy.** The Windows gate creates temporary
+   source and project directories and retains its evidence:
+
+   ```powershell
+   pwsh ./scripts/tests/verify_studio.ps1 -GodotBinary C:/Tools/Godot_v4.7-stable_win64.exe
    ```
+
+   On other hosts, copy or clone the checkout into a disposable directory
+   before running the same formatting, Clippy and workspace-test commands
+   defined in CI. Keep build output and runtime state out of the source tree.
 5. **Open a PR** with a clear description of what changed and why.
 
 ## Code style
@@ -70,7 +74,10 @@ shape. Mismatches silently drop fields, so be strict.
 
 The maintainer cuts releases. The current version lives in each
 crate's `Cargo.toml` (kept in sync via the workspace `version` field).
-The GDExtension DLL is uploaded as a build artifact on tagged commits.
+CI uploads the CLI and native libraries as workflow artifacts for its build
+matrix. Those artifacts are not signed installers and do not include the
+Godot runtime. Release claims must distinguish compilation from runtime and
+device validation.
 
 ## License
 

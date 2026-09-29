@@ -14,7 +14,7 @@ extends EditorPlugin
 ## surface (see `crates/aurum-editor/src/lib.rs`), and every line added here is
 ## a line that can drift from it.
 
-const BRIDGE_ROOT := "user://aurum_editor"
+const BRIDGE_ROOT := "res://.godot/aurum/editor"
 ## Beside the reload marker the build publishes, rather than under `user://`.
 ## The marker records that a DLL was written; this records that the new code is
 ## the code running, and the two belong together for anyone comparing them.
@@ -25,12 +25,16 @@ var _request_dir := ""
 var _response_dir := ""
 var _probe: Node = null
 var _published := ""
+var _commands: RefCounted
+var _last_status_ms := 0
 
 
 func _enter_tree() -> void:
 	_editor = AurumEditor.new()
 	_editor.name = "AurumEditor"
 	add_child(_editor)
+	_commands = preload("res://addons/aurum_editor/undo_bridge.gd").new(self)
+	_editor.set_command_handler(Callable(_commands, "dispatch"))
 
 	# The bridge rendezvous is a directory pair under user://, so nothing
 	# outside the project's own storage is touched.
@@ -70,6 +74,7 @@ func _start_socket_bridge() -> void:
 
 func _exit_tree() -> void:
 	if _editor != null:
+		_editor.set_command_handler(Callable())
 		_editor.stop_bridge()
 	if scene_changed.is_connected(_on_scene_changed):
 		scene_changed.disconnect(_on_scene_changed)
@@ -87,6 +92,17 @@ func _process(_delta: float) -> void:
 		# that delivered them.
 		_editor.pump_bridge()
 	_publish_live_fingerprint()
+	if _request_dir.is_empty():
+		return
+	var now := Time.get_ticks_msec()
+	if now - _last_status_ms >= 500:
+		_last_status_ms = now
+		var scene: Node = get_editor_interface().get_edited_scene_root()
+		var status := {"pid": OS.get_process_id(), "updated_unix": Time.get_unix_time_from_system(), "scene": scene.scene_file_path if scene != null else "", "fingerprint": _published}
+		var status_file := FileAccess.open(_request_dir.get_base_dir().path_join("status.json"), FileAccess.WRITE)
+		if status_file != null:
+			status_file.store_string(JSON.stringify(status))
+			status_file.close()
 
 
 ## Record the fingerprint the loaded extension actually reports.

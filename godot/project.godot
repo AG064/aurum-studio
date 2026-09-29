@@ -18,7 +18,6 @@ config/features=PackedStringArray("4.7", "Forward Plus")
 [autoload]
 
 Aurum="*res://scripts/aurum_runtime.gd"
-MCPRuntimeServer="*res://addons/godot_mcp_toolkit/runtime/mcp_runtime_server.gd"
 
 [display]
 
@@ -29,15 +28,11 @@ window/stretch/aspect="expand"
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/aurum/plugin.cfg", "res://addons/aurum_editor/plugin.cfg", "res://addons/godot_mcp_toolkit/plugin.cfg")
+enabled=PackedStringArray("res://addons/aurum/plugin.cfg", "res://addons/aurum_editor/plugin.cfg")
 
 [gui]
 
 theme/default_font_multichannel_signed_distance_field=true
-
-[mcp_toolkit]
-
-status="No .mcp.json found — use Project > Tools > MCP Toolkit > Write .mcp.json to create one."
 
 [physics]
 
