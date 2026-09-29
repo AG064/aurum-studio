@@ -170,8 +170,15 @@ pub fn launch(request: &LaunchRequest, session: &Session) -> Result<Launched, La
     // Retried, because a freshly spawned process is not immediately visible to
     // the description query: asking once and giving up would fail every real
     // launch on timing alone.
-    let live =
-        describe_after_start(pid, IDENTIFY_TIMEOUT).ok_or(LaunchError::Unidentifiable(pid))?;
+    let parent_image = std::env::current_exe().ok().map(normalize_image);
+    let requested_image = resolve_requested_image(request);
+    let live = describe_after_start(
+        pid,
+        IDENTIFY_TIMEOUT,
+        parent_image.as_deref(),
+        requested_image.as_deref(),
+    )
+    .ok_or(LaunchError::Unidentifiable(pid))?;
     let started = live
         .started
         .clone()
@@ -368,11 +375,57 @@ pub const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Wait for the system to be able to describe a process, and require a start
 /// time rather than settling for a name.
-fn describe_after_start(pid: u32, timeout: Duration) -> Option<LiveProcess> {
+fn normalize_image(path: PathBuf) -> PathBuf {
+    crate::project::clean_path(path.canonicalize().unwrap_or(path))
+}
+
+fn resolve_requested_image(request: &LaunchRequest) -> Option<PathBuf> {
+    if request.executable.is_absolute() {
+        return Some(normalize_image(request.executable.clone()));
+    }
+    if request.executable.components().count() == 1 {
+        return crate::toolchain::find_on_path(request.executable.to_str()?).map(normalize_image);
+    }
+    let base = request
+        .working_directory
+        .clone()
+        .or_else(|| std::env::current_dir().ok())?;
+    Some(normalize_image(base.join(&request.executable)))
+}
+
+fn identity_is_ready(
+    live: &LiveProcess,
+    parent_image: Option<&Path>,
+    requested_image: Option<&Path>,
+) -> bool {
+    if live.started.is_none() {
+        return false;
+    }
+    if parent_image.is_none() {
+        return requested_image
+            .is_some_and(|requested| crate::ownership::paths_equal(requested, &live.executable));
+    }
+    // A new Linux child can still expose its inherited parent image through
+    // /proc immediately after spawn returns. Do not record that transient
+    // identity unless the caller deliberately launched the same executable.
+    let inherited =
+        parent_image.is_some_and(|parent| crate::ownership::paths_equal(parent, &live.executable));
+    let self_launch = parent_image
+        .zip(requested_image)
+        .is_some_and(|(parent, requested)| crate::ownership::paths_equal(parent, requested));
+    !inherited || self_launch
+}
+
+fn describe_after_start(
+    pid: u32,
+    timeout: Duration,
+    parent_image: Option<&Path>,
+    requested_image: Option<&Path>,
+) -> Option<LiveProcess> {
     let deadline = Instant::now() + timeout;
     loop {
         if let Some(live) = inspect(pid) {
-            if live.started.is_some() {
+            if identity_is_ready(&live, parent_image, requested_image) {
                 return Some(live);
             }
         }
@@ -454,6 +507,41 @@ pub fn existing_directory(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inherited_parent_image_is_not_recorded_as_the_launched_program() {
+        let parent = Path::new("/fixtures/aurum-test");
+        let child = Path::new("/fixtures/sleep");
+        let mut live = LiveProcess {
+            pid: 4915,
+            executable: parent.into(),
+            started: Some("10002".into()),
+        };
+        assert!(!identity_is_ready(&live, Some(parent), Some(child)));
+        assert!(!identity_is_ready(&live, Some(parent), None));
+        live.executable = child.into();
+        assert!(identity_is_ready(&live, Some(parent), Some(child)));
+        live.started = None;
+        assert!(!identity_is_ready(&live, Some(parent), Some(child)));
+    }
+
+    #[test]
+    fn deliberate_self_launch_and_missing_parent_identity_are_explicit() {
+        let executable = Path::new("/fixtures/aurum");
+        let live = LiveProcess {
+            pid: 10,
+            executable: executable.into(),
+            started: Some("t".into()),
+        };
+        assert!(identity_is_ready(&live, Some(executable), Some(executable)));
+        assert!(identity_is_ready(&live, None, Some(executable)));
+        assert!(!identity_is_ready(&live, None, None));
+        assert!(!identity_is_ready(
+            &live,
+            None,
+            Some(Path::new("/fixtures/other"))
+        ));
+    }
 
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
