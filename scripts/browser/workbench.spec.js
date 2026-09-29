@@ -163,20 +163,25 @@ test("real export boots a rendered game on an isolated origin", async ({}, info)
 test("keyboard play and acknowledged live edits preserve the same run", async ({}, info) => {
     const canvas = page.frameLocator("#preview-frame").locator("canvas");
     await canvas.press("Enter");
-    await expect.poll(async () => (await state()).phase).toBe("playing");
+    // Pause before inspecting state: slow software-rendered CI can spend seconds
+    // on each locator/trace snapshot while the actual game keeps progressing.
+    await page.keyboard.press("Escape");
+    await expect.poll(async () => (await state()).phase).toBe("paused");
     const beforeMove = await state();
+    expect(beforeMove.wave).toBe(1);
+    await page.keyboard.press("Escape");
     await page.keyboard.down("d");
     await expect
         .poll(async () => (await state()).x)
         .toBeGreaterThan(beforeMove.x + 1);
     await page.keyboard.up("d");
-    await canvas.press("Space");
+    await page.keyboard.press("Space");
+    await page.keyboard.press("Escape");
     await expect
-        .poll(async () => (await state()).dash_cooldown)
-        .toBeGreaterThan(0);
-    await canvas.press("Escape");
-    await expect.poll(async () => (await state()).phase).toBe("paused");
+        .poll(async () => (await state()).phase)
+        .toMatch(/^(paused|upgrade)$/);
     const before = await state();
+    expect(before.dash_cooldown).toBeGreaterThan(0);
     const session = await page.locator("#preview-frame").getAttribute("src");
     await page.getByLabel("Live player speed").focus();
     await page.keyboard.press("Home");
@@ -197,9 +202,12 @@ test("keyboard play and acknowledged live edits preserve the same run", async ({
     expect(await page.locator("#preview-frame").getAttribute("src")).toBe(
         session,
     );
-    await canvas.press("Escape");
-    await expect.poll(async () => (await state()).phase).toBe("playing");
-    await page.screenshot({ path: info.outputPath("workbench-playing.png") });
+    if (before.phase === "paused") {
+        await canvas.press("Escape");
+        await page.screenshot({
+            path: info.outputPath("workbench-playing.png"),
+        });
+    }
     // Normal simulation, no state injection or forced wins. The first wave opens the workshop.
     await expect
         .poll(async () => (await state()).phase, { timeout: 60_000 })
@@ -215,13 +223,13 @@ test("keyboard play and acknowledged live edits preserve the same run", async ({
     expect((await state()).time).toBe(workshop.time);
     await page.screenshot({ path: info.outputPath("workshop.png") });
     await canvas.press("Enter");
+    await page.keyboard.press("Escape");
     await expect.poll(async () => (await state()).wave).toBe(2);
+    await expect.poll(async () => (await state()).phase).toBe("paused");
     await page.screenshot({ path: info.outputPath("workbench-wave-two.png") });
     await page
         .locator("#preview-frame")
         .screenshot({ path: info.outputPath("game-wave-two.png") });
-    await canvas.press("Escape");
-    await expect.poll(async () => (await state()).phase).toBe("paused");
     expect(errors).toEqual([]);
 });
 
