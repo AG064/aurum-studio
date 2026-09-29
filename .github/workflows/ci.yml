@@ -2,9 +2,14 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, 'codex/aurum-web-workbench']
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,7 +30,72 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Run tests
-        run: cargo test --workspace --all-features --locked
+        shell: bash
+        run: |
+          set -o pipefail
+          export TMPDIR="$RUNNER_TEMP/aurum-tests"
+          export TMP="$TMPDIR" TEMP="$TMPDIR"
+          mkdir -p "$TMPDIR"
+          cargo test --workspace --all-features --locked 2>&1 | tee cargo-test.log
+      - name: Stress process lifecycle without retrying failures
+        if: runner.os == 'Linux'
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP/aurum-tests"
+          mkdir -p "$TMPDIR"
+          for iteration in $(seq 1 100); do
+            echo "Lifecycle iteration $iteration / 100" | tee -a lifecycle-stress.log
+            cargo test -p aurum-studio-core --locked gameplay::tests -- --nocapture --test-threads=8 2>&1 | tee -a lifecycle-stress.log
+          done
+      - name: Retain test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-diagnostics-${{ matrix.os }}
+          path: |
+            cargo-test.log
+            lifecycle-stress.log
+            ${{ runner.temp }}/aurum-tests/**/*.log
+          retention-days: 14
+
+  runtime-windows:
+    name: Godot project and packaged-game acceptance
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Provision checksum-pinned runtime
+        shell: pwsh
+        run: |
+          ./scripts/provision-godot.ps1 -Destination "$env:RUNNER_TEMP/godot" -Mode Runtime
+          "AURUM_GODOT=$env:RUNNER_TEMP/godot/Godot_v4.7-stable_win64.exe" >> $env:GITHUB_ENV
+      - name: Build test tools
+        run: cargo build -p aurum-cli -p aurum-editor --locked
+      - name: Exercise actual project, editor and game workflows
+        shell: pwsh
+        run: |
+          $env:TEMP="$env:RUNNER_TEMP/aurum-runtime-tests"
+          $env:TMP=$env:TEMP
+          New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
+          ./scripts/tests/studio_project_acceptance.ps1 -AurumBinary ./target/debug/aurum.exe -GodotBinary $env:AURUM_GODOT -Package
+          if($LASTEXITCODE){throw 'Project acceptance failed'}
+          ./scripts/tests/studio_editor_acceptance.ps1 -EditorDll ./target/debug/aurum_editor.dll -GodotBinary $env:AURUM_GODOT
+          if($LASTEXITCODE){throw 'Editor acceptance failed'}
+          ./examples/orbit-break/tools/verify.ps1 -AurumBinary ./target/debug/aurum.exe -GodotBinary $env:AURUM_GODOT -Package
+          if($LASTEXITCODE){throw 'Game acceptance failed'}
+      - name: Retain runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: godot-runtime-evidence
+          path: |
+            ${{ runner.temp }}/aurum-runtime-tests/**/*.log
+            ${{ runner.temp }}/aurum-runtime-tests/**/evidence.json
+            ${{ runner.temp }}/aurum-runtime-tests/**/verification.json
+          retention-days: 14
 
   lint:
     name: cargo fmt + clippy

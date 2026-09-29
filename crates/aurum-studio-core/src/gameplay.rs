@@ -327,7 +327,7 @@ mod tests {
         // reaches the new process rather than a stale record.
         let replacement = game.running.as_ref().expect("a game should be recorded");
         let replacement_live = inspect(replacement.pid).expect("the replacement should be running");
-        assert!(replacement.describes(&replacement_live));
+        assert!(replacement.describes(&replacement_live), "replacement identity mismatch: recorded={replacement:?}, observed={replacement_live:?}");
         assert!(inspect(first).is_none(), "the old game should be gone");
 
         // The editor is the point of the whole exercise: same process, still
@@ -335,7 +335,7 @@ mod tests {
         let live = inspect(editor.pid).expect("the editor should still be running");
         assert!(
             editor.describes(&live),
-            "the editor should be the same process it was"
+            "the editor identity changed: recorded={editor:?}, observed={live:?}"
         );
 
         cleanup(&editor, &mut game, &root);
@@ -377,7 +377,10 @@ mod tests {
         assert_eq!(game.running.as_ref().unwrap().pid, first);
         assert!(inspect(first).is_some(), "the game should still be running");
         let live = inspect(editor.pid).expect("the editor should still be running");
-        assert!(editor.describes(&live));
+        assert!(
+            editor.describes(&live),
+            "editor identity changed without a restart: recorded={editor:?}, observed={live:?}"
+        );
 
         cleanup(&editor, &mut game, &root);
     }
