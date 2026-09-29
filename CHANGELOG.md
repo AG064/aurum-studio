@@ -8,6 +8,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Playable MVP workflow
 
+- Fixed existing-file path resolution so headless file reads and undo work consistently on clean Windows, Linux and macOS runners; added a regression test.
 - Added required JSON gameplay verdicts, bounded game arguments, and fixed-rate headless tests across CLI, HTTP, and MCP.
 - Fixed explicit test-scene selection and an environment-dependent runtime discovery test.
 - Added six-platform preset configuration and Studio export/test controls with full failure diagnostics.

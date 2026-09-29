@@ -91,16 +91,37 @@ pub fn confined(root: &Path, relative: &str) -> Result<PathBuf, String> {
     if !resolved.starts_with(&root) {
         return Err("path resolves outside the project".into());
     }
-    Ok(resolved.join(
-        candidate
-            .strip_prefix(ancestor)
-            .map_err(|e| e.to_string())?,
-    ))
+    let remainder = candidate
+        .strip_prefix(ancestor)
+        .map_err(|e| e.to_string())?;
+    // Joining an empty path appends a separator. For an existing file that
+    // changes the OS request from opening a file to opening a directory.
+    if remainder.as_os_str().is_empty() {
+        Ok(resolved)
+    } else {
+        Ok(resolved.join(remainder))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resolving_an_existing_file_preserves_a_readable_file_path() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-existing-path-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = crate::project::clean_path(root.canonicalize().unwrap());
+        let file = root.join("existing.gd");
+        write_atomic(&file, b"saved content").unwrap();
+        let resolved = confined(&root, "existing.gd").unwrap();
+        assert_eq!(resolved.as_os_str(), file.as_os_str());
+        assert_eq!(std::fs::read(resolved).unwrap(), b"saved content");
+        assert_eq!(confined(&root, "").unwrap().as_os_str(), root.as_os_str());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn replaces_without_leaving_a_staging_file() {
         let root = std::env::temp_dir().join(format!("aurum-atomic-{}", std::process::id()));

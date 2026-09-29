@@ -42,7 +42,7 @@ gameplay test suite, and [real application screenshots](media/README.md).
 
 ## Verified outcome
 
-- The publication gate passed 729 workspace tests and documentation tests with
+- The publication gate passed 730 workspace tests and documentation tests with
   warnings treated as errors. CI and generated receipts report each run's count.
 - Formatting and workspace Clippy passed.
 - The publication gate passed 40 headless project checks, including persisted scenes,
