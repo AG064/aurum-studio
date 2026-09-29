@@ -46,9 +46,9 @@ The response supplies the isolated preview URL and session. `force:true` rebuild
 
 ## Verification
 
-GitHub CI includes Rust tests on three operating systems, 100 Linux lifecycle iterations without retries, actual Windows Godot/editor/package acceptance, and a Chromium browser job. The lifecycle stress caught a real Linux spawn race: `/proc` could briefly report the parent executable before the child completed `exec`. Ownership recording now waits for the launched image.
+GitHub CI includes Rust tests on three operating systems, 100 Linux lifecycle iterations without retries, actual Windows Godot/editor/package acceptance, and a Chromium browser job. The lifecycle stress caught a real Linux spawn race: `/proc` could briefly report the parent executable before the child completed `exec`. Ownership recording now waits for the launched image. A macOS run also exposed a scheduler-dependent artifact-stability test; that polling contract now has controlled-clock size-change, timestamp-change and settle-window tests, alongside real filesystem checks.
 
-The browser suite launches Studio against a disposable project and isolated user data. It checks actual Wasm delivery, keyboard movement/dash/pause, an unchanged run across live tuning, normal workshop progression/purchases, file save/undo, invalid-build recovery, cross-origin refusal, forged-message rejection, narrow layouts, and standalone export. Missing runtime/templates fail setup instead of skipping. There are no test retries. Screenshots, traces and logs are retained as CI artifacts.
+The seven browser scenarios launch Studio against disposable projects and isolated user data. They check actual Wasm delivery, keyboard movement/dash/pause, an unchanged run across live tuning, normal workshop progression/purchases, file save/undo, invalid-build recovery, cross-origin refusal, forged-message rejection, narrow layouts, standalone export and play, runtime notices, and an ordinary 2D starter without the example's bridge. Missing runtime/templates fail setup instead of skipping. There are no test retries. Screenshots, traces and logs are retained as CI artifacts.
 
 Run locally from a disposable repository copy:
 

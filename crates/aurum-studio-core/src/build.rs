@@ -245,36 +245,60 @@ pub fn wait_until_stable(
     timeout: Duration,
 ) -> Result<u64, BuildError> {
     let started = Instant::now();
+    wait_until_stable_with(
+        path,
+        settle,
+        timeout,
+        || {
+            let metadata = std::fs::metadata(path)
+                .map_err(|e| BuildError::Io(format!("could not stat '{}': {e}", path.display())))?;
+            Ok((
+                metadata.len(),
+                metadata
+                    .modified()
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            ))
+        },
+        || started.elapsed(),
+        || std::thread::sleep(Duration::from_millis(25)),
+    )
+}
+
+/// Keep the polling contract testable without assumptions about writer scheduling.
+fn wait_until_stable_with(
+    path: &Path,
+    settle: Duration,
+    timeout: Duration,
+    mut snapshot: impl FnMut() -> Result<(u64, std::time::SystemTime), BuildError>,
+    mut elapsed: impl FnMut() -> Duration,
+    mut wait: impl FnMut(),
+) -> Result<u64, BuildError> {
     let mut last: Option<(u64, std::time::SystemTime)> = None;
-    let mut stable_since = Instant::now();
+    let mut stable_since = elapsed();
 
     loop {
-        let metadata = std::fs::metadata(path)
-            .map_err(|e| BuildError::Io(format!("could not stat '{}': {e}", path.display())))?;
-        let modified = metadata
-            .modified()
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let current = (metadata.len(), modified);
+        let current = snapshot()?;
+        let now = elapsed();
 
         match last {
             Some(previous) if previous == current => {
-                if stable_since.elapsed() >= settle {
-                    return Ok(metadata.len());
+                if now.saturating_sub(stable_since) >= settle {
+                    return Ok(current.0);
                 }
             }
             _ => {
                 last = Some(current);
-                stable_since = Instant::now();
+                stable_since = now;
             }
         }
 
-        if started.elapsed() >= timeout {
+        if now >= timeout {
             return Err(BuildError::Unstable {
                 path: path.to_path_buf(),
                 seconds: timeout.as_secs(),
             });
         }
-        std::thread::sleep(Duration::from_millis(25));
+        wait();
     }
 }
 
@@ -643,64 +667,59 @@ mod tests {
     }
 
     #[test]
-    fn wait_until_stable_times_out_on_a_file_that_keeps_growing() {
-        let dir = temp_dir("unstable");
-        let path = dir.join("growing.bin");
-        std::fs::write(&path, b"start").unwrap();
+    fn changing_size_or_timestamp_each_poll_reaches_the_timeout() {
+        use std::cell::Cell;
+        for change_size in [true, false] {
+            let clock = Cell::new(Duration::ZERO);
+            let result = wait_until_stable_with(
+                Path::new("changing.bin"),
+                Duration::from_millis(150),
+                Duration::from_millis(1200),
+                || {
+                    Ok((
+                        if change_size {
+                            clock.get().as_millis() as u64
+                        } else {
+                            1024
+                        },
+                        std::time::SystemTime::UNIX_EPOCH
+                            + if change_size {
+                                Duration::ZERO
+                            } else {
+                                clock.get()
+                            },
+                    ))
+                },
+                || clock.get(),
+                || clock.set(clock.get() + Duration::from_millis(25)),
+            );
+            assert!(
+                matches!(result, Err(BuildError::Unstable { .. })),
+                "{result:?}"
+            );
+            assert_eq!(clock.get(), Duration::from_millis(1200));
+        }
+    }
 
-        let writer_path = path.clone();
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let stop_writer = stop.clone();
-        let writer = std::thread::spawn(move || {
-            // The length alternates rather than growing, and the loop does not
-            // sleep. Both matter.
-            //
-            // Alternating, because the check keys on the file's length and its
-            // modification time together: on a filesystem with a coarse
-            // timestamp, two same-length writes inside one tick are invisible,
-            // and the file would look settled while it was being rewritten.
-            //
-            // Not sleeping, because a sleep can be stretched past the settle
-            // window by a loaded machine. This test used to sleep ten
-            // milliseconds against a fifty millisecond window, which held on an
-            // idle laptop and failed about one run in four while three other
-            // builds were running. A test that measures the scheduler instead
-            // of the code is worse than no test, because it teaches people to
-            // run it again until it passes.
-            // Written to a temporary name and renamed into place, because
-            // `fs::write` truncates before it writes. A reader that samples
-            // inside that window sees an empty file, and on a filesystem whose
-            // modification times are coarse it can see an empty file twice and
-            // conclude the file has settled. Linux CI did exactly that.
-            //
-            // A rename is atomic: a reader sees the old file or the new one,
-            // never a half-written one, and never a zero-length one.
-            let staging = writer_path.with_extension("staging");
-            let mut buffer = vec![0u8; 64 * 1024];
-            let mut toggle = false;
-            while !stop_writer.load(std::sync::atomic::Ordering::Relaxed) {
-                toggle = !toggle;
-                buffer.resize(if toggle { 64 * 1024 } else { 64 * 1024 + 1 }, 0);
-                if std::fs::write(&staging, &buffer).is_ok() {
-                    let _ = std::fs::rename(&staging, &writer_path);
-                }
-            }
-        });
-
-        let result = wait_until_stable(
-            &path,
-            Duration::from_millis(150),
-            Duration::from_millis(1200),
+    #[test]
+    fn a_change_resets_the_entire_settle_window() {
+        use std::cell::Cell;
+        let clock = Cell::new(Duration::ZERO);
+        let result = wait_until_stable_with(
+            Path::new("settling.bin"),
+            Duration::from_millis(50),
+            Duration::from_secs(1),
+            || {
+                Ok((
+                    if clock.get().is_zero() { 10 } else { 20 },
+                    std::time::SystemTime::UNIX_EPOCH,
+                ))
+            },
+            || clock.get(),
+            || clock.set(clock.get() + Duration::from_millis(25)),
         );
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        writer.join().unwrap();
-
-        assert!(
-            matches!(result, Err(BuildError::Unstable { .. })),
-            "a file being rewritten in a tight loop never settled, yet wait_until_stable \
-             reported {result:?}"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(result.unwrap(), 20);
+        assert_eq!(clock.get(), Duration::from_millis(75));
     }
 
     #[test]
