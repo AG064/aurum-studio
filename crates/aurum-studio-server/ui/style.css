@@ -1,1127 +1,471 @@
-/* Aurum Studio.
-   Godot renders the game; this only has to be worth looking at while it does.
-
-   The material is gold, used the way a jeweller uses it: a mark, a lit
-   hairline, a single accented control. Never a large fill, because gold spread
-   thin stops reading as gold. Everything else is near-black with a warm
-   undertone rather than the usual cold grey, so the accent belongs to the
-   surface rather than sitting on top of it.
-
-   The composition has one focal point. The project's identity and its verdict
-   are the largest things on the page and sit together at the top, because that
-   is the one question this window answers at a glance: what am I working on,
-   and is it well. Everything below is apparatus, and the console takes the
-   space that is left rather than the layout leaving a hole in the middle.
-
-   No webfont and no fetched image: the page is required to contain no external
-   reference at all, so the type is a system stack and the mark is inline SVG. */
-
 :root {
-  /* Surfaces, warm-shifted. A pure grey beside gold reads as dirty. */
-  --void: #07080a;
-  --base: #0c0e11;
-  --panel-hi: #15181d;
-  --panel-lo: #101317;
-
-  --edge: rgba(255, 255, 255, 0.065);
-  --edge-lit: rgba(255, 255, 255, 0.12);
-  --edge-gold: rgba(216, 169, 79, 0.3);
-
-  /* Contrast is deliberately generous for a dark interface. The first pass
-     used ink barely lighter than the surface and read as murk: dark is not the
-     same as dim, and a tool you cannot read at a glance is not premium, it is
-     just hard work. */
-  --ink: #f2f4f8;
-  --ink-mid: #c2cad6;
-  --ink-dim: #8e98a6;
-  --ink-faint: #656e7c;
-
-  --gold: #d8a94f;
-  --gold-lit: #f6dc9f;
-  --gold-veil: rgba(216, 169, 79, 0.12);
-  --gold-line: rgba(216, 169, 79, 0.26);
-
-  --good: #66c47e;
-  --bad: #e46d61;
-  --warn: #e2b458;
-
-  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
-    "Helvetica Neue", sans-serif;
-  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", ui-monospace,
-    monospace;
-
-  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
-  --fast: 140ms;
-  --slow: 280ms;
-
-  --r-sm: 6px;
-  --r-md: 10px;
-  --r-lg: 14px;
+    color-scheme: dark;
+    --void: #1c1f23;
+    --panel: #22262b;
+    --panel-lo: #191c20;
+    --edge: #32363d;
+    --edge-lit: #3c4149;
+    --ink: #eeefef;
+    --ink-mid: #c2c6cd;
+    --ink-dim: #a5abb5;
+    --accent: #dca36c;
+    --accent-ink: #211c17;
+    --bad: #ffa7a0;
+    --good: #a7d3b8;
+    --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "Cascadia Code", Consolas, monospace;
 }
-
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
+* {
+    box-sizing: border-box;
 }
-
-html,
 body {
-  height: 100%;
+    margin: 0;
+    background: var(--void);
+    color: var(--ink);
+    font: 14px/1.5 var(--font);
+    overflow: hidden;
+}
+button,
+input,
+textarea,
+select {
+    font: inherit;
+}
+button,
+summary,
+select {
+    cursor: pointer;
 }
-
-body {
-  margin: 0;
-  /* A shell, not a document: the console scrolls, the page does not. */
-  overflow: hidden;
-  background: var(--void);
-  color: var(--ink);
-  font-family: var(--font);
-  font-size: 13.5px;
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-}
-
-/* One warm light source at the upper left, well behind everything, and a cool
-   counter-glow at the right so the dark side is not dead. This is what keeps a
-   near-black interface from reading as flat. */
-.ambient {
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(
-      780px 420px at 6% -12%,
-      rgba(216, 169, 79, 0.16),
-      transparent 60%
-    ),
-    radial-gradient(
-      620px 400px at 102% -6%,
-      rgba(96, 132, 220, 0.07),
-      transparent 58%
-    ),
-    linear-gradient(178deg, #0e1116 0%, var(--void) 54%);
-}
-
-/* A laid-paper grain over the whole surface. Two screens of near-transparent
-   dots at different pitches read as texture rather than as a pattern, which is
-   the difference between expensive paper and wallpaper. */
-.grain {
-  position: fixed;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  opacity: 0.5;
-  background-image:
-    radial-gradient(circle, rgba(255, 255, 255, 0.035) 0.5px, transparent 0.5px),
-    radial-gradient(circle, rgba(255, 255, 255, 0.02) 0.5px, transparent 0.5px);
-  background-size:
-    3px 3px,
-    7px 7px;
-  background-position:
-    0 0,
-    2px 3px;
-}
-
-.app {
-  position: relative;
-  z-index: 2;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  animation: settle var(--slow) var(--ease) both;
-}
-
-/* The gold hairline across the very top, like the edge of a machined face. */
-.app::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    var(--gold-line) 22%,
-    rgba(246, 220, 159, 0.55) 50%,
-    var(--gold-line) 78%,
-    transparent
-  );
-}
-
-@keyframes settle {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-}
-
-/* -- chrome -------------------------------------------------------------- */
-
-.chrome {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  padding: 14px 30px;
-  flex: none;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-}
-
-.mark {
-  width: 22px;
-  height: 22px;
-  display: block;
-  filter: drop-shadow(0 0 10px rgba(216, 169, 79, 0.38));
-}
-
-.wordmark {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.19em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.wordmark i {
-  font-style: normal;
-  font-weight: 200;
-  color: var(--gold);
-  margin-left: 0.44em;
-}
-
-.connection {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
-  color: var(--ink-dim);
-  white-space: nowrap;
-  padding: 5px 12px 5px 11px;
-  border: 1px solid var(--edge);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.018);
-  transition:
-    border-color var(--slow) var(--ease),
-    color var(--slow) var(--ease);
-}
-
-.pulse {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--ink-faint);
-  position: relative;
-  flex: none;
-}
-
-.connection[data-state="open"] {
-  color: var(--ink-mid);
-  border-color: rgba(102, 196, 126, 0.26);
-}
-
-.connection[data-state="open"] .pulse {
-  background: var(--good);
-  box-shadow: 0 0 9px rgba(102, 196, 126, 0.8);
-}
-
-.connection[data-state="open"] .pulse::after {
-  content: "";
-  position: absolute;
-  inset: -4px;
-  border-radius: 50%;
-  border: 1px solid var(--good);
-  animation: breathe 2.6s var(--ease) infinite;
-}
-
-.connection[data-state="closed"] {
-  color: var(--bad);
-  border-color: rgba(228, 109, 97, 0.3);
-}
-
-.connection[data-state="closed"] .pulse {
-  background: var(--bad);
-  box-shadow: 0 0 9px rgba(228, 109, 97, 0.7);
-}
-
-@keyframes breathe {
-  0% {
-    transform: scale(0.65);
-    opacity: 0.9;
-  }
-  70%,
-  100% {
-    transform: scale(1.6);
-    opacity: 0;
-  }
-}
-
-/* -- the focal point ----------------------------------------------------- */
-
-.stage {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 40px;
-  padding: 26px 30px 30px;
-  flex: none;
-}
-
-.eyebrow,
-.console-title,
-.group-head span {
-  font-size: 9.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.22em;
-  color: var(--ink-faint);
-}
-
-.identity {
-  min-width: 0;
-}
-
-/* Large and light. Thin type at size is the oldest trick for looking
-   expensive, and it costs nothing here because the system stack has a light
-   weight on every platform this ships to. */
-.project-name {
-  margin: 8px 0 7px;
-  font-family: var(--font-display);
-  font-size: clamp(30px, 3.4vw, 44px);
-  font-weight: 200;
-  line-height: 1.04;
-  letter-spacing: -0.022em;
-  color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.project-path {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--ink-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  direction: rtl;
-  text-align: left;
-}
-
-/* The verdict, at the scale of the thing it reports on. */
-.health {
-  flex: none;
-  /* Wide enough for a path and a remedy on one line, and no wider: the
-     identity beside it is the larger statement, and a diagnostics list that
-     stretched across the page would compete with it. */
-  width: clamp(300px, 40vw, 520px);
-  text-align: right;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 10px;
-}
-
-.health-idle {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 10px;
-}
-
-.idle-mark {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  border: 1px dashed var(--ink-faint);
-  opacity: 0.5;
-}
-
-.idle-hint {
-  font-size: 11.5px;
-  color: var(--ink-faint);
-  line-height: 1.6;
-  text-align: right;
-}
-
-.verdict {
-  display: inline-flex;
-  align-items: center;
-  gap: 13px;
-  padding: 14px 28px 14px 22px;
-  border-radius: 999px;
-  border: 1px solid var(--edge);
-  background: rgba(255, 255, 255, 0.03);
-  font-size: 16px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.24em;
-  color: var(--ink-mid);
-  animation: rise var(--slow) var(--ease) both;
-}
-
-.verdict::before {
-  content: "";
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 14px currentColor;
-  flex: none;
-}
-
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(3px);
-  }
-}
-
-/* These three selectors are the strings `Health::label()` emits, and a test in
-   assets.rs keeps the two in step. They were once `.Healthy`, which never
-   matched anything, and only running it said so. */
-.verdict.ok {
-  color: var(--good);
-  border-color: rgba(102, 196, 126, 0.34);
-  background: rgba(102, 196, 126, 0.1);
-  box-shadow: 0 0 34px -12px rgba(102, 196, 126, 0.75);
-}
-
-.verdict.warning {
-  color: var(--warn);
-  border-color: rgba(226, 180, 88, 0.34);
-  background: rgba(226, 180, 88, 0.1);
-  box-shadow: 0 0 34px -12px rgba(226, 180, 88, 0.75);
-}
-
-.verdict.blocked {
-  color: var(--bad);
-  border-color: rgba(228, 109, 97, 0.34);
-  background: rgba(228, 109, 97, 0.1);
-  box-shadow: 0 0 34px -12px rgba(228, 109, 97, 0.75);
-}
-
-.summary {
-  font-size: 12.5px;
-  color: var(--ink-dim);
-}
-
-/* -- the reasons behind the verdict --------------------------------------- */
-
-/* Everything under the verdict lives in one bounded, scrolling area. Bounding
-   it here rather than on each list is what keeps the window a shell: however
-   many problems a project has, and whether or not the healthy checks are
-   unfolded, the verdict stays where it is and the console keeps its floor. */
-.diagnostics {
-  width: 100%;
-  max-height: min(38vh, 340px);
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: #2b313a transparent;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-/* The findings are a list, not a table: each row is read once, on the way to
-   the one row that has something to do. */
-.findings {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.finding {
-  /* A hairline in the row's own colour, the way the verdict carries its own.
-     A tint spread over the whole tile would stop reading as a signal, and gold
-     spread thin stops reading as gold. */
-  border-left: 2px solid var(--edge-lit);
-  border-radius: 0 var(--r-sm) var(--r-sm) 0;
-  padding: 7px 12px 8px 11px;
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.035),
-    rgba(255, 255, 255, 0) 72%
-  );
-  animation: slide var(--slow) var(--ease) both;
-}
-
-.finding-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-}
-
-.finding-id {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
-
-.finding-summary {
-  min-width: 0;
-  font-size: 12.5px;
-  color: var(--ink-mid);
-}
-
-/* The fact behind the verdict: a path, a version, an exit code. Monospaced
-   because it is quoted from the machine, and it must not look like prose. */
-.finding-evidence {
-  margin-top: 2px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.5;
-  color: var(--ink-faint);
-  word-break: break-word;
-}
-
-/* The most useful text on the page, so it is the only text here in the
-   accent. An arrow marks it as an instruction rather than more evidence. */
-.finding-remedy {
-  position: relative;
-  margin-top: 3px;
-  padding-left: 15px;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--gold);
-}
-
-.finding-remedy::before {
-  content: "\2192";
-  position: absolute;
-  left: 0;
-  color: var(--gold);
-  opacity: 0.7;
-}
-
-/* The level classes are the strings `Health::label()` emits. A test in
-   assets.rs keeps the two in step, for findings as well as the verdict. */
-.finding.blocked {
-  border-left-color: rgba(228, 109, 97, 0.85);
-  background: linear-gradient(
-    90deg,
-    rgba(228, 109, 97, 0.12),
-    rgba(228, 109, 97, 0) 74%
-  );
-}
-
-.finding.blocked .finding-id {
-  color: var(--bad);
-}
-
-/* Brighter than a healthy row's summary, because a blocker is the one line
-   on this page that has to be impossible to miss. */
-.finding.blocked .finding-summary {
-  color: var(--ink);
-}
-
-.finding.warning {
-  border-left-color: rgba(226, 180, 88, 0.6);
-  background: linear-gradient(
-    90deg,
-    rgba(226, 180, 88, 0.08),
-    rgba(226, 180, 88, 0) 74%
-  );
-}
-
-.finding.warning .finding-id {
-  color: var(--warn);
-}
-
-.finding.ok {
-  border-left-color: rgba(102, 196, 126, 0.3);
-  background: rgba(255, 255, 255, 0.014);
-}
-
-.finding.ok .finding-id {
-  color: rgba(102, 196, 126, 0.72);
-}
-
-.finding.ok .finding-summary {
-  color: var(--ink-dim);
-}
-
-/* Eleven green lines say only what the count already said, so they are folded
-   away. The count stays visible, because "eleven checks ran" and "nothing was
-   found" are different statements. */
-.healthy {
-  width: 100%;
-  text-align: left;
-}
-
-.healthy-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 11px 4px 9px;
-  cursor: pointer;
-  border: 1px solid var(--edge);
-  border-radius: 999px;
-  font-size: 9.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-  color: var(--ink-faint);
-  list-style: none;
-  transition:
-    color var(--fast) var(--ease),
-    border-color var(--fast) var(--ease);
-}
-
-.healthy-toggle::-webkit-details-marker {
-  display: none;
-}
-
-/* Our own disclosure mark, drawn from borders rather than fetched. */
-.healthy-toggle::before {
-  content: "";
-  width: 0;
-  height: 0;
-  border-left: 4px solid currentColor;
-  border-top: 3.5px solid transparent;
-  border-bottom: 3.5px solid transparent;
-  transition: transform var(--fast) var(--ease);
-}
-
-.healthy[open] .healthy-toggle::before {
-  transform: rotate(90deg);
-}
-
-.healthy-toggle:hover {
-  color: var(--ink-mid);
-  border-color: var(--edge-gold);
-}
-
-.healthy-toggle:focus-visible {
-  outline: none;
-  border-color: var(--gold);
-  box-shadow: 0 0 0 3px rgba(216, 169, 79, 0.24);
-}
-
-.healthy .findings {
-  margin-top: 6px;
-}
-
-/* -- apparatus ----------------------------------------------------------- */
-
-.controls {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 26px;
-  padding: 0 30px 18px;
-  flex: none;
-}
-
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.toolbar-label,
-.console-title {
-  font-size: 9.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.22em;
-  color: var(--ink-faint);
-}
-
-.toolbar-label {
-  margin-right: 5px;
-}
-
-.console-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.rule {
-  flex: 1;
-  height: 1px;
-  background: linear-gradient(90deg, var(--edge), transparent);
-}
-
 button {
-  position: relative;
-  overflow: hidden;
-  display: inline-flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px 9px;
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--ink);
-  white-space: nowrap;
-  cursor: pointer;
-  border: 1px solid var(--edge);
-  border-radius: var(--r-md);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0)),
-    #1b1f26;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 2px 5px -2px rgba(0, 0, 0, 0.75);
-  transition:
-    border-color var(--fast) var(--ease),
-    background-color var(--fast) var(--ease),
-    transform var(--fast) var(--ease),
-    box-shadow var(--fast) var(--ease);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 34px;
+    padding: 6px 12px;
+    border: 1px solid var(--edge-lit);
+    border-radius: 4px;
+    background: #282c32;
+    color: var(--ink);
+    font-weight: 500;
+    white-space: nowrap;
 }
-
-/* The icon is what stops these reading as plain rectangles. It brightens to
-   the accent on hover, so the whole control answers rather than just its
-   edge. */
-.icon {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  color: var(--ink-dim);
-  transition: color var(--fast) var(--ease);
-}
-
 button:hover {
-  border-color: var(--edge-gold);
-  background-color: #222831;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 8px 22px -12px rgba(216, 169, 79, 0.65),
-    0 2px 6px -2px rgba(0, 0, 0, 0.75);
+    background: #343941;
 }
-
-button:hover .icon {
-  color: var(--gold);
-}
-
 button:active {
-  transform: translateY(1px);
-  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.55);
+    background: #1c1f24;
 }
-
-button:focus-visible {
-  outline: none;
-  border-color: var(--gold);
-  box-shadow: 0 0 0 3px rgba(216, 169, 79, 0.24);
-}
-
-.btn-label {
-  font-size: 12.5px;
-  font-weight: 500;
-}
-
-.btn-hint {
-  display: none;
-}
-
-/* The one control carrying the accent, because it is the one pressed most. */
 button.primary {
-  border-color: var(--gold-line);
-  background:
-    linear-gradient(180deg, rgba(216, 169, 79, 0.17), rgba(216, 169, 79, 0.035)),
-    #221d14;
-  color: var(--gold-lit);
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-ink);
 }
-
-button.primary .icon {
-  color: var(--gold);
-}
-
 button.primary:hover {
-  border-color: rgba(216, 169, 79, 0.55);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 10px 26px -12px rgba(216, 169, 79, 0.75);
+    background: #edb680;
 }
-
-/* A single sheen that crosses the accented control on hover. It is the only
-   motion in the interface that is not reporting something. */
-button.primary::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 45%;
-  left: -60%;
-  background: linear-gradient(
-    100deg,
-    transparent,
-    rgba(246, 220, 159, 0.16),
-    transparent
-  );
-  transform: skewX(-18deg);
-  transition: left 620ms var(--ease);
-  pointer-events: none;
+button.quiet {
+    background: transparent;
+    border-color: transparent;
+    color: var(--ink-mid);
 }
-
-button.primary:hover::after {
-  left: 130%;
+button.quiet:hover {
+    background: #30353b;
+    color: var(--ink);
 }
-
-button.danger:hover {
-  border-color: rgba(228, 109, 97, 0.45);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.075),
-    0 8px 22px -12px rgba(228, 109, 97, 0.55);
+button.danger {
+    color: var(--bad);
 }
-
-button.danger:hover .icon {
-  color: var(--bad);
+button:disabled {
+    opacity: 0.48;
+    cursor: not-allowed;
 }
-
-/* A quiet button for actions that are not the point of the panel. */
-button.ghost {
-  overflow: visible;
-  padding: 4px 11px;
-  font-size: 9.5px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
-  color: var(--ink-dim);
-  background: transparent;
-  border-color: var(--edge);
-  box-shadow: none;
+button img,
+summary img {
+    width: 18px;
+    height: 18px;
+    filter: invert(1);
+    opacity: 0.88;
 }
-
-button.ghost:hover {
-  color: var(--ink);
-  border-color: var(--edge-gold);
-  background-color: var(--gold-veil);
-  box-shadow: none;
+button.primary img {
+    filter: none;
+    opacity: 0.9;
 }
-
-button.ghost:focus-visible {
-  outline: none;
-  border-color: var(--gold);
-  box-shadow: 0 0 0 3px rgba(216, 169, 79, 0.24);
+.icon-button {
+    width: 34px;
+    padding: 7px;
+    flex: none;
 }
-
-/* -- status line --------------------------------------------------------- */
-
-.status-line {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 9px;
-  min-height: 17px;
-  font-size: 12px;
-  color: var(--ink-dim);
+input:not([type="checkbox"]):not([type="range"]),
+select,
+textarea {
+    color: var(--ink);
+    background: #1b1e22;
+    border: 1px solid var(--edge-lit);
+    border-radius: 4px;
+    padding: 7px 9px;
+    min-width: 0;
+    min-height: 34px;
 }
-
-/* A log with nothing in it is centred rather than left hanging at the top of a
-   large empty surface, which reads as a failure to load. */
-.log:has(li.log-empty) {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+input[type="checkbox"],
+input[type="range"] {
+    accent-color: var(--accent);
 }
-
-.log-empty {
-  color: var(--ink-faint);
-  font-style: italic;
-  padding: 0;
-  border-left: 0;
+textarea {
+    resize: vertical;
 }
-
-.log-empty:hover {
-  background: none;
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
-
-.status-line[data-active="false"] .spinner {
-  display: none;
+[hidden] {
+    display: none !important;
 }
-
-.status-line[data-active="false"] .status-text:empty::before {
-  content: "Idle";
-  color: var(--ink-faint);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
+h1,
+h2,
+h3,
+p {
+    margin: 0;
 }
-
-.status-line[data-active="true"] .status-text {
-  color: var(--gold-lit);
+h2 {
+    font-size: 20px;
+    line-height: 1.3;
+    font-weight: 600;
 }
-
-.spinner {
-  width: 12px;
-  height: 12px;
-  flex: none;
-  border-radius: 50%;
-  border: 1.5px solid rgba(216, 169, 79, 0.2);
-  border-top-color: var(--gold);
-  animation: spin 700ms linear infinite;
+h3 {
+    font-size: 15px;
+    font-weight: 500;
 }
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+p {
+    margin: 12px 0;
+    color: var(--ink-mid);
 }
-
-/* -- console ------------------------------------------------------------- */
-
-.console {
-  position: relative;
-  flex: 1;
-  /* Without this a flex child refuses to shrink below its content, and the
-     console would push the footer off the bottom instead of scrolling. */
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  /* Full width and square, unlike every other surface on the page. The log is
-     not a card among cards — it is the machine talking, and giving it the
-     whole width says so. It is also what stops the layout reading as a grid
-     of rounded boxes, which is the shape every dashboard has. */
-  margin: 0;
-  padding: 18px 30px 14px;
-  border: 0;
-  border-top: 1px solid var(--edge);
-  /* Recessed rather than raised: this is a surface you look into. The grid
-     keeps the empty part from reading as a hole — a void looks like something
-     failed to load, ruled paper looks like somewhere to write. */
-  background:
-    radial-gradient(circle, rgba(255, 255, 255, 0.05) 0.5px, transparent 0.5px)
-      0 0 / 22px 22px,
-    radial-gradient(120% 90% at 50% -20%, rgba(216, 169, 79, 0.055), transparent 62%),
-    linear-gradient(180deg, #0b0d11, #090b0e);
-  box-shadow: inset 0 18px 36px -26px rgba(0, 0, 0, 1);
+a {
+    color: var(--accent);
 }
-
-/* A second hairline just under the first, fading. It reads as the lip of a
-   machined edge rather than a drawn line. */
-.console::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    var(--gold-line) 30%,
-    var(--gold-line) 70%,
-    transparent
-  );
-  opacity: 0.5;
-  pointer-events: none;
+details > summary {
+    list-style: none;
+    color: var(--ink-mid);
 }
-
-.console-head {
-  flex: none;
-  margin-bottom: 12px;
+details > summary::-webkit-details-marker {
+    display: none;
 }
-
-.log {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  /* Tabular figures so timestamps form a column rather than a ragged edge. */
-  font-variant-numeric: tabular-nums;
-  scrollbar-width: thin;
-  scrollbar-color: #2b313a transparent;
+details > summary::before {
+    content: "";
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    background: url("/icons/caret-down.svg") center/contain no-repeat;
+    filter: invert(1);
+    margin-right: 8px;
+    transform: rotate(-90deg);
+    opacity: 0.65;
 }
-
-.log li {
-  display: flex;
-  gap: 14px;
-  padding: 3px 8px 3px 10px;
-  border-radius: var(--r-sm);
-  border-left: 2px solid transparent;
-  transition: background-color var(--fast) var(--ease);
+details[open] > summary::before {
+    transform: none;
 }
-
-.log li:hover {
-  background: rgba(255, 255, 255, 0.025);
-}
-
-.log li:not(.log-empty) {
-  animation: slide var(--slow) var(--ease) both;
-}
-
-@keyframes slide {
-  from {
-    opacity: 0;
-    transform: translateX(-5px);
-  }
-}
-
-.log time {
-  color: var(--ink-faint);
-  flex: none;
-  font-size: 11px;
-  padding-top: 1px;
-}
-
-.log span {
-  color: var(--ink-mid);
-  word-break: break-word;
-}
-
-.log .good {
-  border-left-color: rgba(102, 196, 126, 0.5);
-}
-.log .good span {
-  color: var(--good);
-}
-
-.log .bad {
-  border-left-color: rgba(228, 109, 97, 0.5);
-}
-.log .bad span {
-  color: var(--bad);
-}
-
-.log .note {
-  border-left-color: var(--gold-line);
-}
-.log .note span {
-  color: var(--gold);
-}
-
-.caret {
-  display: inline-block;
-  width: 7px;
-  height: 13px;
-  margin-left: 7px;
-  vertical-align: -2px;
-  background: var(--gold);
-  opacity: 0.75;
-  animation: blink 1.15s steps(1, end) infinite;
-}
-
-@keyframes blink {
-  0%,
-  49% {
-    opacity: 0.75;
-  }
-  50%,
-  100% {
-    opacity: 0;
-  }
-}
-
-/* -- footer -------------------------------------------------------------- */
-
-footer {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 0 30px 16px;
-  flex: none;
-  font-size: 11.5px;
-  color: var(--ink-faint);
-}
-
-.foot-note {
-  margin-right: auto;
-}
-
-.foot-local {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
-  padding: 4px 11px;
-  border: 1px solid var(--edge);
-  border-radius: 999px;
-}
-
-/* -- scrollbars ---------------------------------------------------------- */
-
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #262c35;
-  border-radius: 99px;
-  border: 3px solid transparent;
-  background-clip: content-box;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(216, 169, 79, 0.45);
-  background-clip: content-box;
-}
-
-::selection {
-  background: rgba(216, 169, 79, 0.28);
-  color: #fff;
-}
-
-/* Honour the system setting. The entrance animation starts at zero opacity, so
-   somebody who has asked for less motion would otherwise watch the whole
-   interface fade up on every load — and anything that samples the page during
-   those milliseconds sees a washed-out shell rather than the design. */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.001ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
-  }
-}
-
-@media (max-width: 900px) {
-  body {
+pre {
+    font: 12px/1.6 var(--mono);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 280px;
     overflow: auto;
-  }
-  .controls,
-  .stage {
-    grid-template-columns: 1fr;
+    padding: 14px;
+    background: #171a1e;
+    border: 1px solid var(--edge);
+    border-radius: 4px;
+}
+.hint {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--ink-dim);
+}
+.row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 12px 0;
+}
+.row.compact {
+    margin: 0;
+}
+.row input:not([type="number"]):not([type="checkbox"]) {
+    flex: 1;
+}
+.check-label {
+    display: flex !important;
+    align-items: center;
+    gap: 8px;
+}
+.quiet-icon {
+    opacity: 0.6;
+}
+.app {
+    display: flex;
     flex-direction: column;
-    align-items: flex-start;
-  }
-  .health {
+    height: 100dvh;
+    min-height: 540px;
+}
+.chrome {
+    height: 64px;
+    min-height: 64px;
+    display: flex;
+    align-items: center;
+    padding: 0 24px;
+    gap: 20px;
+    border-bottom: 1px solid var(--edge);
+    background: #202328;
+}
+.brand {
+    font-size: 22px;
+    letter-spacing: -0.45px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.project-picker {
+    display: flex;
+    align-items: center;
+    padding-left: 22px;
+    border-left: 1px solid var(--edge-lit);
+    min-width: 100px;
+    max-width: 300px;
+    position: relative;
+}
+.project-picker h1 {
+    font-size: 16px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+}
+.project-picker select {
+    position: absolute;
+    inset: 0;
     width: 100%;
-    align-items: flex-start;
-    text-align: left;
-  }
-  .health-idle,
-  .idle-hint {
-    align-items: flex-start;
-    text-align: left;
-  }
-  .console {
-    min-height: 240px;
-  }
+    opacity: 0;
+}
+.project-picker:focus-within {
+    outline: 2px solid var(--accent);
+    outline-offset: 4px;
+}
+.connection {
+    font-size: 12px;
+    color: var(--ink-dim);
+}
+.connection[data-state="disconnected"],
+.connection[data-state="closed"] {
+    color: var(--bad);
+}
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+}
+.header-actions > button {
+    min-height: 40px;
+    padding: 8px 17px;
+}
+.app-menu {
+    position: relative;
+    margin-left: 12px;
+    padding-left: 16px;
+    border-left: 1px solid var(--edge-lit);
+}
+.app-menu > summary {
+    padding: 8px;
+}
+.app-menu > summary::before {
+    display: none;
+}
+.menu-surface {
+    position: absolute;
+    right: 0;
+    top: 44px;
+    width: 242px;
+    z-index: 30;
+    background: #282c31;
+    border: 1px solid var(--edge-lit);
+    border-radius: 6px;
+    padding: 6px;
+    box-shadow: 0 12px 30px #0005;
+}
+.menu-surface button {
+    width: 100%;
+    justify-content: flex-start;
+    background: transparent;
+    border-color: transparent;
+    font-size: 13px;
+}
+.menu-surface button:hover {
+    background: #383e46;
+}
+.console {
+    flex: none;
+    background: #1c2025;
+    border-top: 1px solid var(--edge);
+    height: 43px;
+    position: relative;
+}
+.console[open] {
+    height: 170px;
+}
+.console-head {
+    height: 42px;
+    padding: 10px 22px;
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid transparent;
+    color: var(--ink) !important;
+    font-weight: 500;
+}
+.console[open] .console-head {
+    border-color: var(--edge);
+}
+.status-line {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--ink-dim);
+    font-weight: 400;
+}
+.status-line[data-active="true"] {
+    color: var(--accent);
+}
+.status-line[data-active="false"] .status-text:empty::after {
+    content: "Idle";
+}
+.console-tools {
+    position: absolute;
+    top: 46px;
+    right: 12px;
+    z-index: 1;
+}
+.console-tools button {
+    font-size: 11px;
+    min-height: 26px;
+}
+.log {
+    margin: 0;
+    padding: 10px 126px 12px 24px;
+    list-style: none;
+    overflow: auto;
+    height: 126px;
+    font: 12px/1.7 var(--mono);
+}
+.log li {
+    display: flex;
+    gap: 18px;
+    overflow-wrap: anywhere;
+}
+.log time {
+    color: #858e9b;
+    flex: none;
+}
+.log .good {
+    color: var(--good);
+}
+.log .bad {
+    color: var(--bad);
+}
+.log .note {
+    color: var(--accent);
+}
+.log-empty {
+    color: var(--ink-dim);
+}
+.verdict.ok,
+.finding.ok {
+    color: var(--good);
+}
+.verdict.warning,
+.finding.warning {
+    color: var(--accent);
+}
+.verdict.blocked,
+.finding.blocked {
+    color: var(--bad);
+}
+.health {
+    font-size: 12px;
+    padding: 10px 0;
+}
+.health .verdict {
+    font-size: 13px;
+    font-weight: 600;
+}
+.health .summary {
+    color: var(--ink-dim);
+}
+.findings {
+    padding-left: 16px;
+}
+.findings li {
+    margin: 10px 0;
+}
+.findings .evidence,
+.findings .remedy {
+    overflow-wrap: anywhere;
+}
+.healthy-toggle {
+    margin-top: 12px;
+}
+.project-path {
+    font: 11px/1.4 var(--mono);
+    color: var(--ink-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0 20px 8px;
+}
+.runtime-details,
+.scene-details {
+    padding: 14px 18px;
+    border-top: 1px solid var(--edge);
+    font-size: 12px;
+}
+.runtime-details {
+    margin-top: auto;
+}
+.runtime-details[open] {
+    max-height: 250px;
+    overflow: auto;
+}
+dialog {
+    width: min(520px, calc(100vw - 32px));
+    padding: 26px;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--edge-lit);
+    border-radius: 7px;
+}
+dialog::backdrop {
+    background: #0009;
+}
+dialog h2 {
+    margin-bottom: 20px;
+}
+dialog label {
+    display: block;
+    margin: 14px 0;
+    color: var(--ink-mid);
+}
+dialog input,
+dialog select {
+    display: block;
+    width: 100%;
+    margin-top: 5px;
+}
+#project-dialog-error {
+    color: var(--bad);
+}
+@media (prefers-reduced-motion: reduce) {
+    * {
+        scroll-behavior: auto !important;
+    }
 }

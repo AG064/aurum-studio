@@ -40,6 +40,9 @@ desktop.ini
 # Logs
 *.log
 logs/
+**/node_modules/
+**/test-results/
+**/playwright-report/
 
 # Environment / secrets (defensive — none expected in this repo, but in case)
 .env

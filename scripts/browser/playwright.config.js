@@ -1,0 +1,19 @@
+import { defineConfig } from "@playwright/test";
+
+export default defineConfig({
+    testDir: ".",
+    testMatch: "*.spec.js",
+    timeout: 180_000,
+    expect: { timeout: 15_000 },
+    workers: 1,
+    retries: 0,
+    reporter: [["list"], ["html", { open: "never" }]],
+    use: {
+        viewport: { width: 1488, height: 1056 },
+        screenshot: "only-on-failure",
+        trace: "retain-on-failure",
+        launchOptions: {
+            args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
+        },
+    },
+});

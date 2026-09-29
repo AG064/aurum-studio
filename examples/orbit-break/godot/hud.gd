@@ -21,12 +21,13 @@ func _panel(rect: Rect2, color = INK, border = Color("274455")) -> void:
 	style.bg_color = color
 	style.border_color = border
 	style.set_border_width_all(1)
-	style.set_corner_radius_all(12)
+	style.set_corner_radius_all(5)
 	draw_style_box(style,rect)
 
-func _button(text: String, rect: Rect2, callback: Callable, primary = false) -> void:
+func _button(text: String, rect: Rect2, callback: Callable, primary = false, disabled = false) -> void:
 	var button = Button.new()
 	button.text = text
+	button.disabled = disabled
 	if game.phase == "playing":
 		button.focus_mode = Control.FOCUS_NONE
 	button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
@@ -41,17 +42,19 @@ func _button(text: String, rect: Rect2, callback: Callable, primary = false) -> 
 			style.bg_color = style.bg_color.lightened(0.13)
 		style.border_color = TEAL if state=="focus" else Color("396271")
 		style.set_border_width_all(2 if state=="focus" else 1)
-		style.set_corner_radius_all(8)
+		style.set_corner_radius_all(4)
 		button.add_theme_stylebox_override(state,style)
 	button.pressed.connect(callback)
 	add_child(button)
 	buttons.append({"node":button,"rect":rect})
 
 func _layout() -> void:
+	var scale_factor = minf(size.x/1280.0,size.y/800.0)
+	var origin = (size-Vector2(1280,800)*scale_factor)*0.5
 	for entry in buttons:
-		entry.node.position = entry.rect.position * size / Vector2(1280,800)
-		entry.node.size = entry.rect.size * size / Vector2(1280,800)
-		entry.node.add_theme_font_size_override("font_size",int(19*minf(size.x/1280.0,size.y/800.0)))
+		entry.node.position = origin + entry.rect.position * scale_factor
+		entry.node.size = entry.rect.size * scale_factor
+		entry.node.add_theme_font_size_override("font_size",maxi(10,int(19*scale_factor)))
 	queue_redraw()
 
 func refresh() -> void:
@@ -60,8 +63,8 @@ func refresh() -> void:
 	buttons.clear()
 	if game.phase == "menu":
 		_button("LAUNCH RUN    /    ENTER",Rect2(120,512,470,58),game.start_run,true)
-		_button("SOUND: OFF" if game.muted else "SOUND: ON",Rect2(120,588,225,46),game.toggle_mute)
-		_button("EXIT",Rect2(365,588,225,46),func(): get_tree().quit())
+		_button("LOADOUT: " + game.WEAPONS[game.weapon] + " / Q",Rect2(120,585,290,46),func(): game.select_weapon((game.weapon+1)%3))
+		_button("SOUND OFF" if game.muted else "SOUND ON",Rect2(428,585,162,46),game.toggle_mute)
 	elif game.phase == "playing":
 		_button("II",Rect2(1182,28,62,50),game.pause_game)
 		if game.touch_mode:
@@ -71,9 +74,13 @@ func refresh() -> void:
 		_button("SOUND: OFF" if game.muted else "SOUND: ON",Rect2(425,450,430,50),game.toggle_mute)
 		_button("RESTART RUN",Rect2(425,522,430,50),game.start_run)
 	elif game.phase == "upgrade":
-		_button("1   OVERDRIVE",Rect2(190,505,280,58),func(): game.choose_upgrade(0),true)
-		_button("2   REINFORCE",Rect2(500,505,280,58),func(): game.choose_upgrade(1),true)
-		_button("3   SPLIT SHOT",Rect2(810,505,280,58),func(): game.choose_upgrade(2),true)
+		for i in range(3):
+			var bought = i in game.purchased
+			_button("FITTED" if bought else "%d  %s / %d" % [i+1,game.UPGRADES[i],game.UPGRADE_COSTS[i]],Rect2(140+i*345,394,310,48),func(): game.choose_upgrade(i),false,bought or game.credits<game.UPGRADE_COSTS[i])
+			_button(game.WEAPONS[i]+(" / EQUIPPED" if game.weapon==i else " / EQUIP"),Rect2(140+i*345,502,310,42),func(): game.select_weapon(i),game.weapon==i)
+		_button("R  REPAIR +45 / 30",Rect2(140,570,310,46),game.buy_repair,false,game.credits<30 or game.health>=game.max_health)
+		_button("TURRET FITTED" if is_instance_valid(game.turret) else "T  SUPPORT TURRET / 80",Rect2(485,570,310,46),game.buy_turret,false,game.credits<80 or is_instance_valid(game.turret))
+		_button("NEXT WAVE / ENTER",Rect2(830,570,310,46),game.continue_run,true)
 	elif game.phase in ["won","lost"]:
 		_button("FLY AGAIN    /    ENTER",Rect2(425,491,430,58),game.start_run,true)
 		_button("MAIN MENU",Rect2(425,570,430,50),func(): game.phase="menu"; refresh())
@@ -84,16 +91,24 @@ func refresh() -> void:
 func _draw() -> void:
 	if not game:
 		return
-	draw_set_transform(Vector2.ZERO,0,size/Vector2(1280,800))
+	var scale_factor = minf(size.x/1280.0,size.y/800.0)
+	var origin_offset = (size-Vector2(1280,800)*scale_factor)*0.5
+	draw_set_transform(origin_offset,0,Vector2.ONE*scale_factor)
 	if game.phase == "menu":
 		_panel(Rect2(80,117,560,560),Color(0.025,0.065,0.11,0.97))
-		_label("AURUM STUDIO   /   FIELD TEST 01",Vector2(120,166),17,TEAL)
+		_label("DEEP SPACE   /   SURVIVAL FLIGHT",Vector2(120,166),17,TEAL)
 		_label("ORBIT",Vector2(114,257),80)
 		_label("BREAK",Vector2(114,336),80)
 		draw_line(Vector2(120,365),Vector2(590,365),Color("315064"),1)
 		_label("One pilot. Five waves. A way out.",Vector2(120,402),24)
 		_label("Keep moving. Your ship fires automatically.",Vector2(120,442),18,MUTED)
-		_label("Build your loadout. Defeat the Warden.",Vector2(120,471),18,MUTED)
+		_label("Salvage. Refit. Break the blockade.",Vector2(120,471),18,MUTED)
+		var weapon_notes = [["PULSE","Reliable rapid fire.","Split Shot adds two wing cannons."],["LANCE","Heavy piercing rounds.","Each shot passes through three contacts."],["ARC","Short-range chain lightning.","Links nearby contacts. Keep them close."]]
+		_panel(Rect2(780,225,410,210),Color(0.025,0.065,0.11,0.94))
+		_label("STARTING LOADOUT / Q TO CHANGE",Vector2(810,265),15,TEAL)
+		_label(weapon_notes[game.weapon][0],Vector2(810,315),32,GOLD)
+		_label(weapon_notes[game.weapon][1],Vector2(810,355),20)
+		_label(weapon_notes[game.weapon][2],Vector2(810,391),16,MUTED)
 		_label("BEST  %05d" % game.best,Vector2(954,699),21,GOLD)
 		_controls()
 		return
@@ -113,13 +128,14 @@ func _draw() -> void:
 		draw_rect(Rect2(48,743,210,3),Color("304454"))
 		draw_rect(Rect2(48,743,210*(1.0-clampf(game.dash_cooldown/2.2,0,1)),3),TEAL)
 		_label("AUTO FIRE ACTIVE",Vector2(982,776),14,TEAL)
+		_label(game.WEAPONS[game.weapon]+" / %d SALVAGE" % game.credits,Vector2(32,791),14,MUTED)
 		if not game.touch_mode:
 			_label("WASD  move     SPACE  dash     ESC  pause     M  sound",Vector2(365,762),16,MUTED)
 		else:
 			var origin = game.touch_origin if game.touch_id>=0 else Vector2(size.x*0.15,size.y*0.76)
 			var cursor = origin+(game.touch_position-origin).limit_length(65.0) if game.touch_id>=0 else origin
-			draw_arc(origin*Vector2(1280,800)/size,65,0,TAU,48,Color(0.4,0.9,0.85,0.5),2,true)
-			draw_circle(cursor*Vector2(1280,800)/size,23,Color(0.4,0.9,0.85,0.4))
+			draw_arc((origin-origin_offset)/scale_factor,65,0,TAU,48,Color(0.4,0.9,0.85,0.5),2,true)
+			draw_circle((cursor-origin_offset)/scale_factor,23,Color(0.4,0.9,0.85,0.4))
 			_label("DRAG TO MOVE",Vector2(99,695),14,MUTED)
 		if game.banner_time>0.0:
 			var width = font.get_string_size(game.banner,HORIZONTAL_ALIGNMENT_LEFT,-1,23).x
@@ -128,7 +144,7 @@ func _draw() -> void:
 		for enemy in game.enemies:
 			if enemy.kind == "warden":
 				_panel(Rect2(435,650,410,42),INK)
-				_label("WARDEN",Vector2(452,677),14,GOLD)
+				_label("WARDEN / %d" % enemy.stage,Vector2(452,677),14,GOLD)
 				draw_rect(Rect2(545,665,280,8),Color("45343f"))
 				draw_rect(Rect2(545,665,280*maxf(0,enemy.hp/enemy.max_hp),8),GOLD)
 		if game.flash>0:
@@ -140,16 +156,18 @@ func _draw() -> void:
 		_label("FLIGHT PAUSED",Vector2(433,286),37)
 		_label("Take a breath. Your run is safe.",Vector2(434,324),19,MUTED)
 	elif game.phase == "upgrade":
-		_panel(Rect2(150,220,980,383))
-		_label("CONTACTS CLEARED",Vector2(190,275),17,TEAL)
-		_label("Make the next wave yours.",Vector2(190,326),36)
-		var descriptions = [["Faster fire","+25% fire rate","+5 shot damage"],["Stronger hull","+25 maximum integrity","Repair 55 integrity"],["Wider coverage","Three-projectile spread","+4 shot damage"]]
+		_panel(Rect2(100,148,1080,520))
+		_label("WORKSHOP / WAVE %02d CLEARED" % game.wave,Vector2(140,193),17,TEAL)
+		_label("Refit at your own pace.",Vector2(140,239),36)
+		_label("%d SALVAGE" % game.credits,Vector2(927,236),24,GOLD)
+		var descriptions = [["Overdrive","+25% fire rate","+5 base shot damage"],["Reinforce","+25 maximum integrity","Restores 25 integrity"],["Split shot","Pulse / Lance: extra projectiles","Arc: two additional links"]]
 		for i in range(3):
-			var x = 190+i*310
-			_label(descriptions[i][0],Vector2(x,389),25,GOLD)
-			_label(descriptions[i][1],Vector2(x,430),18,MUTED)
-			_label(descriptions[i][2],Vector2(x,461),18,MUTED)
-		_label("Every upgrade also repairs 15 integrity.  /  Choose with 1, 2, or 3.",Vector2(190,586),15,MUTED)
+			var x = 140+i*345
+			_label(descriptions[i][0],Vector2(x,304),25,GOLD)
+			_label(descriptions[i][1],Vector2(x,344),17,MUTED)
+			_label(descriptions[i][2],Vector2(x,373),17,MUTED)
+		_label("SWAP WEAPON / FREE / UPGRADES CARRY OVER",Vector2(140,481),15,TEAL)
+		_label("Flight is paused. No timer. Repairs cost salvage. Continue when you are ready.",Vector2(140,644),17,MUTED)
 	elif game.phase in ["won","lost"]:
 		_panel(Rect2(385,182,510,470))
 		_label("TRANSMISSION RESTORED" if game.phase=="won" else "SIGNAL LOST",Vector2(425,238),17,TEAL if game.phase=="won" else Color("ff697c"))

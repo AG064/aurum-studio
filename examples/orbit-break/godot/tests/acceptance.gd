@@ -32,15 +32,40 @@ func run() -> void:
 	check(game.phase=="paused","Keyboard pause works even with a focused interface button")
 	game._input(key)
 	game.phase = "upgrade"
+	game.credits = 200
 	key.keycode = 0
 	key.unicode = KEY_3
 	game._input(key)
-	check(game.phase=="playing" and game.split_shot,"Unicode-only number keys select upgrades")
+	check(game.phase=="upgrade" and game.split_shot and game.credits==140,"Unicode-only number keys buy upgrades without leaving the workshop")
 	game.phase = "upgrade"
 	key.keycode = KEY_1
 	key.physical_keycode = KEY_TAB
 	game._input(key)
-	check(game.phase=="playing" and game.damage>20,"Logical shortcuts take precedence over synthetic physical scan codes")
+	check(game.phase=="upgrade" and game.damage>20,"Logical shortcuts take precedence over synthetic physical scan codes")
+	var workshop_damage: float = game.damage
+	var workshop_money: int = game.credits
+	game.choose_upgrade(0)
+	check(game.credits==workshop_money and game.damage==workshop_damage,"The same upgrade cannot charge twice in one workshop")
+	game.credits = 0
+	game.choose_upgrade(1)
+	game.buy_turret()
+	check(game.max_health==100 and not is_instance_valid(game.turret),"Unaffordable purchases have no effect")
+	game.credits = 200
+	game.health = 35
+	game.buy_repair()
+	check(game.health==80 and game.credits==170,"Repairs deduct currency and restore only the advertised hull")
+	game.buy_turret()
+	check(is_instance_valid(game.turret) and game.credits==90,"Support turret purchase creates one owned turret")
+	game.buy_turret()
+	check(game.credits==90,"A fitted turret cannot be purchased twice")
+	var workshop_time: float = game.run_time
+	game._physics_process(10.0)
+	check(game.run_time==workshop_time and game.health==80,"Workshop has no timeout, enemy damage or automatic healing")
+	key.keycode = KEY_ENTER
+	key.physical_keycode = 0
+	game._input(key)
+	check(game.phase=="playing","Only explicit confirmation leaves the workshop")
+	check(is_equal_approx(game.shot_power(16,4,0.5,2),60.0),"Damage stacking follows flat then additive then multiplicative order")
 	game.start_run()
 	var position_before: Vector3 = game.player.position
 	Input.action_press("right")
@@ -95,6 +120,46 @@ func run() -> void:
 	game._fire(game.player.position+Vector3.UP*0.5,Vector3.ZERO,true,12.0)
 	game._tick_shots(0.01)
 	check(game.health==88.0,"Hostile projectile collision damages the player")
+	game._clear_entities()
+	game.player.position = Vector3.ZERO
+	game.hurt_time = 0.0
+	game._warn_strike(Vector3.ZERO)
+	game._tick_hazards(0.5)
+	check(game.health==88 and game.hazards.size()==1,"Boss strike gives a warning before damage")
+	game.player.position = Vector3(5,0,0)
+	game._tick_hazards(1.0)
+	check(game.health==88 and game.hazards.is_empty(),"Moving outside the marked strike avoids damage")
+	game._warn_strike(game.player.position)
+	game._tick_hazards(1.5)
+	check(game.health==60,"Remaining in a telegraphed strike causes the advertised damage")
+	game._clear_entities()
+	var boss: Dictionary = game._spawn_enemy("warden",Vector3(0,0,-10))
+	boss.hp = boss.max_hp*0.6
+	game._tick_enemies(0.01)
+	check(boss.stage==2 and boss.speed>1.45,"Boss enters pursuit below two-thirds health")
+	boss.hp = boss.max_hp*0.2
+	boss.strike = 0.0
+	game._tick_enemies(0.01)
+	check(boss.stage==3 and not game.hazards.is_empty(),"Boss overload phase schedules a marked strike")
+	game._clear_entities()
+	game.player.position = Vector3.ZERO
+	game.aim = Vector3.FORWARD
+	game.weapon = 1
+	game._spawn_enemy("brute",Vector3(0,0,-2))
+	game._spawn_enemy("brute",Vector3(0,0,-4))
+	game._fire_weapon()
+	for step in range(20):
+		game._tick_shots(1.0/120.0)
+	check(game.enemies.size()==2 and game.enemies.all(func(e): return e.hp<e.max_hp),"Lance projectile pierces two separate targets")
+	check(game.enemies.all(func(e): return is_equal_approx(e.hp,150.0-44.8)),"A piercing projectile cannot hit the same target twice")
+	game._clear_entities()
+	game.weapon = 2
+	game._spawn_enemy("brute",Vector3(0,0,-3))
+	game._spawn_enemy("brute",Vector3(3,0,-4))
+	game._spawn_enemy("brute",Vector3(13,0,10))
+	game._fire_weapon()
+	check(game.enemies[0].hp<150 and game.enemies[1].hp<150 and game.enemies[2].hp==150,"Arc chains nearby targets but never jumps beyond its range")
+	game.weapon = 0
 	game.start_run()
 	var upgrades = 0
 	for w in range(1,6):
@@ -112,11 +177,12 @@ func run() -> void:
 		if w<5:
 			check(game.phase=="upgrade","Wave %d reaches an upgrade through combat" % w)
 			game.choose_upgrade((w-1)%3)
+			game.continue_run()
 			upgrades += 1
 	check(game.phase=="won" and game.wave==5 and game.kills==59,"All five waves and boss reach the victory screen")
 	check(upgrades==4 and game.split_shot and game.max_health>100 and game.damage>16,"All upgrade types apply")
 	game.start_run()
-	check(game.kills==0 and game.score==0 and game.health==100 and not game.split_shot,"Restart resets the run and upgrades")
+	check(game.kills==0 and game.score==0 and game.health==100 and not game.split_shot and game.credits==0 and game.purchased.is_empty() and not is_instance_valid(game.turret),"Restart resets the run, purchases and upgrades")
 	game._hurt(1000.0)
 	check(game.phase=="lost","Zero integrity reaches the loss screen")
 	game.start_run()

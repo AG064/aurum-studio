@@ -110,6 +110,43 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
 
+  browser-windows:
+    name: Browser gameplay, live editing and isolation
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Provision verified runtime and WebAssembly templates
+        shell: pwsh
+        run: |
+          ./scripts/provision-godot.ps1 -Destination "$env:RUNNER_TEMP/godot" -Mode All
+          "AURUM_GODOT=$env:RUNNER_TEMP/godot/Godot_v4.7-stable_win64.exe" >> $env:GITHUB_ENV
+          "AURUM_WEB_TEMPLATE=$env:RUNNER_TEMP/godot/templates/4.7.stable/web_nothreads_release.zip" >> $env:GITHUB_ENV
+          "AURUM_BINARY=$env:GITHUB_WORKSPACE/target/debug/aurum.exe" >> $env:GITHUB_ENV
+      - name: Build Studio
+        run: cargo build -p aurum-cli --locked
+      - name: Install pinned browser test dependencies
+        working-directory: scripts/browser
+        run: |
+          npm ci
+          npx playwright install chromium
+      - name: Play and edit a disposable project
+        working-directory: scripts/browser
+        run: npm test
+      - name: Retain screenshots, traces and verdicts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-acceptance
+          path: |
+            scripts/browser/test-results
+            scripts/browser/playwright-report
+          retention-days: 14
+
   build:
     name: cargo build release (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

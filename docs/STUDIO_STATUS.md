@@ -16,7 +16,8 @@ The supported workflow is Windows Studio plus local MCP and CLI access, using th
 - Local installation with a bundled runtime, preserved state, and backups of replaced binaries.
 - Explicit test scenes, game arguments, fixed-rate play and fresh JSON gameplay verdicts across CLI, HTTP and MCP.
 - Preset creation for Windows, Linux, macOS, Web, Android and iOS, with bounded diagnostics in Studio.
-- The source-complete [Orbit Break example](../examples/orbit-break), its 31 gameplay checks and independent full-run scenarios.
+- Isolated in-workspace web preview, acknowledged live tuning and standalone browser export for script projects.
+- The source-complete [Orbit Break example](../examples/orbit-break), its 47 gameplay checks, three winning weapon campaigns, stationary losing scenario, salvage workshop and phased boss.
 
 ## Evidence
 
@@ -29,7 +30,8 @@ Individual acceptance scripts:
 - `studio_project_acceptance.ps1`: save/reopen, failed batches, stale writes, undo, scripts, validation, gameplay, discovery, MCP, HTTP, and optional packaged-game execution.
 - `studio_editor_acceptance.ps1`: create, save, undo, redo, and save again in a real editor process.
 - `studio_dev_acceptance.ps1`: source edits reach one running editor; a compiler failure preserves its working DLL and the watcher recovers.
-- `examples/orbit-break/tools/verify.ps1`: isolated game validation, 31 behavior checks, winning/losing campaigns and optional portable packaging. Supply `-GodotBinary` when a bundled runtime is not discoverable.
+- `examples/orbit-break/tools/verify.ps1`: isolated game validation, 47 behavior checks, three winning weapon campaigns, a stationary loss and optional portable packaging. Supply `-GodotBinary` when a bundled runtime is not discoverable.
+- `scripts/browser`: real Chromium/Wasm play, keyboard controls, live-edit state preservation, save/undo, failed-build preservation, origin isolation, mobile-layout and standalone-export tests. See [browser setup](WEB_PREVIEW.md).
 
 Verification receipts are generated beside each temporary run. Historical August Phase 0 and September prototype evidence remains historical; it does not replace these current gates.
 
@@ -43,3 +45,4 @@ Verification receipts are generated beside each temporary run. Historical August
 - VR/text genre modules and compile-time module feature selection remain separate engine work, not implemented Studio controls.
 - A full runtime is included in portable packages, so they are larger than exports using stripped templates.
 - Configured export presets do not imply matching templates, SDK installation, signing or a tested mobile/headset build.
+- The browser preview currently requires script-only projects. Desktop Rust DLLs do not automatically become web-compatible extensions.

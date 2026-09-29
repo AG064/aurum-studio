@@ -8,6 +8,8 @@ const RED = Color("ff697c")
 const PURPLE = Color("bd93ff")
 const SAVE_PATH = "user://record.cfg"
 const UPGRADES = ["OVERDRIVE", "REINFORCE", "SPLIT SHOT"]
+const WEAPONS = ["PULSE", "LANCE", "ARC"]
+const UPGRADE_COSTS = [45, 45, 60]
 
 var phase = "menu"
 var wave = 0
@@ -20,6 +22,14 @@ var damage = 16.0
 var fire_period = 0.28
 var speed = 7.6
 var split_shot = false
+var weapon = 0
+var credits = 0
+var purchased: Array[int] = []
+var turret: Node3D
+var turret_timer = 0.0
+var workshop_visits = 0
+var boss_phases_seen = 0
+var hazards: Array[Dictionary] = []
 var wave_quota = 0
 var wave_spawned = 0
 var wave_kills = 0
@@ -59,12 +69,20 @@ var tuning_hash = ""
 var tuning_clock = 0.0
 var hot_reload_count = 0
 var base_spawn_interval = 1.1
+var damage_multiplier = 1.0
+var web_window
+var web_tuning_callback
+var web_revision = ""
+var web_state_clock = 0.0
 
 func _ready() -> void:
 	test_mode = "--acceptance" in OS.get_cmdline_user_args()
 	auto_pilot = "--autoplay" in OS.get_cmdline_user_args()
 	idle_test = "--idle-test" in OS.get_cmdline_user_args()
 	auto_pilot = auto_pilot or idle_test
+	var weapon_argument = OS.get_cmdline_user_args().find("--weapon")
+	if weapon_argument >= 0 and weapon_argument+1 < OS.get_cmdline_user_args().size():
+		weapon = clampi(int(OS.get_cmdline_user_args()[weapon_argument+1]),0,2)
 	touch_mode = DisplayServer.is_touchscreen_available() or "--touch" in OS.get_cmdline_user_args()
 	rng.seed = 71337 if test_mode or auto_pilot else Time.get_ticks_usec()
 	_setup_input()
@@ -72,6 +90,7 @@ func _ready() -> void:
 	_build_audio()
 	_load_record()
 	_reload_tuning()
+	_setup_web_bridge()
 	var layer = CanvasLayer.new()
 	add_child(layer)
 	hud = HudScript.new()
@@ -176,6 +195,10 @@ func _build_world() -> void:
 		var pos = Vector3(cos(angle),0,sin(angle))*17.1
 		_box(self, Vector3(0.8,0.8,0.8), Color("253953"), pos)
 		_box(self, Vector3(0.6,0.08,0.6), GOLD if n % 3 == 0 else CYAN, pos+Vector3(0,0.45,0),true)
+		var support = _box(self,Vector3(1.2,0.25,2.7),Color("1b3245"),pos*0.87-Vector3.UP*0.14)
+		support.rotation.y = -angle+PI/2.0
+		var marking = _box(self,Vector3(0.055,0.02,1.4),GOLD*0.55, pos*0.8)
+		marking.rotation.y = -angle+PI/2.0
 	for n in range(65):
 		var pos = Vector3(rng.randf_range(-45,45),rng.randf_range(-8,-4),rng.randf_range(-40,30))
 		_sphere(self, rng.randf_range(0.025,0.07), Color("506f9c"),pos,true)
@@ -187,6 +210,10 @@ func _build_world() -> void:
 	add_child(player)
 	var hull = _sphere(player,0.48,CYAN,Vector3(0,0.65,0))
 	hull.scale = Vector3(0.8,0.6,1.3)
+	var nose = PrismMesh.new()
+	nose.size = Vector3(0.7,0.3,1.0)
+	var prow = _mesh(player,nose,Color("d9e7e9"),Vector3(0,0.52,-0.45))
+	prow.rotation_degrees.x = -90
 	_box(player,Vector3(1.3,0.14,0.65),Color("277b85"),Vector3(0,0.5,0.2))
 	_box(player,Vector3(0.2,0.15,0.8),GOLD,Vector3(-0.65,0.5,0.2),true)
 	_box(player,Vector3(0.2,0.15,0.8),GOLD,Vector3(0.65,0.5,0.2),true)
@@ -254,17 +281,56 @@ func _reload_tuning() -> void:
 		return
 	var next_speed = data.get("player_speed",7.6)
 	var next_spawn = data.get("spawn_interval",1.1)
-	if not (next_speed is float or next_speed is int) or not (next_spawn is float or next_spawn is int):
+	var next_damage = data.get("damage_multiplier",1.0)
+	if not (next_speed is float or next_speed is int) or not (next_spawn is float or next_spawn is int) or not (next_damage is float or next_damage is int):
 		return
-	if not is_finite(float(next_speed)) or not is_finite(float(next_spawn)):
+	if not is_finite(float(next_speed)) or not is_finite(float(next_spawn)) or not is_finite(float(next_damage)):
 		return
 	speed = clampf(float(next_speed),3.0,14.0)
 	base_spawn_interval = clampf(float(next_spawn),0.3,3.0)
+	damage_multiplier = clampf(float(next_damage),0.25,4.0)
 	if not tuning_hash.is_empty():
 		hot_reload_count += 1
 		banner = "TUNING UPDATED LIVE"
 		banner_time = 2.0
 	tuning_hash = fingerprint
+
+func _setup_web_bridge() -> void:
+	if not OS.has_feature("web"):
+		return
+	web_window = JavaScriptBridge.get_interface("window")
+	web_tuning_callback = JavaScriptBridge.create_callback(_receive_web_tuning)
+	web_window.aurumApplyTuning = web_tuning_callback
+
+func _receive_web_tuning(arguments: Array) -> void:
+	if arguments.is_empty():
+		return
+	var payload = JSON.parse_string(str(arguments[0]))
+	if not payload is Dictionary or not payload.get("values") is Dictionary:
+		return
+	var values: Dictionary = payload.values
+	for field in ["player_speed","spawn_interval","damage_multiplier"]:
+		var value = values.get(field,damage_multiplier if field=="damage_multiplier" else (speed if field=="player_speed" else base_spawn_interval))
+		if not (value is int or value is float) or not is_finite(float(value)):
+			web_window.aurumTuningError = "Invalid numeric tuning: " + field
+			return
+	speed = clampf(float(values.get("player_speed",speed)),3.0,14.0)
+	base_spawn_interval = clampf(float(values.get("spawn_interval",base_spawn_interval)),0.3,3.0)
+	damage_multiplier = clampf(float(values.get("damage_multiplier",damage_multiplier)),0.25,4.0)
+	if not web_revision.is_empty() and web_revision != str(payload.get("sha256","")):
+		hot_reload_count += 1
+	web_revision = str(payload.get("sha256",""))
+	web_window.aurumAppliedTuning = web_revision
+	web_window.aurumTuningError = ""
+
+func _publish_web_state(delta: float) -> void:
+	if web_window == null:
+		return
+	web_state_clock += delta
+	if web_state_clock < 0.2:
+		return
+	web_state_clock = 0.0
+	web_window.aurumState = JSON.stringify({"phase":phase,"wave":wave,"health":health,"kills":kills,"time":run_time,"x":player.position.x,"z":player.position.z,"speed":speed,"damage_multiplier":damage_multiplier,"hot_reloads":hot_reload_count,"revision":web_revision,"dash_cooldown":dash_cooldown,"credits":credits,"weapon":WEAPONS[weapon],"workshops":workshop_visits})
 
 func start_run() -> void:
 	_clear_entities()
@@ -276,6 +342,11 @@ func start_run() -> void:
 	damage = 16.0
 	fire_period = 0.28
 	split_shot = false
+	credits = 0
+	purchased.clear()
+	workshop_visits = 0
+	boss_phases_seen = 0
+	turret_timer = 0.0
 	run_time = 0.0
 	dash_cooldown = 0.0
 	dash_time = 0.0
@@ -295,6 +366,8 @@ func _clear_entities() -> void:
 	shots.clear()
 	pickups.clear()
 	effects.clear()
+	hazards.clear()
+	turret = null
 
 func _next_wave() -> void:
 	wave += 1
@@ -308,20 +381,53 @@ func _next_wave() -> void:
 	_sound("wave")
 	hud.refresh()
 
-func choose_upgrade(index: int) -> void:
-	if phase != "upgrade" or index < 0 or index > 2:
+func select_weapon(index: int) -> void:
+	if phase not in ["menu", "upgrade"] or index < 0 or index >= WEAPONS.size():
 		return
+	weapon = index
+	hud.refresh()
+
+func shot_power(base: float, flat: float, additive: float, multiplier: float) -> float:
+	return (base + flat) * (1.0 + additive) * multiplier
+
+func continue_run() -> void:
+	if phase == "upgrade":
+		_next_wave()
+
+func choose_upgrade(index: int) -> void:
+	if phase != "upgrade" or index < 0 or index > 2 or index in purchased or credits < UPGRADE_COSTS[index]:
+		return
+	credits -= UPGRADE_COSTS[index]
+	purchased.append(index)
 	if index == 0:
 		fire_period = maxf(0.09,fire_period*0.8)
 		damage += 5.0
 	elif index == 1:
 		max_health += 25.0
-		health = minf(max_health,health+55.0)
+		health = minf(max_health,health+25.0)
 	else:
 		split_shot = true
 		damage += 4.0
-	health = minf(max_health,health+15.0)
-	_next_wave()
+	hud.refresh()
+	_sound("pickup")
+
+func buy_repair() -> void:
+	if phase != "upgrade" or credits < 30 or health >= max_health:
+		return
+	credits -= 30
+	health = minf(max_health,health+45.0)
+	hud.refresh()
+
+func buy_turret() -> void:
+	if phase != "upgrade" or credits < 80 or is_instance_valid(turret):
+		return
+	credits -= 80
+	turret = Node3D.new()
+	entities.add_child(turret)
+	_box(turret,Vector3(1.0,0.6,1.0),Color("385a66"),Vector3.UP*0.3)
+	_box(turret,Vector3(0.24,0.22,1.6),CYAN,Vector3.UP*0.7,true)
+	_ring(turret,1.1,0.06,CYAN,0.04)
+	hud.refresh()
 
 func pause_game() -> void:
 	if phase == "playing":
@@ -343,6 +449,8 @@ func dash() -> void:
 func _input(event: InputEvent) -> void:
 	if not event is InputEventKey:
 		return
+	if event.echo:
+		return
 	if event.is_action_pressed("pause"):
 		pause_game()
 		get_viewport().set_input_as_handled()
@@ -352,6 +460,9 @@ func _input(event: InputEvent) -> void:
 	elif event.is_action_pressed("confirm") and phase in ["menu","won","lost"]:
 		start_run()
 		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("confirm") and phase == "upgrade":
+		continue_run()
+		get_viewport().set_input_as_handled()
 	elif event is InputEventKey and event.pressed and not event.echo:
 		var key = event.keycode if event.keycode != 0 else event.physical_keycode
 		if key == 0:
@@ -360,6 +471,12 @@ func _input(event: InputEvent) -> void:
 			toggle_mute()
 		elif phase == "upgrade" and key in [KEY_1,KEY_2,KEY_3]:
 			choose_upgrade(key-KEY_1)
+		elif phase == "upgrade" and key == KEY_R:
+			buy_repair()
+		elif phase == "upgrade" and key == KEY_T:
+			buy_turret()
+		elif phase in ["menu","upgrade"] and key == KEY_Q:
+			select_weapon((weapon+1)%WEAPONS.size())
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
@@ -388,6 +505,7 @@ func _notification(what: int) -> void:
 		pause_game()
 
 func _physics_process(delta: float) -> void:
+	_publish_web_state(delta)
 	tuning_clock += delta
 	if tuning_clock > 0.5:
 		tuning_clock = 0.0
@@ -395,6 +513,9 @@ func _physics_process(delta: float) -> void:
 	reactor.rotation.y += delta*0.5
 	if auto_pilot and phase == "upgrade":
 		choose_upgrade([2,1,0,0][wave-1])
+		buy_repair()
+		buy_turret()
+		continue_run()
 	if phase == "playing":
 		move = Input.get_vector("left","right","up","down")
 		if touch_id >= 0:
@@ -441,11 +562,8 @@ func _tick(delta: float) -> void:
 		player.rotation.y = atan2(-aim.x,-aim.z)
 	fire_timer -= delta
 	if fire_timer <= 0.0 and (not target.is_empty() or Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)):
-		fire_timer = fire_period
-		_fire(player.position+Vector3.UP*0.55,aim,false,damage)
-		if split_shot:
-			_fire(player.position+Vector3.UP*0.55,aim.rotated(Vector3.UP,0.15),false,damage*0.65)
-			_fire(player.position+Vector3.UP*0.55,aim.rotated(Vector3.UP,-0.15),false,damage*0.65)
+		fire_timer = fire_period * [1.0,2.1,2.6][weapon]
+		_fire_weapon()
 		_sound("shoot")
 	spawn_timer -= delta
 	if spawn_timer <= 0.0 and wave_spawned < wave_quota:
@@ -454,6 +572,8 @@ func _tick(delta: float) -> void:
 		_spawn_enemy(kind)
 		wave_spawned += 1
 	_tick_enemies(delta)
+	_tick_hazards(delta)
+	_tick_turret(delta)
 	_tick_shots(delta)
 	_tick_pickups(delta)
 	if phase == "playing" and wave_spawned >= wave_quota and enemies.is_empty():
@@ -465,9 +585,94 @@ func _tick(delta: float) -> void:
 			_finish(true)
 		else:
 			phase = "upgrade"
+			credits += 25 + wave*5
+			purchased.clear()
+			workshop_visits += 1
+			for hazard in hazards:
+				hazard.node.queue_free()
+			hazards.clear()
 			player.visible = true
 			touch_id = -1
 			hud.refresh()
+
+func _fire_weapon() -> void:
+	var origin = player.position + Vector3.UP*0.55
+	var power = shot_power(16.0,damage-16.0,0.0,damage_multiplier)
+	if weapon == 2:
+		# Arc chains by proximity from the previous hit, with diminishing damage.
+		var cursor = player.position
+		var hit: Array[Dictionary] = []
+		for hop in range(5 if split_shot else 3):
+			var nearest: Dictionary = {}
+			var distance = 10.0 if hop == 0 else 6.0
+			for enemy in enemies:
+				var d = enemy.node.position.distance_to(cursor)
+				if enemy not in hit and d < distance:
+					distance = d
+					nearest = enemy
+			if nearest.is_empty():
+				break
+			hit.append(nearest)
+			var destination: Vector3 = nearest.node.position
+			_beam(cursor+Vector3.UP*0.6,destination+Vector3.UP*0.6,CYAN)
+			nearest.hp -= power*2.2*pow(0.8,hop)
+			cursor = destination
+		for i in range(enemies.size()-1,-1,-1):
+			if enemies[i].hp <= 0:
+				_kill_enemy(i)
+	else:
+		var lance = weapon == 1
+		_fire(origin,aim,false,power*(2.8 if lance else 1.0),3 if lance else 1)
+		if split_shot:
+			for angle in [-0.15,0.15]:
+				_fire(origin,aim.rotated(Vector3.UP,angle),false,power*0.65*(2.8 if lance else 1.0),3 if lance else 1)
+
+func _beam(from: Vector3, to: Vector3, color: Color) -> void:
+	if effects.size() > 60:
+		return
+	var node = _box(entities,Vector3(0.07,0.07,maxf(0.01,from.distance_to(to))),color,(from+to)*0.5,true)
+	if from.distance_squared_to(to) > 0.01:
+		node.look_at(to)
+	effects.append({"node":node,"life":0.16,"radius":0.0})
+
+func _tick_turret(delta: float) -> void:
+	if not is_instance_valid(turret):
+		return
+	turret_timer -= delta
+	if turret_timer > 0.0:
+		return
+	var target: Dictionary = {}
+	var distance = 12.0
+	for enemy in enemies:
+		var d = enemy.node.position.length()
+		if d < distance:
+			distance = d
+			target = enemy
+	if not target.is_empty():
+		turret_timer = 0.4
+		var direction: Vector3 = target.node.position.normalized()
+		turret.rotation.y = atan2(-direction.x,-direction.z)
+		_fire(Vector3.UP*0.55,direction,false,12.0*damage_multiplier)
+
+func _warn_strike(pos: Vector3) -> void:
+	if hazards.size() >= 8:
+		return
+	var node = _ring(entities,2.6,0.09,RED,0.05)
+	node.position = Vector3(pos.x,0.05,pos.z)
+	hazards.append({"node":node,"life":1.4,"radius":2.6})
+
+func _tick_hazards(delta: float) -> void:
+	for i in range(hazards.size()-1,-1,-1):
+		var hazard = hazards[i]
+		hazard.life -= delta
+		hazard.node.scale = Vector3.ONE*(0.6+0.4*clampf(hazard.life/1.4,0.0,1.0))
+		if hazard.life <= 0:
+			var pos: Vector3 = hazard.node.position
+			_burst(pos,RED,2.6)
+			if Vector2(player.position.x-pos.x,player.position.z-pos.z).length() < hazard.radius:
+				_hurt(28.0)
+			hazard.node.queue_free()
+			hazards.remove_at(i)
 
 func _nearest_enemy() -> Dictionary:
 	var target: Dictionary = {}
@@ -491,11 +696,20 @@ func _spawn_enemy(kind: String, position_override = Vector3.INF) -> Dictionary:
 	var color = GOLD if boss else (PURPLE if kind == "spitter" else RED)
 	var core = _sphere(node,radius,color,Vector3(0,radius,0))
 	core.scale.y = 0.7
+	if kind == "spitter":
+		for side in [-1,1]:
+			_box(node,Vector3(0.2,0.4,1.1),PURPLE,Vector3(side*0.7,0.5,0))
+	elif kind == "seeker":
+		var fin = PrismMesh.new()
+		fin.size = Vector3(1.5,0.3,0.8)
+		_mesh(node,fin,Color("aa4255"),Vector3(0,0.4,0.15))
 	_ring(node,radius*1.2,0.09,color,0.04)
 	if kind in ["brute","warden"]:
 		_box(node,Vector3(radius*2.5,0.25,radius*0.7),Color("693d50"),Vector3(0,radius,0))
-	var hp = 2600.0 if boss else (150.0 if kind == "brute" else (70.0 if kind == "spitter" else 42.0))
-	var enemy = {"node":node,"core":core,"kind":kind,"hp":hp,"max_hp":hp,"radius":radius,"fire":1.5,"age":0.0,"speed":1.45 if boss else (1.8 if kind=="brute" else 2.7+wave*0.15)}
+	var hp = 4800.0 if boss else (150.0 if kind == "brute" else (70.0 if kind == "spitter" else 42.0))
+	var warning = _ring(node,radius*1.6,0.045,color,0.05)
+	warning.visible = false
+	var enemy = {"node":node,"core":core,"warning":warning,"kind":kind,"hp":hp,"max_hp":hp,"radius":radius,"fire":1.5,"age":0.0,"stage":1,"strike":3.0,"speed":1.45 if boss else (1.8 if kind=="brute" else 2.7+wave*0.15)}
 	enemies.append(enemy)
 	_burst(node.position+Vector3.UP*0.3,color,1.4)
 	return enemy
@@ -512,22 +726,44 @@ func _tick_enemies(delta: float) -> void:
 			enemy.node.position -= direction*enemy.speed*delta
 		enemy.node.position = enemy.node.position.limit_length(15.0)
 		enemy.core.rotation.y += delta*1.2
+		if enemy.kind != "warden" and direction.length_squared()>0.01:
+			enemy.node.rotation.y = atan2(-direction.x,-direction.z)
 		if distance < enemy.radius+0.55:
 			_hurt(22.0 if enemy.kind=="brute" else 14.0)
 			enemy.node.position -= direction*1.2
 		enemy.fire -= delta
+		enemy.warning.visible = enemy.kind in ["spitter","warden"] and enemy.fire < 0.65
+		enemy.warning.scale = Vector3.ONE*(1.0+maxf(0.0,0.65-enemy.fire))
+		if enemy.kind == "warden":
+			var stage = 3 if enemy.hp/enemy.max_hp < 0.33 else (2 if enemy.hp/enemy.max_hp < 0.67 else 1)
+			boss_phases_seen = maxi(boss_phases_seen,stage)
+			if stage != enemy.stage:
+				enemy.stage = stage
+				banner = "WARDEN / " + ["CONTAINMENT","PURSUIT","OVERLOAD"][stage-1]
+				banner_time = 2.5
+				enemy.speed = 1.45 + (stage-1)*0.45
+			if stage >= 2:
+				enemy.strike -= delta
+				if enemy.strike <= 0.0:
+					enemy.strike = 2.8 if stage == 2 else 1.8
+					_warn_strike(player.position)
 		if enemy.age > 0.8 and enemy.fire <= 0.0 and enemy.kind in ["spitter","warden"]:
-			enemy.fire = 1.6 if enemy.kind=="spitter" else 1.4
+			enemy.fire = 1.6 if enemy.kind=="spitter" else 1.8-enemy.stage*0.15
 			_fire(enemy.node.position+Vector3.UP*0.55,direction,true,12.0)
 			if enemy.kind == "warden":
-				for i in range(10):
-					_fire(enemy.node.position+Vector3.UP*0.55,Vector3.FORWARD.rotated(Vector3.UP,i*TAU/10.0+enemy.age),true,10.0)
+				var count = 8+enemy.stage*2
+				for i in range(count):
+					_fire(enemy.node.position+Vector3.UP*0.55,Vector3.FORWARD.rotated(Vector3.UP,i*TAU/count+enemy.age*0.4),true,10.0)
 
-func _fire(pos: Vector3, direction: Vector3, hostile: bool, power: float) -> void:
+func _fire(pos: Vector3, direction: Vector3, hostile: bool, power: float, pierce = 1) -> void:
 	if shots.size()>=240:
 		return
 	var node = _sphere(entities,0.18 if hostile else 0.11,RED if hostile else GOLD,pos,true)
-	shots.append({"node":node,"velocity":direction.normalized()*(6.0 if hostile else 28.0),"hostile":hostile,"power":power,"life":4.0})
+	if pierce > 1:
+		node.scale = Vector3(0.8,0.8,3.5)
+		if direction.length_squared()>0.01:
+			node.look_at(pos+direction)
+	shots.append({"node":node,"velocity":direction.normalized()*(6.0 if hostile else 28.0),"hostile":hostile,"power":power,"life":4.0,"pierce":pierce,"hit":[]})
 
 func _tick_shots(delta: float) -> void:
 	for i in range(shots.size()-1,-1,-1):
@@ -542,9 +778,11 @@ func _tick_shots(delta: float) -> void:
 		else:
 			for j in range(enemies.size()-1,-1,-1):
 				var enemy = enemies[j]
-				if Vector2(shot.node.position.x-enemy.node.position.x,shot.node.position.z-enemy.node.position.z).length()<enemy.radius+0.2:
+				if enemy.node.get_instance_id() not in shot.hit and Vector2(shot.node.position.x-enemy.node.position.x,shot.node.position.z-enemy.node.position.z).length()<enemy.radius+0.2:
 					enemy.hp -= shot.power
-					remove = true
+					shot.hit.append(enemy.node.get_instance_id())
+					shot.pierce -= 1
+					remove = shot.pierce <= 0
 					if enemy.hp<=0.0:
 						_kill_enemy(j)
 					break
@@ -562,6 +800,7 @@ func _kill_enemy(index: int) -> void:
 	enemy.node.queue_free()
 	enemies.remove_at(index)
 	kills += 1
+	credits += 30 if enemy.kind=="warden" else (12 if enemy.kind=="brute" else 8)
 	wave_kills += 1
 	score += 250 if enemy.kind=="warden" else (35 if enemy.kind=="brute" else 20)
 	_sound("hit")
@@ -604,7 +843,7 @@ func _finish(won: bool) -> void:
 	print("ORBIT_RUN_FINISHED won=",won," score=",score," seconds=",int(run_time))
 	if auto_pilot:
 		var passed = not won if idle_test else won
-		var report = {"ok":passed,"won":won,"mode":"idle-test" if idle_test else "autoplay","wave":wave,"kills":kills,"score":score,"seconds":run_time,"health":health,"hot_reloads":hot_reload_count}
+		var report = {"ok":passed,"won":won,"mode":"idle-test" if idle_test else "autoplay","wave":wave,"kills":kills,"score":score,"seconds":run_time,"health":health,"hot_reloads":hot_reload_count,"workshops":workshop_visits,"boss_phases":boss_phases_seen,"weapon":WEAPONS[weapon]}
 		var args = OS.get_cmdline_user_args()
 		var index = args.find("--aurum-report")
 		if index>=0 and index+1<args.size():
@@ -626,7 +865,8 @@ func _tick_effects(delta: float) -> void:
 	for i in range(effects.size()-1,-1,-1):
 		var effect = effects[i]
 		effect.life -= delta
-		effect.node.scale = Vector3.ONE*(1.0+(0.35-effect.life)*3.0)
+		if effect.radius > 0:
+			effect.node.scale = Vector3.ONE*(1.0+(0.35-effect.life)*3.0)
 		if effect.life<=0.0:
 			effect.node.queue_free()
 			effects.remove_at(i)

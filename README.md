@@ -1,21 +1,12 @@
-<p align="center"><img src="docs/media/aurum-banner.svg" alt="Aurum Studio. Build games with people and agents." width="100%"></p>
-
-<p align="center">
-  <a href="https://github.com/AG064/aurum-studio/actions/workflows/ci.yml"><img src="https://github.com/AG064/aurum-studio/actions/workflows/ci.yml/badge.svg" alt="Build and test status"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-dac28c?labelColor=151a22" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/desktop-Windows%20verified-79cfb2?labelColor=151a22" alt="Windows desktop verified">
-  <img src="https://img.shields.io/badge/agents-MCP%20%2B%20CLI-dac28c?labelColor=151a22" alt="MCP and CLI agent interfaces">
-</p>
-
 # Aurum Studio
 
-**A local game-development workspace for people and AI agents.** Create a project, edit its scenes and code, run headless gameplay tests, and package a playable game through one application.
+A local game-development workspace for people and agents. Edit scenes and code, play inside the workspace, tune the running game, and export a browser or Windows build.
 
 Godot 4.7 handles rendering and resources underneath. Aurum owns the project workflow, the local interface, and the agent-facing operations. You do not need to keep a Godot editor open. Use GDScript for gameplay and Rust GDExtensions when native code is useful.
 
 [Get started](#get-started-on-windows) · [Play the example](#a-game-you-can-run) · [Connect an agent](#headless-by-design) · [Documentation](#documentation)
 
-![Aurum Studio managing the Orbit Break project, with packaging and platform export controls](docs/media/studio.png)
+![Aurum Studio with Orbit Break running in the browser and the live inspector open](docs/media/studio.png)
 
 ## What you can do
 
@@ -24,25 +15,26 @@ Godot 4.7 handles rendering and resources underneath. Aurum owns the project wor
 | Create and edit | Runnable 2D/3D starters, scene hierarchy, node properties, scripts, resources, persistent drafts and undo |
 | Work with agents | Standard local MCP, CLI and HTTP using the same project operations; runtime class and property discovery |
 | Test real gameplay | Explicit test scenes, bounded runs, game arguments, fixed simulation rate and required JSON verdicts |
+| Play in the workspace | Isolated WebAssembly preview for script projects; keyboard play and acknowledged live tuning |
 | Iterate safely | Hash-checked saves, transactional scene edits, failed-build preservation and managed previews |
-| Ship a game | Portable Windows packaging with the runtime included; configurable presets for six export targets |
+| Ship a game | Standalone browser bundles, portable Windows packages, configurable presets for six export targets |
 | Use native code | Rust extension builds, atomic library installation and explicit reload boundaries |
 
 No model subscription, provider account or API key is built into Aurum. Bring your preferred MCP-compatible agent. Project operations run locally; HTTP control stays on loopback with a session token.
 
 ## A game you can run
 
-**[Orbit Break](examples/orbit-break)** is included as a complete source example, not a mockup: a 3D survival arena with five waves, three enemy types, upgrades, dash, repair pickups, sound, local scores and a boss.
+**[Orbit Break](examples/orbit-break)** is a five-wave survival game: rapid Pulse fire, piercing Lance rounds, chain-lightning Arc, an untimed salvage workshop, paid repairs, a support turret, and a three-phase Warden boss. Geometry and sound are generated locally; no asset service is needed.
 
 ![Orbit Break in play: pilot integrity, wave progression, auto-fire and dash controls](docs/media/orbit-break-gameplay.png)
 
-The example has **31 gameplay checks**, a complete winning autopilot campaign, and a stationary-run check that must lose. Its tuning file can change during play without replacing the game process. [Verification scope](docs/DELIVERY.md) explains what was tested and what remains unverified.
+The example has **47 gameplay checks**, winning campaigns for all three weapons, and a stationary-run check that must lose. Browser tests exercise actual export, keyboard play, workshop purchases, live tuning, save/undo and isolation. [Verification scope](docs/WEB_PREVIEW.md#verification) distinguishes these checks from device testing.
 
 After installing Aurum, from this repository:
 
 ```powershell
 aurum studio ./examples/orbit-break
-# Select Game in Studio, or launch directly:
+# Click Run in Studio for browser play, or launch a native window:
 aurum run ./examples/orbit-break
 ```
 
@@ -54,6 +46,19 @@ pwsh ./examples/orbit-break/tools/verify.ps1 -Package `
 ```
 
 Then open `examples/orbit-break/Play Orbit Break.vbs`. See the [example guide](examples/orbit-break/README.md) for controls and runtime configuration. Generated game binaries are not checked into Git.
+
+### Browser play and live editing
+
+Provision the pinned web templates once. The script verifies the official archives before extraction:
+
+```powershell
+pwsh ./scripts/provision-godot.ps1 -Destination A:/AurumStudio/runtime -Mode WebTemplates
+aurum studio ./examples/orbit-break
+```
+
+Use **Run** to play in the workspace. Change speed, spawn interval or damage in **Live tuning**; Studio reports success only after the game acknowledges the saved revision. Your run is preserved. Script and scene edits use **Project tools > Rebuild web preview**.
+
+**Export > Export browser game** creates a fresh standalone bundle under `dist/web`. Serve those files over HTTP(S), including `application/wasm` for the Wasm file. Players need a WebGL 2 browser, not Rust, Godot or Studio. No hosting service is enabled automatically. [Setup, security and native-extension limits](docs/WEB_PREVIEW.md).
 
 ## Get started on Windows
 
@@ -130,7 +135,7 @@ Arbitrary script and scene changes currently use a validated preview restart. Na
 
 ## Platform status
 
-Windows is the verified desktop and portable-game target. Presets can be configured for Windows, Linux, macOS, Web, Android and iOS. Other targets still need matching export templates and, where applicable, SDKs and signing. A preset is not a verified device build.
+Windows is the verified desktop and portable-game target. Orbit Break also runs in a Chromium WebAssembly preview and exports as a standalone web bundle. Native Rust extensions need their own compatible WebAssembly build and are intentionally rejected by the initial browser-preview path. Presets can be configured for Windows, Linux, macOS, Web, Android and iOS; a preset is not a verified device build.
 
 Mobile and headset delivery have not been device-tested. The Rust VR and text modules remain placeholders. Aurum uses the existing Godot backend rather than a maintained engine fork. [Current status and boundaries](docs/STUDIO_STATUS.md).
 
@@ -153,6 +158,8 @@ Add `-Offline` when Cargo dependencies are already cached. The gate covers stric
 - [Headless testing and platform exports](docs/AGENT_PLAYTESTS.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Verification record](docs/DELIVERY.md)
+- [Browser preview and acceptance tests](docs/WEB_PREVIEW.md)
+- [Design decisions](docs/DESIGN.md)
 - [Status and limitations](docs/STUDIO_STATUS.md)
 - [Engine modules](docs/MODULES.md)
 

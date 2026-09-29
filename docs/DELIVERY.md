@@ -40,7 +40,7 @@ Aurum Studio 0.2.0 was verified on Windows against Godot 4.7. The repository
 includes the [Orbit Break source example](../examples/orbit-break), its
 gameplay test suite, and [real application screenshots](media/README.md).
 
-## Verified outcome
+## Initial 0.2 publication outcome
 
 - The publication gate passed 730 workspace tests and documentation tests with
   warnings treated as errors. CI and generated receipts report each run's count.
@@ -81,7 +81,7 @@ an existing build. The install receipt records executable/runtime hashes, and
 replaced binaries are retained in backups.
 
 The deterministic gameplay suite directly drives collisions and state
-transitions. Its two full-campaign scenarios use the ordinary game loop.
+transitions. The initial two full-campaign scenarios used the ordinary game loop.
 Neither substitutes for hardware testing or a broad human usability study.
 
 Windows is the verified target. Mobile, VR hardware, signing and device
@@ -89,3 +89,30 @@ performance remain unverified. Script/scene edits still have managed preview
 restart boundaries; native schema changes may need an editor restart.
 The publication does not include unrelated consumer game repositories,
 machine-local session data, or automatic agent-client configuration changes.
+
+## Browser workbench update
+
+The first selected design is implemented as a compact workbench, with an actual
+Wasm game in the central canvas and acknowledged live tuning in the inspector.
+The README now uses the working interface rather than a decorative banner.
+
+The updated Orbit Break suite has 47 checks. Its ordinary-loop campaigns won
+with Pulse (72 simulation seconds), Lance (67) and Arc (110), passing through
+four workshops and all three boss phases. The stationary run lost in wave five.
+These numbers describe deterministic regression scenarios, not user benchmarks.
+
+The browser tests verify real loading, input, live state preservation,
+workshop purchases, file save/undo, failed-build retention, control-origin
+isolation, responsive access and standalone export. They exposed and led to
+fixes for truncated Windows socket writes and a save/undo UI race.
+
+GitHub's Linux lifecycle stress reproduced a separate child-launch identity
+race. The fix passed 100 iterations without retries, and the Windows runtime,
+editor and packaged-game CI checks passed. The current workflow adds the
+Chromium acceptance job with retained screenshots and traces. The workflow
+badge and its run-specific artifacts remain the source of truth for each commit.
+
+[Browser architecture and reproducible commands](WEB_PREVIEW.md) and
+[design QA](../design-qa.md) document the current scope. This work does not claim
+arbitrary state-preserving script replacement, native Rust web-extension
+support, mobile/headset validation, or public hosting deployment.

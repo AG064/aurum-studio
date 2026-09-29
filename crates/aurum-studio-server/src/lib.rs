@@ -38,6 +38,7 @@
 
 pub mod assets;
 pub mod http;
+mod preview;
 
 use std::io::{BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -114,6 +115,9 @@ struct Shell {
     running: Arc<AtomicBool>,
     connections: Arc<AtomicUsize>,
     operations: Arc<AtomicUsize>,
+    port: u16,
+    godot_hint: Option<PathBuf>,
+    preview: Arc<Mutex<Option<preview::Preview>>>,
 }
 
 impl Server {
@@ -142,7 +146,7 @@ impl Server {
 
         let supervisor = Arc::new(Supervisor::start(SupervisorConfig::new(
             config.project,
-            config.godot_hint,
+            config.godot_hint.clone(),
         )));
 
         let hub = Arc::new(Hub::default());
@@ -170,6 +174,9 @@ impl Server {
                 running,
                 connections: Arc::new(AtomicUsize::new(0)),
                 operations: Arc::new(AtomicUsize::new(0)),
+                port: address.port(),
+                godot_hint: config.godot_hint,
+                preview: Arc::new(Mutex::new(None)),
             }),
             address,
         })
@@ -231,6 +238,11 @@ impl Server {
         while self.shell.operations.load(Ordering::SeqCst) > 0 {
             std::thread::sleep(Duration::from_millis(20));
         }
+        self.shell
+            .preview
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         self.shell.supervisor.wait_for_shutdown();
     }
 
@@ -358,6 +370,7 @@ fn spawn_pump(supervisor: Arc<Supervisor>, hub: Arc<Hub>, running: Arc<AtomicBoo
 // -- connections ----------------------------------------------------------
 
 fn handle_connection(stream: TcpStream, shell: &Arc<Shell>) {
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_nodelay(true);
@@ -383,6 +396,10 @@ fn handle_connection(stream: TcpStream, shell: &Arc<Shell>) {
         let _ = response.write_to(&mut writer);
         return;
     }
+    if let Err(response) = check_origin(&request, shell.port) {
+        let _ = response.write_to(&mut writer);
+        return;
+    }
     if let Err(response) = check_token(&request, &shell.token) {
         let _ = response.write_to(&mut writer);
         return;
@@ -390,6 +407,12 @@ fn handle_connection(stream: TcpStream, shell: &Arc<Shell>) {
 
     match route(&request, shell) {
         Routed::Once(mut response) => {
+            response
+                .headers
+                .push(("X-Frame-Options".into(), "DENY".into()));
+            response
+                .headers
+                .push(("X-Content-Type-Options".into(), "nosniff".into()));
             // A token that arrived in the URL was a one-off navigation. The
             // page's own stylesheet and script requests cannot repeat it, so
             // the token is planted where the browser will send it by itself.
@@ -443,6 +466,29 @@ fn check_local(request: &Request) -> Result<(), Response> {
             "this server only answers requests addressed to the loopback interface\n",
         ))
     }
+}
+
+fn check_origin(request: &Request, port: u16) -> Result<(), Response> {
+    if let Some(origin) = request.header("origin") {
+        if origin != format!("http://127.0.0.1:{port}")
+            && origin != format!("http://localhost:{port}")
+        {
+            return Err(Response::error(
+                403,
+                "Cross-origin control requests are refused\n",
+            ));
+        }
+    }
+    if request.method != "GET"
+        && request.method != "HEAD"
+        && matches!(
+            request.header("sec-fetch-site"),
+            Some("cross-site" | "same-site")
+        )
+    {
+        return Err(Response::error(403, "Cross-origin mutations are refused\n"));
+    }
+    Ok(())
 }
 
 /// The cookie the page's own subresource requests carry.
@@ -542,7 +588,53 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
                 .with_header("Cache-Control", "no-store"),
         ),
 
+        ("GET", "/licenses.txt") => Routed::Once(Response::text(200, assets::ICON_LICENSE)),
+        ("GET", path) if path.starts_with("/icons/") => {
+            Routed::Once(match assets::icon(&path[7..]) {
+                Some(svg) => Response::new(200, "image/svg+xml", svg),
+                None => Response::error(404, "Unknown icon"),
+            })
+        }
         ("GET", "/api/state") => Routed::Once(Response::json(200, &state_json(shell))),
+        ("POST", "/api/preview") => {
+            let result = (|| -> Result<serde_json::Value, String> {
+                let input: serde_json::Value =
+                    serde_json::from_slice(&request.body).map_err(|e| e.to_string())?;
+                let mut active = shell.preview.lock().unwrap_or_else(|e| e.into_inner());
+                if input["action"] == "stop" {
+                    active.take();
+                    return Ok(serde_json::json!({"ok":true,"stopped":true}));
+                }
+                let root = input
+                    .get("project")
+                    .and_then(serde_json::Value::as_str)
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| selected_root(shell));
+                let project = Project::open(&root).map_err(|e| e.to_string())?;
+                if input["action"] == "export" {
+                    let origin = format!("http://127.0.0.1:{}", shell.port);
+                    let fresh =
+                        preview::Preview::build(&project, shell.godot_hint.as_deref(), &origin)?;
+                    return fresh.export_bundle(input["output"].as_str().unwrap_or("dist/web"));
+                }
+                if input["force"] != true {
+                    if let Some(preview) = active.as_ref().filter(|p| p.project == project.root) {
+                        return Ok(preview.describe(true));
+                    }
+                }
+                let default_origin = format!("http://127.0.0.1:{}", shell.port);
+                let origin = request.header("origin").unwrap_or(&default_origin);
+                let preview =
+                    preview::Preview::build(&project, shell.godot_hint.as_deref(), origin)?;
+                let result = preview.describe(false);
+                *active = Some(preview);
+                Ok(result)
+            })();
+            Routed::Once(match result {
+                Ok(value) => Response::json(200, &value),
+                Err(error) => Response::json(400, &serde_json::json!({"ok":false,"error":error})),
+            })
+        }
         ("GET", "/api/projects") => Routed::Once(projects_response(shell, None)),
         ("POST", "/api/projects") => Routed::Once(projects_response(shell, Some(request))),
         ("POST", "/api/project") => {
@@ -870,6 +962,33 @@ pub fn event_json(event: &Event) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn another_loopback_port_cannot_control_studio_with_its_cookie() {
+        let mut request = Request {
+            method: "POST".into(),
+            path: "/api/project".into(),
+            query: Vec::new(),
+            headers: vec![
+                ("host".into(), "127.0.0.1:9000".into()),
+                ("cookie".into(), "aurum_session=secret".into()),
+                ("origin".into(), "http://127.0.0.1:9001".into()),
+            ],
+            body: Vec::new(),
+        };
+        assert!(check_token(&request, "secret").is_ok());
+        assert_eq!(check_origin(&request, 9000).unwrap_err().status, 403);
+        request.headers.retain(|(key, _)| key != "origin");
+        request
+            .headers
+            .push(("sec-fetch-site".into(), "same-site".into()));
+        assert!(check_origin(&request, 9000).is_err());
+        request.headers.retain(|(key, _)| key != "sec-fetch-site");
+        request
+            .headers
+            .push(("origin".into(), "http://127.0.0.1:9000".into()));
+        assert!(check_origin(&request, 9000).is_ok());
+    }
 
     #[test]
     fn a_matching_token_is_accepted() {

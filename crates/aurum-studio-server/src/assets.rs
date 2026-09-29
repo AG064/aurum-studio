@@ -20,6 +20,25 @@ pub const WORKSPACE_CSS: &str = include_str!("../ui/workspace.css");
 /// The page's appearance.
 pub const STYLE_CSS: &str = include_str!("../ui/style.css");
 
+pub const ICON_LICENSE: &str = include_str!("../ui/icons/LICENSE-Phosphor.txt");
+pub fn icon(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "file.svg" => include_str!("../ui/icons/file.svg"),
+        "folder.svg" => include_str!("../ui/icons/folder.svg"),
+        "users.svg" => include_str!("../ui/icons/users.svg"),
+        "export.svg" => include_str!("../ui/icons/export.svg"),
+        "gear.svg" => include_str!("../ui/icons/gear.svg"),
+        "code.svg" => include_str!("../ui/icons/code.svg"),
+        "arrows-out.svg" => include_str!("../ui/icons/arrows-out.svg"),
+        "caret-down.svg" => include_str!("../ui/icons/caret-down.svg"),
+        "terminal-window.svg" => include_str!("../ui/icons/terminal-window.svg"),
+        "play.svg" => include_str!("../ui/icons/play.svg"),
+        "stop.svg" => include_str!("../ui/icons/stop.svg"),
+        "arrow-clockwise.svg" => include_str!("../ui/icons/arrow-clockwise.svg"),
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,19 +179,12 @@ mod tests {
     }
 
     #[test]
-    fn the_mark_is_inline_rather_than_a_fetched_image() {
-        // Inline SVG keeps the page self-contained. An `<img>` would be a
-        // request, and an SVG written with an xmlns would put an external
-        // reference in the source even when nothing is fetched.
-        assert!(INDEX_HTML.contains("<svg"), "the mark should be inline SVG");
-        assert!(
-            !INDEX_HTML.contains("<img"),
-            "the page should not fetch an image"
-        );
-        assert!(
-            !INDEX_HTML.contains("xmlns="),
-            "inline SVG needs no namespace declaration in HTML5, and adding \
-             one puts an external-looking reference in the page"
-        );
+    fn every_ui_icon_is_bundled_and_has_its_license() {
+        for reference in INDEX_HTML.split("src=\"/icons/").skip(1) {
+            let name = reference.split('"').next().unwrap();
+            assert!(icon(name).is_some(), "unserved icon: {name}");
+        }
+        assert!(icon("../secret").is_none());
+        assert!(ICON_LICENSE.contains("Permission is hereby granted"));
     }
 }
