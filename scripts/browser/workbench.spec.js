@@ -162,26 +162,29 @@ test("real export boots a rendered game on an isolated origin", async ({}, info)
 
 test("keyboard play and acknowledged live edits preserve the same run", async ({}, info) => {
     const canvas = page.frameLocator("#preview-frame").locator("canvas");
+    const menu = await state();
     await canvas.press("Enter");
+    await page.keyboard.press("Space");
     // Pause before inspecting state: slow software-rendered CI can spend seconds
     // on each locator/trace snapshot while the actual game keeps progressing.
     await page.keyboard.press("Escape");
     await expect.poll(async () => (await state()).phase).toBe("paused");
     const beforeMove = await state();
     expect(beforeMove.wave).toBe(1);
+    // A completed action is durable; its short cooldown may expire between
+    // browser-driver calls on a loaded software-rendering runner.
+    expect(beforeMove.dashes).toBeGreaterThan(menu.dashes);
     await page.keyboard.press("Escape");
     await page.keyboard.down("d");
     await expect
         .poll(async () => (await state()).x)
         .toBeGreaterThan(beforeMove.x + 1);
     await page.keyboard.up("d");
-    await page.keyboard.press("Space");
     await page.keyboard.press("Escape");
     await expect
         .poll(async () => (await state()).phase)
         .toMatch(/^(paused|upgrade)$/);
     const before = await state();
-    expect(before.dash_cooldown).toBeGreaterThan(0);
     const session = await page.locator("#preview-frame").getAttribute("src");
     await page.getByLabel("Live player speed").focus();
     await page.keyboard.press("Home");
@@ -485,5 +488,14 @@ test("an ordinary 2D project boots without the example-specific live bridge", as
         page.frameLocator("#preview-frame").locator("canvas"),
     ).toBeVisible();
     await expect(page.locator("#live-tuning")).toBeHidden();
+    const runningUrl = await page.locator("#preview-frame").getAttribute("src");
+    await page.getByRole("button", { name: "Run", exact: true }).click();
+    await expect(page.locator("#workspace-status")).toHaveText(
+        "Web preview complete",
+    );
+    await expect(page.locator("#preview-state")).toHaveText("Preview ready");
+    expect(await page.locator("#preview-frame").getAttribute("src")).toBe(
+        runningUrl,
+    );
     expect(errors).toEqual([]);
 });

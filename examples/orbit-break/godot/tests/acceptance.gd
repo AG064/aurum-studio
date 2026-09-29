@@ -77,10 +77,10 @@ func run() -> void:
 	game._tick(0.2)
 	check(game.player.position.length()<=game.RADIUS+0.001,"Arena boundary contains the player")
 	game.dash()
-	check(game.dash_time>0 and game.dash_cooldown>2,"Dash starts and has a cooldown")
+	check(game.dash_time>0 and game.dash_cooldown>2 and game.dashes_run==1,"Dash starts, acknowledges one activation and has a cooldown")
 	var cooldown: float = game.dash_cooldown
 	game.dash()
-	check(game.dash_cooldown==cooldown,"Dash cannot bypass its cooldown")
+	check(game.dash_cooldown==cooldown and game.dashes_run==1,"Dash cannot bypass its cooldown or acknowledge a rejected activation")
 	game.pause_game()
 	var before_time: float = game.run_time
 	game._tick(1.0)

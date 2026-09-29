@@ -685,6 +685,7 @@
         );
         async function startPreview(force = false) {
             const project = activeRoot;
+            const previousState = $("preview-state").textContent;
             $("run-web").disabled = true;
             $("preview-state").textContent = "Building preview";
             $("preview-detail").textContent =
@@ -698,11 +699,13 @@
                         "The server returned an invalid preview origin",
                     );
                 preview = { ...result, origin: url.origin };
-                if ($("preview-frame").src !== result.url)
-                    $("preview-frame").src = result.url;
+                const unchanged = $("preview-frame").src === result.url;
+                if (!unchanged) $("preview-frame").src = result.url;
                 $("preview-frame").hidden = false;
                 $("preview-empty").hidden = true;
-                $("preview-state").textContent = "Loading game";
+                $("preview-state").textContent = unchanged
+                    ? previousState
+                    : "Loading game";
                 $("preview-session").textContent = "Isolated browser preview";
                 setPanel("scene");
             } catch (error) {
@@ -724,6 +727,7 @@
             $("preview-state").textContent = "Web preview";
             $("preview-session").textContent = "No preview running";
             $("live-runtime-state").textContent = "";
+            delete $("live-runtime-state").dataset.snapshot;
         }
         function liveStatus(text, error = false) {
             $("live-status").textContent = text;
@@ -906,6 +910,7 @@
                     "damage_multiplier",
                     "hot_reloads",
                     "dash_cooldown",
+                    "dashes",
                     "credits",
                     "workshops",
                 ]) {

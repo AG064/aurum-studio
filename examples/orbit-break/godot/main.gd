@@ -38,6 +38,7 @@ var spawn_timer = 0.0
 var fire_timer = 0.0
 var dash_cooldown = 0.0
 var dash_time = 0.0
+var dashes_run = 0
 var hurt_time = 0.0
 var aim = Vector3.FORWARD
 var move = Vector2.ZERO
@@ -330,7 +331,7 @@ func _publish_web_state(delta: float) -> void:
 	if web_state_clock < 0.2:
 		return
 	web_state_clock = 0.0
-	web_window.aurumState = JSON.stringify({"phase":phase,"wave":wave,"health":health,"kills":kills,"time":run_time,"x":player.position.x,"z":player.position.z,"speed":speed,"damage_multiplier":damage_multiplier,"hot_reloads":hot_reload_count,"revision":web_revision,"dash_cooldown":dash_cooldown,"credits":credits,"weapon":WEAPONS[weapon],"workshops":workshop_visits})
+	web_window.aurumState = JSON.stringify({"phase":phase,"wave":wave,"health":health,"kills":kills,"time":run_time,"x":player.position.x,"z":player.position.z,"speed":speed,"damage_multiplier":damage_multiplier,"hot_reloads":hot_reload_count,"revision":web_revision,"dash_cooldown":dash_cooldown,"dashes":dashes_run,"credits":credits,"weapon":WEAPONS[weapon],"workshops":workshop_visits})
 
 func start_run() -> void:
 	_clear_entities()
@@ -350,6 +351,7 @@ func start_run() -> void:
 	run_time = 0.0
 	dash_cooldown = 0.0
 	dash_time = 0.0
+	dashes_run = 0
 	hurt_time = 0.0
 	fire_timer = 0.0
 	player.position = Vector3(0,0,7)
@@ -440,6 +442,7 @@ func pause_game() -> void:
 func dash() -> void:
 	if phase != "playing" or dash_cooldown > 0.0:
 		return
+	dashes_run += 1
 	dash_cooldown = 2.2
 	dash_time = 0.18
 	hurt_time = maxf(hurt_time,0.28)
