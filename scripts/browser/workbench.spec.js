@@ -311,6 +311,12 @@ test("keyboard play and acknowledged live edits preserve the same run", async ({
 });
 
 test("source save and undo work; invalid rebuild retains the running preview", async () => {
+    // This scenario explicitly requests a failed manual export. Automatic source
+    // rebuilding is covered separately and would create a second expected failure.
+    const runtime = page.locator("#runtime-inspector");
+    if (!(await runtime.locator("summary").isVisible())) await page.locator("#toggle-inspector").click();
+    if (!(await runtime.evaluate(element => element.open))) await runtime.locator("summary").click();
+    await page.locator("#auto-rebuild").uncheck();
     const original = await readFile(join(project, "godot/main.gd"), "utf8");
     await page.getByRole("button", { name: "main.gd", exact: true }).click();
     const editor = page.getByRole("textbox", {
