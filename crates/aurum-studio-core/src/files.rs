@@ -34,10 +34,21 @@ pub fn replace(source: &Path, destination: &Path) -> io::Result<()> {
             .chain(Some(0))
             .collect();
         // Same-volume replace; the destination is never removed first.
-        if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 1 | 8) } == 0 {
-            return Err(io::Error::last_os_error());
+        let mut attempt = 0;
+        loop {
+            if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 1 | 8) } != 0 {
+                return Ok(());
+            }
+            let error = io::Error::last_os_error();
+            // Short-lived reader, metadata or scanner handles can deny a
+            // replacement. Never delete the destination or change permissions.
+            // A permanent denial still fails after this bounded operation.
+            if !matches!(error.raw_os_error(), Some(5 | 32 | 33)) || attempt >= 49 {
+                return Err(error);
+            }
+            attempt += 1;
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        Ok(())
     }
     #[cfg(not(windows))]
     {
@@ -112,6 +123,55 @@ pub fn confined(root: &Path, relative: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn atomic_write_survives_a_brief_windows_reader_lock() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "aurum-atomic-reader-{}",
+            crate::random::session_id()
+        ));
+        let target = root.join("state.json");
+        write_atomic(&target, b"before").unwrap();
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1 | 2)
+            .open(&target)
+            .unwrap();
+        let writer_target = target.clone();
+        let writer = std::thread::spawn(move || write_atomic(&writer_target, b"after"));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(std::fs::read(&target).unwrap(), b"before");
+        drop(reader);
+        writer.join().unwrap().unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"after");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn persistent_windows_reader_lock_preserves_original_and_cleans_staging() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "aurum-atomic-blocked-{}",
+            crate::random::session_id()
+        ));
+        let target = root.join("state.json");
+        write_atomic(&target, b"before").unwrap();
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1 | 2)
+            .open(&target)
+            .unwrap();
+        assert!(write_atomic(&target, b"after").is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"before");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        drop(reader);
+        write_atomic(&target, b"after").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"after");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn resolving_an_existing_file_preserves_a_readable_file_path() {
         let root = std::env::temp_dir().join(format!(

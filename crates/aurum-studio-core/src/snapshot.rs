@@ -16,6 +16,7 @@ fn visit(
     root: &Path,
     directory: &Path,
     depth: usize,
+    ignore_live_data: bool,
     count: &mut usize,
     bytes: &mut u64,
     callback: &mut impl FnMut(&Path, &str) -> Result<(), String>,
@@ -34,12 +35,30 @@ fn visit(
         if ignored(name) {
             continue;
         }
+        // Live data does not affect code freshness. Avoid opening even a
+        // metadata handle: it can contend with Windows atomic replacement.
+        // DirEntry's type also keeps a directory or symlink with this name
+        // under the ordinary traversal and confinement rules.
+        if ignore_live_data
+            && name == "tuning.json"
+            && entry.file_type().map_err(|e| e.to_string())?.is_file()
+        {
+            continue;
+        }
         let metadata = std::fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
         if metadata.file_type().is_symlink() {
             return Err(format!("Snapshots do not follow symlinks: {name}"));
         }
         if metadata.is_dir() {
-            visit(root, &entry.path(), depth + 1, count, bytes, callback)?;
+            visit(
+                root,
+                &entry.path(),
+                depth + 1,
+                ignore_live_data,
+                count,
+                bytes,
+                callback,
+            )?;
         } else if metadata.is_file() {
             *count += 1;
             *bytes = bytes.saturating_add(metadata.len());
@@ -68,49 +87,65 @@ pub fn copy(source: &Path, destination: &Path) -> Result<(), String> {
 /// Omit tooling from newly created snapshots. Never delete or alter source entries.
 pub fn copy_excluding(source: &Path, destination: &Path, excluded: &[&str]) -> Result<(), String> {
     std::fs::create_dir_all(destination).map_err(|e| e.to_string())?;
-    visit(source, source, 0, &mut 0, &mut 0, &mut |path, relative| {
-        if excluded
-            .iter()
-            .any(|prefix| relative == *prefix || relative.starts_with(&format!("{prefix}/")))
-        {
-            return Ok(());
-        }
-        let target = destination.join(relative);
-        std::fs::create_dir_all(target.parent().ok_or("Missing snapshot parent")?)
-            .map_err(|e| e.to_string())?;
-        std::fs::copy(path, target).map_err(|e| e.to_string())?;
-        Ok(())
-    })
+    visit(
+        source,
+        source,
+        0,
+        false,
+        &mut 0,
+        &mut 0,
+        &mut |path, relative| {
+            if excluded
+                .iter()
+                .any(|prefix| relative == *prefix || relative.starts_with(&format!("{prefix}/")))
+            {
+                return Ok(());
+            }
+            let target = destination.join(relative);
+            std::fs::create_dir_all(target.parent().ok_or("Missing snapshot parent")?)
+                .map_err(|e| e.to_string())?;
+            std::fs::copy(path, target).map_err(|e| e.to_string())?;
+            Ok(())
+        },
+    )
 }
 
 /// Hash paths and bytes, not timestamps: same-size edits and deletes invalidate a build.
 /// The root tuning file is live data and intentionally does not invalidate code exports.
 pub fn fingerprint(source: &Path) -> Result<String, String> {
     let mut hash = Sha256::new();
-    visit(source, source, 0, &mut 0, &mut 0, &mut |path, relative| {
-        if relative == "tuning.json" || relative.ends_with("/tuning.json") {
-            return Ok(());
-        }
-        hash.update(&(relative.len() as u64).to_le_bytes());
-        hash.update(relative.as_bytes());
-        let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        hash.update(
-            &file
-                .metadata()
-                .map_err(|e| e.to_string())?
-                .len()
-                .to_le_bytes(),
-        );
-        let mut buffer = [0; 64 * 1024];
-        loop {
-            let size = file.read(&mut buffer).map_err(|e| e.to_string())?;
-            if size == 0 {
-                break;
+    visit(
+        source,
+        source,
+        0,
+        true,
+        &mut 0,
+        &mut 0,
+        &mut |path, relative| {
+            if relative == "tuning.json" || relative.ends_with("/tuning.json") {
+                return Ok(());
             }
-            hash.update(&buffer[..size]);
-        }
-        Ok(())
-    })?;
+            hash.update(&(relative.len() as u64).to_le_bytes());
+            hash.update(relative.as_bytes());
+            let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            hash.update(
+                &file
+                    .metadata()
+                    .map_err(|e| e.to_string())?
+                    .len()
+                    .to_le_bytes(),
+            );
+            let mut buffer = [0; 64 * 1024];
+            loop {
+                let size = file.read(&mut buffer).map_err(|e| e.to_string())?;
+                if size == 0 {
+                    break;
+                }
+                hash.update(&buffer[..size]);
+            }
+            Ok(())
+        },
+    )?;
     Ok(hash
         .finalize()
         .iter()
@@ -142,6 +177,10 @@ mod tests {
             std::fs::read(destination.join("tuning.json")).unwrap(),
             b"{}"
         );
+        let directory = source.join("assets/tuning.json");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("visible.gd"), "extends Node").unwrap();
+        assert_ne!(fingerprint(&source).unwrap(), revision);
         std::fs::remove_dir_all(root).unwrap();
     }
 

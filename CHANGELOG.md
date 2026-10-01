@@ -19,7 +19,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Same-size source edits and deleted files no longer reuse stale browser exports.
-- Concurrent live saves keep their staging files out of source scans and exports.
+- Concurrent live saves keep their staging files out of source scans and exports; Windows replacements handle brief reader/scanner locks with bounded waits.
 - Export profiles retain HTML options, include/exclude filters and legal notices.
 - Failed builds or rejected checkpoints retain and resume the previous game; stopping during export prevents late publication.
 - Cold asset inspection and read-only inspection during private exports no longer require reopening an editor.
