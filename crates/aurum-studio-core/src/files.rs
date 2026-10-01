@@ -6,11 +6,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn sibling_temp(path: &Path) -> PathBuf {
-    path.with_extension(format!(
-        "{}.{}.tmp",
+    // Snapshot readers must not enumerate staging files that disappear at
+    // commit. Preserve the filename without lossy Unicode conversion, but
+    // prefix it so the existing private-file rules exclude it before stat.
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(format!(
+        ".{}.{}.tmp",
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ))
+    ));
+    path.with_file_name(name)
 }
 
 pub fn replace(source: &Path, destination: &Path) -> io::Result<()> {

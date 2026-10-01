@@ -122,6 +122,61 @@ pub fn fingerprint(source: &Path) -> Result<String, String> {
 mod tests {
     use super::*;
     #[test]
+    fn atomic_write_staging_does_not_enter_fingerprints_or_copies() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-snapshot-staging-{}",
+            crate::random::session_id()
+        ));
+        let source = root.join("source");
+        let destination = root.join("copy");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("main.gd"), "extends Node").unwrap();
+        std::fs::write(source.join("tuning.json"), "{}").unwrap();
+        let revision = fingerprint(&source).unwrap();
+        let staging = crate::files::sibling_temp(&source.join("tuning.json"));
+        std::fs::write(&staging, "partially written live data").unwrap();
+        assert_eq!(fingerprint(&source).unwrap(), revision);
+        copy(&source, &destination).unwrap();
+        assert!(!destination.join(staging.file_name().unwrap()).exists());
+        assert_eq!(
+            std::fs::read(destination.join("tuning.json")).unwrap(),
+            b"{}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn live_atomic_writes_do_not_break_concurrent_source_scans() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-snapshot-live-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.gd"), "extends Node").unwrap();
+        crate::files::write_atomic(&root.join("tuning.json"), b"{}").unwrap();
+        let revision = fingerprint(&root).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writer_root = root.clone();
+        let writer_barrier = barrier.clone();
+        let writer = std::thread::spawn(move || {
+            writer_barrier.wait();
+            for value in 0..100 {
+                crate::files::write_atomic(
+                    &writer_root.join("tuning.json"),
+                    format!("{{\"player_speed\":{value}}}").as_bytes(),
+                )
+                .unwrap();
+            }
+        });
+        barrier.wait();
+        for _ in 0..100 {
+            assert_eq!(fingerprint(&root).unwrap(), revision);
+        }
+        writer.join().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn revisions_detect_same_size_edits_deletes_and_ignore_live_or_generated_data() {
         let root =
             std::env::temp_dir().join(format!("aurum-snapshot-{}", crate::random::session_id()));
