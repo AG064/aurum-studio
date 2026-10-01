@@ -55,3 +55,4 @@ Run-Fixture 'checkpoint' $orbit (Join-Path $PSScriptRoot 'orbit_checkpoint_accep
 $results['ok']=$true
 $results | ConvertTo-Json -Depth 10 | Out-File (Join-Path $work 'evidence.json') -Encoding utf8
 $results | ConvertTo-Json -Depth 10
+exit 0

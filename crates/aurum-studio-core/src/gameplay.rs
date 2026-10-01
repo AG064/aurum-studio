@@ -549,7 +549,12 @@ mod tests {
         match &response {
             Response::Game(Restart::Started { pid }) => {
                 assert_eq!(*pid, game.running.as_ref().unwrap().pid);
-                assert_ne!(game.running.as_ref().unwrap().started, first_record.started);
+                // Linux start times have clock-tick precision. Distinct PIDs can
+                // legitimately start in the same tick, so compare full identity.
+                assert_ne!(
+                    (*pid, &game.running.as_ref().unwrap().started),
+                    (first, &first_record.started)
+                );
             }
             other => panic!("expected a fresh start, got {other:?}"),
         }
