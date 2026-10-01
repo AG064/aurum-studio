@@ -17,7 +17,9 @@ const inspect = async () => {
     await page.locator("#inspect-runtime").click();
     await expect(page.locator("#runtime-status")).toContainText("editable values");
 };
-test.describe.configure({ mode: "serial" });
+// Private exports have bounded native setup/import/export stages. Keep the test
+// budget longer than one native stage, rather than aborting a valid in-flight export.
+test.describe.configure({ mode: "serial", timeout: 360000 });
 test.beforeAll(async ({ browser }) => {
     for (const key of ["AURUM_BINARY", "AURUM_GODOT", "AURUM_WEB_TEMPLATE"]) if (!process.env[key]) throw new Error(`Required integration prerequisite: ${key}`);
     work = await mkdtemp(join(tmpdir(), "aurum-integration-browser-"));
@@ -80,7 +82,7 @@ test("same-size source edits rebuild on Run and preserve progress while applying
     await writeFile(file, changed);
     await expect(page.locator("#preview-revision")).toHaveText("Source changed");
     await page.locator("#run-web").click();
-    await expect(page.locator("#reload-status")).toHaveText("Rebuilt and restored the checkpoint.", { timeout: 120000 });
+    await expect(page.locator("#reload-status")).toHaveText("Rebuilt and restored the checkpoint.", { timeout: 300000 });
     expect(await page.locator("#preview-frame").getAttribute("src")).not.toBe(before);
     await inspect();
     await expect(page.getByLabel("Live counter", { exact: true })).toHaveValue("187");
@@ -91,8 +93,8 @@ test("automatic rebuild reaches the visible preview", async () => {
     const before = await page.locator("#preview-frame").getAttribute("src");
     const file = join(project, "godot/main.gd");
     await writeFile(file, (await readFile(file, "utf8")).replace('"Revised!"', '"Version3"'));
-    await expect.poll(() => page.locator("#preview-frame").getAttribute("src"), { timeout: 120000 }).not.toBe(before);
-    await expect(page.locator("#reload-status")).toHaveText("Rebuilt and restored the checkpoint.", { timeout: 120000 });
+    await expect.poll(() => page.locator("#preview-frame").getAttribute("src"), { timeout: 300000 }).not.toBe(before);
+    await expect(page.locator("#reload-status")).toHaveText("Rebuilt and restored the checkpoint.", { timeout: 300000 });
     await inspect();
     await expect(page.getByLabel("Live caption", { exact: true })).toHaveValue('"Version3"');
     await page.locator("#auto-rebuild").uncheck();
