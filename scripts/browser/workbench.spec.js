@@ -10,6 +10,7 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 let child, work, project, endpoint, token, origin, page, context;
 let processOutput = "",
     errors = [];
+let workshopState;
 const state = async () =>
     JSON.parse(
         await page.locator("#live-runtime-state").getAttribute("data-snapshot"),
@@ -225,6 +226,10 @@ test("keyboard play and acknowledged live edits preserve the same run", async ({
             .locator("#preview-frame")
             .screenshot({ path: info.outputPath("gameplay-polished.png") });
     }
+    expect(errors).toEqual([]);
+});
+
+test("normal gameplay reaches a three-choice workshop", async ({}, info) => {
     // Normal simulation, no state injection or forced wins. The first wave opens the workshop.
     await expect
         .poll(async () => (await state()).phase, { timeout: 60_000 })
@@ -234,6 +239,12 @@ test("keyboard play and acknowledged live edits preserve the same run", async ({
     expect(workshop.upgrades).toBe(0);
     await page.screenshot({ path: info.outputPath("workshop.png") });
     expect((await state()).time).toBe(workshop.time);
+    workshopState = workshop;
+});
+
+test("workshop portrait, fullscreen and compact layouts preserve the choice", async ({}, info) => {
+    test.setTimeout(300000);
+    const workshop = workshopState;
     await page.setViewportSize({ width: 390, height: 844 });
     await expect
         .poll(async () => {
@@ -279,6 +290,11 @@ test("keyboard play and acknowledged live edits preserve the same run", async ({
             return current.view_width > current.view_height;
         })
         .toBe(true);
+});
+
+test("chosen weapons upgrade the next wave and remain playable in portrait", async ({}, info) => {
+    test.setTimeout(300000);
+    const canvas = page.frameLocator("#preview-frame").locator("canvas");
     await canvas.press("Digit2");
     await page.keyboard.press("Escape");
     await expect.poll(async () => (await state()).wave).toBe(2);

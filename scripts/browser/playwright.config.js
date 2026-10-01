@@ -11,7 +11,9 @@ export default defineConfig({
     use: {
         viewport: { width: 1488, height: 1056 },
         screenshot: "only-on-failure",
-        trace: "retain-on-failure",
+        // Explicit gameplay screenshots remain mandatory. Capturing every trace
+        // thumbnail stalls the software renderer on small hosted Windows runners.
+        trace: { mode: "retain-on-failure", screenshots: false, snapshots: true, sources: true },
         launchOptions: {
             args:
                 process.env.AURUM_BROWSER_HARDWARE === "1"

@@ -41,6 +41,8 @@ test.afterAll(async ({}, info) => {
     await writeFile(info.outputPath("evidence.json"), JSON.stringify({work,project},null,2));
 });
 test("ordinary projects preserve export filters, HTML options and notices", async ({}, info) => {
+    // Cold native import/export and visible runtime checks share this bounded budget.
+    test.setTimeout(300000);
     await page.goto(endpoint);
     await expect(page.locator("#project")).toHaveText("live-preview");
     await expect(page.locator("#workspace-status")).toHaveText("Load workspace complete");
