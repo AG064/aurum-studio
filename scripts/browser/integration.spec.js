@@ -45,7 +45,18 @@ test.afterAll(async ({}, info) => {
 test("ordinary projects preserve export filters, HTML options and notices", async ({}, info) => {
     // Cold native import/export and visible runtime checks share this bounded budget.
     test.setTimeout(300000);
-    await page.goto(endpoint);
+    // A cold scene inspection can import project resources. Wait for that
+    // bounded native operation explicitly, then enforce normal UI readiness.
+    const [inspection] = await Promise.all([
+        page.waitForResponse(response => {
+            if (new URL(response.url()).pathname !== "/api/project") return false;
+            try { return response.request().postDataJSON()?.op === "scene_inspect"; }
+            catch { return false; }
+        }, { timeout: 180000 }),
+        page.goto(endpoint),
+    ]);
+    expect(inspection.ok()).toBe(true);
+    expect(await inspection.json()).toMatchObject({ ok: true });
     await expect(page.locator("#project")).toHaveText("live-preview");
     await expect(page.locator("#workspace-status")).toHaveText("Load workspace complete");
     await page.locator("#run-web").click();

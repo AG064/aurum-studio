@@ -113,9 +113,13 @@ jobs:
         run: cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
 
   browser-windows:
-    name: Browser gameplay, live editing and isolation
+    name: Browser acceptance (${{ matrix.suite }})
     runs-on: windows-latest
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [integration, rust-web, workbench]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -132,6 +136,7 @@ jobs:
       - name: Build Studio
         run: cargo build -p aurum-cli --locked
       - name: Provision isolated Rust Web toolchain
+        if: matrix.suite == 'rust-web'
         shell: pwsh
         run: |
           ./scripts/provision-web-toolchain.ps1 -Destination "$env:RUNNER_TEMP/web-toolchain"
@@ -144,12 +149,12 @@ jobs:
           npx playwright install chromium
       - name: Play and edit a disposable project
         working-directory: scripts/browser
-        run: npm test
+        run: npm test -- ${{ matrix.suite }}.spec.js
       - name: Retain screenshots, traces and verdicts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-acceptance
+          name: browser-acceptance-${{ matrix.suite }}
           path: |
             scripts/browser/test-results
             scripts/browser/playwright-report
