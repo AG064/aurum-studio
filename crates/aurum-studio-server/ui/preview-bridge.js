@@ -1,13 +1,43 @@
 // This script runs inside the game origin, never in Studio's privileged origin.
 (function () {
+    window.aurumManagedPreview = true;
     let applied = "",
         sent = "",
         pending = false;
     const tell = (type, detail = {}) =>
-        window.parent.postMessage(
+        window.parent !== window && window.parent.postMessage(
             { type, session: AURUM_PREVIEW.session, ...detail },
             AURUM_PREVIEW.parent,
         );
+    let runtimeQueue = Promise.resolve();
+    let runtimeQueued = 0;
+    async function handleRuntime(event) {
+        const data = event.data;
+        if (event.source !== window.parent || event.origin !== AURUM_PREVIEW.parent ||
+            !data || data.type !== "aurum-runtime-request" || data.session !== AURUM_PREVIEW.session ||
+            typeof data.id !== "string" || !/^[a-f0-9]{1,64}$/.test(data.id)) return;
+        let response;
+        try {
+            const text = JSON.stringify(data.request);
+            if (text.length > 1048576) throw new Error("Runtime request exceeds 1 MiB");
+            if (typeof window.aurumRuntimeRequest !== "function") throw new Error("Runtime bridge is not ready");
+            window.aurumRuntimeResponse = "";
+            window.aurumRuntimeRequest(text);
+            const deadline = performance.now() + 2000;
+            while (!window.aurumRuntimeResponse && performance.now() < deadline)
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            if (typeof window.aurumRuntimeResponse !== "string" || window.aurumRuntimeResponse.length > 1048576)
+                throw new Error("Invalid runtime response");
+            response = JSON.parse(window.aurumRuntimeResponse);
+        } catch (error) { response = { ok: false, error: String(error.message).slice(0, 500) }; }
+        tell("aurum-runtime-response", { id: data.id, response });
+    }
+    window.addEventListener("message", (event) => {
+        if (event.source !== window.parent || event.origin !== AURUM_PREVIEW.parent || event.data?.type !== "aurum-runtime-request") return;
+        if (runtimeQueued >= 16) { tell("aurum-runtime-response", { id: event.data.id, response: { ok: false, error: "Runtime request queue is full" } }); return; }
+        runtimeQueued++;
+        runtimeQueue = runtimeQueue.then(() => handleRuntime(event)).finally(() => runtimeQueued--);
+    });
     window.addEventListener("error", (event) =>
         tell("aurum-preview-error", {
             message: String(event.message).slice(0, 500),

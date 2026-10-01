@@ -1,6 +1,11 @@
 # Orbit Break
 
-A browser-playable 3D survival game built through Aurum's project operations. Survive five waves, spend salvage in a paused workshop and defeat the three-phase Warden. The game uses procedural geometry and generated sound effects, with no asset download or model service required.
+A 3D orbital survival campaign built through Aurum's project operations. Twelve
+authored encounters take you through Breakwater Dock, Aperture Relay and Ash
+Foundry. Recover cargo, protect reactor cores, survive transmission windows and
+break three boss blockades. Choose one of three modules at every workshop stop.
+Artwork, display type and music are bundled; playing needs no asset service or
+model account.
 
 ![Orbit Break title screen](../../docs/media/orbit-break-menu.png)
 
@@ -23,26 +28,74 @@ For browser play, provision the matching [web templates](../../docs/WEB_PREVIEW.
 | Space | Dash with brief invulnerability; 2.2-second cooldown |
 | Left mouse, held | Manual aim; otherwise targeting and firing are automatic |
 | Escape | Pause or resume |
-| 1, 2, 3 | Buy a workshop upgrade |
-| Q | Cycle weapon in the menu or workshop |
-| R / T | Buy a repair / support turret in the workshop |
-| Enter | Start, retry or leave the workshop |
+| 1, 2, 3 or click | Choose a frame or one of the three offered upgrades |
+| Enter | Open the hangar, launch the remembered frame, or retry |
 | M | Toggle sound |
 | Touch | Drag the left side to move; tap DASH |
 
 The run also pauses when focus is lost. Scores and sound preference stay on your machine. Touch input handling is covered by synthetic events; Android/iOS device behavior is not yet verified.
 
+## Three choices, one upgrade
+
+The workshop always shows exactly three cards. Choose one and the next wave begins with a short spawn grace period. There is no currency, separate weapon picker, repair shop or extra Continue button. The game stays paused until a choice is made.
+
+You start with Pulse. The first stop offers Split Battery, Lance Array or Arc Conductor. New weapons arrive through the same choice flow as other upgrades.
+
+- Pulse's Split Battery adds two wing shots and 25% damage. Subsequent Pulse evolution adds 25% fire rate and damage.
+- Lance trades fire rate for 2.8x per-hit power and three-target piercing. Rail Accelerator adds two more pierces and 40% damage.
+- Arc chains through three nearby contacts. Chain Reaction adds two links and 35% damage.
+- Repair Weave restores up to 55 integrity and raises maximum hull by 30.
+- Wingman adds a following escort drone. Shock Drive makes dashes damage nearby enemies and shortens their cooldown by 25%.
+
+## Campaign and flight frames
+
+Kestrel launches with 100 hull and recovers dash charge from pickups. Bastion
+has 140 hull and 10% damage resistance. Relay has 95 hull and starts with a
+light escort drone. Choose a frame in the hangar with 1, 2 or 3, or click it.
+Enter selects the remembered frame. Their traits change the run without locking
+weapons behind a menu.
+
+| Station | Encounters | Main threats |
+| --- | --- | --- |
+| Breakwater Dock | Departure clearance, Loose cargo, Dockside hold, Gatekeeper | Pursuit patrols, recovered caches, a vulnerable reactor and rotating boss volleys |
+| Aperture Relay | Signal intercept, Dead air, Black-box recovery, Carrier | Strafing interceptors, cycling frontal shields, timed holds and deployed escorts |
+| Ash Foundry | Hot approach, Containment breach, Last transmission, Warden | Vent lanes, bombardment, drifting mines, reactor defense and overlapping boss marks |
+
+Clear encounters end after the planned patrol is defeated. Recovery also
+requires all three caches before a two-minute lockdown. Defense fails if the
+reactor is destroyed. Hold encounters must complete both the timer and the
+patrol. The Gatekeeper, Carrier and Warden have different attacks and three
+health phases each. Their visible circle and lane boundaries match damage areas.
+
+Sentinels block most frontal projectile damage during their guard cycle; flank
+them, wait for an opening or use Arc. Interceptors strafe and rush, Bombardiers
+mark strikes, and drift mines arm at close range. The pause menu lists fitted
+modules. Flight Records keeps the last five sorties, best score, discovered
+contacts and four commendations. Invalid save values are bounded on load;
+updates replace the prior record through a temporary file.
+
+![Flight frames](../../docs/media/orbit-break-hangar.png)
+
 ## Build choices
 
-- Pulse fires quickly; Split Shot adds two wing projectiles.
-- Lance trades rate of fire for damage and pierces up to three contacts per projectile.
-- Arc chains through nearby contacts with diminishing damage. Split Shot extends it from three links to five.
-- Overdrive increases fire rate and base damage. Reinforce raises maximum hull and restores 25 integrity. Each upgrade can be bought once per workshop; weapons can be swapped free.
-- Repairs restore 45 integrity for 30 salvage. A support turret costs 80 salvage and persists until the end of the run.
+The larger pool has fifteen module or weapon choices. Ion Bloom turns nearby
+kills into area damage, a Breech Capacitor charges the next volley after a dash,
+and Storm Lattice lets Arc links recover hull. Composite Plating, repair nanites,
+an upgraded escort, salvage tethers and vector thrusters support other routes.
+Capped effects leave the offer pool. Boss salvage grants stronger choices after
+each station blockade, with exactly three cards and no extra purchase controls.
 
-The workshop never advances on a timer and does not heal the player for free. The Warden changes attack patterns at two-thirds and one-third hull. Expanding enemy rings warn of shots; marked red areas give 1.4 seconds to move before a strike.
+![Orbit Break's untimed three-choice workshop](../../docs/media/orbit-break-workshop.png)
 
-![Orbit Break's untimed workshop inside Studio](../../docs/media/orbit-break-workshop.png)
+## Presentation
+
+The arena uses a weathered industrial deck and layered space artwork, with real 3D station structures, bevelled ship silhouettes, directional lighting, shadows and 2x MSAA. Ships and effects remain actual rendered game objects, not screenshots.
+
+Combat has thruster trails, muzzle flashes, impact sparks, expanding explosions, a shield response to damage, elongated Lance rounds and branching Arc beams. The particle system is bounded to 192 pooled instances and 32 flash/ring effects. Weapon sounds are locally synthesized with distinct attacks and controlled mix levels. Browser reduced-motion preferences disable camera shake and nonessential card fades.
+
+The HUD uses framed metal-and-glass instrument housings, inset gauges and shaded equipment illustrations. Barlow Condensed gives titles and instrument values a distinct display style; normal text keeps the bundled fallback font. Hull, armament and dash charge share one cluster; wave progress and score sit opposite it, leaving the center clear. Damage leaves a brief amber gauge trail, disabled with reduced motion. Workshop modules retain exactly three choices, visible shortcuts and hover/keyboard-focus feedback.
+
+The perspective camera preserves the arena's full movement boundary in portrait and compact layouts. The backdrop covers the viewport without stretching its artwork. Raised perimeter armour, structural ribs, a recessed reactor lens, stencilled pad numbers, layered ship hulls and contact shadows give the scene depth. Directional warm/cool lighting and textured surface normals reveal those forms. The station armour is merged into a single static mesh. Ship banking is visual only and respects reduced motion. Physical mobile devices are not yet certified. [Artwork provenance and prompts](godot/assets/README.md), [display font and license](godot/assets/fonts/README.md).
 
 ## Build a portable game
 
@@ -80,7 +133,20 @@ On a disposable project copy, run the acceptance scene with:
 {"op":"play","scene":"tests/acceptance.tscn","frames":120,"fixed_fps":60,"user_args":["--acceptance"],"report":true}
 ```
 
-There are 47 gameplay checks covering input, combat, purchases, pause, weapon identities, boss phases, telegraph timing, victory/defeat, restart and live tuning. The deterministic suite directly drives state transitions. Separate `--autoplay --weapon 0`, `--weapon 1`, `--weapon 2` and `--idle-test` campaigns exercise the ordinary game loop without changing base player statistics: all three moving builds win, standing still loses. A browser suite additionally uses real keyboard input and checks the live inspector's round trip. [Verification scope](../../docs/WEB_PREVIEW.md#verification).
+There are 85 gameplay and HUD checks covering the three-card contract, frame
+selection, all twelve encounters, cache collection and expiry, reactor damage,
+pause, shield openings, boss helpers, lane geometry, charged shots, area damage,
+atomic save/load, cleanup, live tuning and camera framing. Five ordinary campaign
+scenarios cover Pulse/Lance/Arc and all flight frames, using normal player stats:
+each wins all three bosses and recovers the full manifest. Standing still fails
+the recovery objective. The moving scenarios take about four to six simulated
+minutes, excluding time spent choosing workshop modules; this is not a human
+playtime or performance benchmark. [Verification scope](../../docs/WEB_PREVIEW.md#verification).
+
+The original instrumental score has a shared four-bar motif with a separate
+arrangement for each station. Menus lower its level and mute affects music and
+effects. [Music sources](godot/assets/music/README.md) include a reproducible
+generator. Native runtime checks cover playback, looping, mute and resume.
 
 ## Edit without restarting
 

@@ -1,0 +1,140 @@
+//! Bounded source snapshots shared by preview exports and rendered playtests.
+use crate::hash::Sha256;
+use std::io::Read;
+use std::path::Path;
+
+fn ignored(name: &str) -> bool {
+    (name.starts_with('.') && name != ".gdignore" && name != ".cargo")
+        || name == "credentials.toml"
+        || matches!(
+            name,
+            "dist" | "target" | "node_modules" | "logs" | "test-results" | "playwright-report"
+        )
+}
+
+fn visit(
+    root: &Path,
+    directory: &Path,
+    depth: usize,
+    count: &mut usize,
+    bytes: &mut u64,
+    callback: &mut impl FnMut(&Path, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    if depth > 24 {
+        return Err("Project nesting exceeds the snapshot limit".into());
+    }
+    let mut entries = std::fs::read_dir(directory)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name();
+        let name = name.to_str().ok_or("Snapshot filenames must be UTF-8")?;
+        if ignored(name) {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!("Snapshots do not follow symlinks: {name}"));
+        }
+        if metadata.is_dir() {
+            visit(root, &entry.path(), depth + 1, count, bytes, callback)?;
+        } else if metadata.is_file() {
+            *count += 1;
+            *bytes = bytes.saturating_add(metadata.len());
+            if *count > 20_000 || *bytes > 4 * 1024 * 1024 * 1024 {
+                return Err("Project exceeds the bounded snapshot limit".into());
+            }
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|e| e.to_string())?
+                .to_str()
+                .ok_or("Snapshot filenames must be UTF-8")?
+                .replace('\\', "/");
+            callback(&path, &relative)?;
+        } else {
+            return Err(format!("Unsupported snapshot entry: {name}"));
+        }
+    }
+    Ok(())
+}
+
+pub fn copy(source: &Path, destination: &Path) -> Result<(), String> {
+    copy_excluding(source, destination, &[])
+}
+
+/// Omit tooling from newly created snapshots. Never delete or alter source entries.
+pub fn copy_excluding(source: &Path, destination: &Path, excluded: &[&str]) -> Result<(), String> {
+    std::fs::create_dir_all(destination).map_err(|e| e.to_string())?;
+    visit(source, source, 0, &mut 0, &mut 0, &mut |path, relative| {
+        if excluded
+            .iter()
+            .any(|prefix| relative == *prefix || relative.starts_with(&format!("{prefix}/")))
+        {
+            return Ok(());
+        }
+        let target = destination.join(relative);
+        std::fs::create_dir_all(target.parent().ok_or("Missing snapshot parent")?)
+            .map_err(|e| e.to_string())?;
+        std::fs::copy(path, target).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+/// Hash paths and bytes, not timestamps: same-size edits and deletes invalidate a build.
+/// The root tuning file is live data and intentionally does not invalidate code exports.
+pub fn fingerprint(source: &Path) -> Result<String, String> {
+    let mut hash = Sha256::new();
+    visit(source, source, 0, &mut 0, &mut 0, &mut |path, relative| {
+        if relative == "tuning.json" || relative.ends_with("/tuning.json") {
+            return Ok(());
+        }
+        hash.update(&(relative.len() as u64).to_le_bytes());
+        hash.update(relative.as_bytes());
+        let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        hash.update(
+            &file
+                .metadata()
+                .map_err(|e| e.to_string())?
+                .len()
+                .to_le_bytes(),
+        );
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            let size = file.read(&mut buffer).map_err(|e| e.to_string())?;
+            if size == 0 {
+                break;
+            }
+            hash.update(&buffer[..size]);
+        }
+        Ok(())
+    })?;
+    Ok(hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn revisions_detect_same_size_edits_deletes_and_ignore_live_or_generated_data() {
+        let root =
+            std::env::temp_dir().join(format!("aurum-snapshot-{}", crate::random::session_id()));
+        std::fs::create_dir_all(root.join(".godot")).unwrap();
+        std::fs::write(root.join("main.gd"), "one").unwrap();
+        let first = fingerprint(&root).unwrap();
+        std::fs::write(root.join("tuning.json"), "{}").unwrap();
+        std::fs::write(root.join(".godot/cache"), "cached").unwrap();
+        assert_eq!(fingerprint(&root).unwrap(), first);
+        std::fs::write(root.join("main.gd"), "two").unwrap();
+        assert_ne!(fingerprint(&root).unwrap(), first);
+        std::fs::remove_file(root.join("main.gd")).unwrap();
+        assert_ne!(fingerprint(&root).unwrap(), first);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

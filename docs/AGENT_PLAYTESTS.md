@@ -9,13 +9,15 @@ The same project operation contract is available through CLI, Studio HTTP, and t
 ```
 
 - `scene` selects an explicit scene with the backend's `--scene` option, rather than silently running the project default.
-- `frames` is an integer from 1 to 36000, default 120. The wall-clock deadline remains 90 seconds.
+- `frames` is an integer from 1 to 3,600,000, default 120. `timeout_seconds` sets a separate 1 to 600 second wall deadline, default 90.
 - `fixed_fps` optionally fixes simulation time, from 1 to 240. This does not make arbitrary threaded or nondeterministic game logic deterministic.
 - `user_args` accepts at most 32 strings, each at most 4096 bytes. They follow the engine argument separator and cannot replace engine flags. `--aurum-report` is reserved.
 - `report: true` creates a unique report location and passes `--aurum-report <absolute path>` to the game. Write a JSON object with a boolean `ok`. Reports are limited to 1 MiB. Missing/invalid reports, `ok: false`, runtime errors, timeouts, or a failing process exit fail the operation.
 - Results include the structured report, report path, engine exit, bounded log tail, and errors. A game-written verdict is evidence from game code, not an independent proof of correctness.
 
 Studio's Agents panel accepts a scene, JSON argument array, and a required-verdict checkbox. Its output retains full bounded diagnostic context on failure.
+
+`capture` uses the same contract with a rendered window and PNG frames. `capture_frames`, `width`, `height` and `events` supply capture points, resolution and a bounded input timeline. Runs isolate source and user data, retain full logs and sampled state, and distinguish frame exhaustion from wall timeout. See [runtime editing and verification](INTEGRATION.md).
 
 ## Export presets
 
@@ -37,4 +39,4 @@ Windows `package` remains a separate portable path that includes the installed r
 
 ## Reference MVP
 
-The included [Orbit Break project](../examples/orbit-break) exercises authoring, runtime validation, headless gameplay reports, stdio MCP, touch-event handling, live tuning, and portable packaging. Its verification script creates isolated copies and retains evidence. The reference game's restart-free tuning is implemented by the game itself. Arbitrary script/scene edits still use validated preview restarts; this is not universal state-preserving code reload.
+The included [Orbit Break project](../examples/orbit-break) exercises authoring, runtime validation, headless gameplay reports, stdio MCP, touch-event handling, live tuning, checkpoint restoration and portable packaging. Its verification script creates isolated copies and retains evidence. Supported properties apply live; script/scene changes use checkpoint-based rebuilding. This is not universal virtual-machine memory migration.

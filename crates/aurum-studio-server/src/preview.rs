@@ -11,6 +11,8 @@ use std::time::Duration;
 
 pub struct Preview {
     pub project: PathBuf,
+    source_sha256: String,
+    requires_isolation: bool,
     output: PathBuf,
     url: String,
     session: String,
@@ -79,12 +81,24 @@ impl Preview {
         }
         std::fs::rename(stage, &output).map_err(|e| e.to_string())?;
         Ok(
-            json!({"ok":true,"directory":output,"files":count,"entry":"index.html","mode":"web","message":"Serve this directory over HTTP(S). It needs no Studio process, credentials or cross-origin isolation headers."}),
+            json!({"ok":true,"directory":output,"files":count,"entry":"index.html","mode":"web","requires_cross_origin_isolation":self.requires_isolation,"message":if self.requires_isolation {"Serve over HTTP(S) with application/wasm, Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp. No Studio process or credentials are needed."} else {"Serve this directory over HTTP(S). It needs no Studio process, credentials or cross-origin isolation headers."}}),
         )
     }
 
     pub fn describe(&self, reused: bool) -> Value {
-        json!({"ok":true,"url":self.url,"session":self.session,"project":self.project,"reused":reused,"mode":"web","isolated_origin":true})
+        json!({"ok":true,"url":self.url,"session":self.session,"project":self.project,"source_sha256":self.source_sha256,"requires_cross_origin_isolation":self.requires_isolation,"reused":reused,"mode":"web","isolated_origin":true})
+    }
+
+    pub fn freshness(&self, project: &Project) -> Result<Value, String> {
+        let current = source_revision(project)?;
+        let mut result = self.describe(true);
+        result["stale"] = json!(current != self.source_sha256);
+        result["current_sha256"] = json!(current);
+        Ok(result)
+    }
+
+    pub fn is_fresh(&self, project: &Project) -> Result<bool, String> {
+        Ok(source_revision(project)? == self.source_sha256)
     }
 
     pub fn build(
@@ -92,18 +106,19 @@ impl Preview {
         hint: Option<&Path>,
         parent_origin: &str,
     ) -> Result<Self, String> {
-        if project.config.rust_package.is_some() {
-            return Err("This preview target supports script projects. Native extensions need a compatible WebAssembly build; use Run native for this project.".into());
-        }
         let engine = match hint {
             Some(path) if path.is_file() => path.to_path_buf(),
             Some(_) => return Err("The configured runtime executable does not exist".into()),
             None => aurum_studio_core::project_ops::engine_binary(project)?,
         };
         let template = web_template(&engine)?;
+        let extension_template = std::env::var_os("AURUM_WEB_EXTENSION_TEMPLATE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| template.with_file_name("web_dlink_nothreads_release.zip"));
         let godot = project
             .godot_project_dir()
             .ok_or("project.godot was not found")?;
+        let source_sha256 = source_revision(project)?;
         let _lock =
             aurum_studio_core::BuildLock::try_acquire(&project.root).map_err(|e| e.to_string())?;
         let session = aurum_studio_core::random::session_id();
@@ -112,27 +127,109 @@ impl Preview {
         let output = work.join("export");
         std::fs::create_dir_all(&source).map_err(|e| e.to_string())?;
         std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
-        copy_project(godot, &source, 0, &mut 0, &mut 0)?;
-        let preset = format!("[preset.0]\nname=\"Aurum Preview\"\nplatform=\"Web\"\nrunnable=true\nexport_filter=\"all_resources\"\ninclude_filter=\"tuning.json\"\nexclude_filter=\"tests/*,.aurum/*,dist/*\"\nexport_path=\"\"\nscript_export_mode=2\n\n[preset.0.options]\ncustom_template/release={}\nvariant/extensions_support=false\nvariant/thread_support=false\nhtml/canvas_resize_policy=2\nprogressive_web_app/enabled=false\n", serde_json::to_string(&template.to_string_lossy().replace('\\',"/")).map_err(|e|e.to_string())?);
-        files::write_atomic(&source.join("export_presets.cfg"), preset.as_bytes())
+        let web_build_receipt = if project.config.rust_package.is_some() {
+            let mut built = aurum_studio_core::web_build::build(project)?;
+            // The editor importer needs the host-side class registry even for Web-only play.
+            // Install it into this snapshot's work directory, never over a running DLL.
+            let package = project.config.rust_package.as_deref().unwrap();
+            let name = aurum_studio_core::build::library_name(package);
+            let host = work
+                .join("host")
+                .join(aurum_studio_core::Profile::Debug.installed_filename(&name));
+            let request = aurum_studio_core::BuildRequest::new(
+                &project.root,
+                package,
+                aurum_studio_core::Profile::Debug,
+                &host,
+                "cargo",
+            );
+            let report = aurum_studio_core::build::run(&request, false, Duration::from_secs(600))
+                .map_err(|e| format!("Host registry build for Web import failed: {e}"))?;
+            built["host_artifacts"] = json!([{"name":name,"path":report.installed.path,"sha256":report.installed.sha256}]);
+            let receipt = work.join("rust-web.json");
+            files::write_atomic(
+                &receipt,
+                &serde_json::to_vec(&built).map_err(|e| e.to_string())?,
+            )
             .map_err(|e| e.to_string())?;
+            receipt.display().to_string()
+        } else {
+            String::new()
+        };
+        aurum_studio_core::snapshot::copy_excluding(godot, &source, &["addons/aurum_editor"])?;
+        if source_revision(project)? != source_sha256 {
+            return Err(
+                "Source changed while taking the preview snapshot; retry after saving".into(),
+            );
+        }
+        if source.join("addons/aurum_live").exists() {
+            return Err("addons/aurum_live is reserved for private preview snapshots".into());
+        }
+        files::write_atomic(
+            &source.join("addons/aurum_live/runtime.gd"),
+            include_bytes!("../../aurum-studio-core/src/runtime_bridge.gd"),
+        )
+        .map_err(|e| e.to_string())?;
+        let setup = work.join("preview_setup.gd");
+        files::write_atomic(&setup, include_bytes!("preview_setup.gd"))
+            .map_err(|e| e.to_string())?;
+        let setup_report = work.join("setup.json");
         let run = |args: Vec<String>, label: &str| -> Result<(), String> {
-            let result = aurum_studio_core::Command::new(&engine)
-                .args(args)
+            let mut result = aurum_studio_core::Command::new(&engine)
+                .args(args.clone())
                 .directory(&work)
                 .run(Duration::from_secs(180))
                 .map_err(|e| e.to_string())?;
-            let log = format!("{}\n{}", result.stdout, result.stderr);
+            let mut log = format!("{}\n{}", result.stdout, result.stderr);
+            if label == "import"
+                && aurum_studio_core::project_ops::import_shutdown_crash(result.code, &log)
+            {
+                files::write_atomic(&work.join("import-first-crash.log"), log.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                result = aurum_studio_core::Command::new(&engine)
+                    .args(args)
+                    .directory(&work)
+                    .run(Duration::from_secs(180))
+                    .map_err(|e| e.to_string())?;
+                log = format!("{}\n{}", result.stdout, result.stderr);
+            }
             files::write_atomic(&work.join(format!("{label}.log")), log.as_bytes())
                 .map_err(|e| e.to_string())?;
             if !result.success() || log.contains("ERROR:") {
                 return Err(format!(
-                    "Web preview {label} failed: {}",
-                    result.tail(22).join("\n")
+                    "Web preview {label} failed (exit {:?}, wall_timeout={}): {}\nEvidence: {}",
+                    result.code,
+                    result.timed_out,
+                    result.tail(22).join("\n"),
+                    work.display()
                 ));
             }
             Ok(())
         };
+        run(
+            vec![
+                "--headless".into(),
+                "--path".into(),
+                work.display().to_string(),
+                "--script".into(),
+                setup.display().to_string(),
+                "--".into(),
+                template.display().to_string(),
+                setup_report.display().to_string(),
+                "res://addons/aurum_live/runtime.gd".into(),
+                extension_template.display().to_string(),
+                web_build_receipt,
+                project.config.web_preset.clone().unwrap_or_default(),
+                source.display().to_string(),
+            ],
+            "setup",
+        )?;
+        let setup_result: Value =
+            serde_json::from_slice(&std::fs::read(&setup_report).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let preset = setup_result["preset"]
+            .as_str()
+            .ok_or("Preview setup did not select a Web preset")?;
         run(
             vec![
                 "--headless".into(),
@@ -149,7 +246,7 @@ impl Preview {
                 "--path".into(),
                 source.display().to_string(),
                 "--export-release".into(),
-                "Aurum Preview".into(),
+                preset.into(),
                 output.join("index.html").display().to_string(),
             ],
             "export",
@@ -198,13 +295,16 @@ impl Preview {
             ],
             "licenses",
         )?;
-        Self::serve(
+        let mut preview = Self::serve(
             project.root.clone(),
             output,
             godot.join("tuning.json"),
             session,
             parent_origin.to_owned(),
-        )
+        )?;
+        preview.source_sha256 = source_sha256;
+        preview.requires_isolation = setup_result["requires_isolation"] == true;
+        Ok(preview)
     }
 
     fn serve(
@@ -250,6 +350,8 @@ impl Preview {
         });
         Ok(Self {
             project,
+            source_sha256: String::new(),
+            requires_isolation: false,
             output: root,
             url: format!("http://127.0.0.1:{port}/{session}/index.html"),
             session,
@@ -279,6 +381,7 @@ fn web_template(engine: &Path) -> Result<PathBuf, String> {
         .ok_or("Web templates are missing. Provision the matching Godot 4.7 web templates or set AURUM_WEB_TEMPLATE to web_nothreads_release.zip. Run native remains available.".into())
 }
 
+#[cfg(test)]
 fn copy_project(
     source: &Path,
     destination: &Path,
@@ -307,9 +410,6 @@ fn copy_project(
             std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
             copy_project(&entry.path(), &target, depth + 1, count, bytes)?;
         } else if kind.is_file() {
-            if entry.path().extension().is_some_and(|e| e == "gdextension") {
-                return Err("A native extension was found. This preview requires a script-only project; use Run native until a WebAssembly extension is configured.".into());
-            }
             *count += 1;
             *bytes += entry.metadata().map_err(|e| e.to_string())?.len();
             if *count > 20000 || *bytes > 4 * 1024 * 1024 * 1024 {
@@ -319,6 +419,17 @@ fn copy_project(
         }
     }
     Ok(())
+}
+
+fn source_revision(project: &Project) -> Result<String, String> {
+    let root = if project.config.rust_package.is_some() {
+        project.root.as_path()
+    } else {
+        project
+            .godot_project_dir()
+            .ok_or("project.godot was not found")?
+    };
+    aurum_studio_core::snapshot::fingerprint(root)
 }
 
 fn serve_connection(mut stream: TcpStream, content: &Content) {
@@ -390,7 +501,7 @@ fn serve_response(stream: &mut TcpStream, content: &Content) {
     let Ok(mut file) = std::fs::File::open(&path) else {
         return;
     };
-    let head=format!("HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: frame-ancestors {}\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",metadata.len(),content.parent_origin);
+    let head=format!("HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nCross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Embedder-Policy: require-corp\r\nCross-Origin-Resource-Policy: cross-origin\r\nContent-Security-Policy: frame-ancestors {}\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",metadata.len(),content.parent_origin);
     if stream.write_all(head.as_bytes()).is_ok() && request.method == "GET" {
         let _ = std::io::copy(&mut file, stream);
     }
@@ -574,7 +685,7 @@ mod tests {
         assert!(output.join("main.gd").is_file());
         assert!(!output.join(".godot").exists());
         std::fs::write(source.join("native.gdextension"), b"native").unwrap();
-        assert!(copy_project(&source, &output, 0, &mut 0, &mut 0).is_err());
+        assert!(copy_project(&source, &output, 0, &mut 0, &mut 0).is_ok());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

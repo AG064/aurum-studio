@@ -49,6 +49,7 @@
                         value.report_error ||
                         (
                             value.report?.failures ||
+                            value.diagnostics?.errors ||
                             value.errors ||
                             value.log ||
                             []
@@ -151,6 +152,7 @@
             const data = await api("/api/projects");
             const state = await api("/api/state");
             activeRoot = state.root;
+            $("run-web").disabled = !activeRoot;
             godotFolder = state.godot_directory || "";
             $("project").textContent = state.project;
             $("project-path").textContent = state.root;
@@ -521,7 +523,7 @@
                 debug: $("export-debug").checked,
             }),
         );
-        bind("headless-play", "Headless playtest", async () => {
+        async function playtest(rendered = false) {
             const args = JSON.parse($("test-args").value);
             if (!Array.isArray(args))
                 throw new Error(
@@ -529,8 +531,9 @@
                 );
             const report = $("test-report").checked;
             const request = {
-                op: "play",
-                frames: report || args.length ? 36000 : 120,
+                op: rendered ? "capture" : "play",
+                frames: $("test-frames").value ? Number($("test-frames").value) : report || args.length ? 36000 : 120,
+                timeout_seconds: Number($("test-timeout").value),
                 fixed_fps: 60,
                 user_args: args,
                 report,
@@ -538,7 +541,9 @@
             const scene = $("test-scene").value.trim();
             if (scene) request.scene = scene;
             await showOperation("test-result", request);
-        });
+        }
+        bind("headless-play", "Headless playtest", () => playtest(false));
+        bind("capture-playtest", "Rendered playtest", () => playtest(true));
         bind("refresh-files", "Read files", refreshFiles);
         bind("open-file", "Read file", openFile);
         bind("open-saved-file", "Read saved version", () => openFile(true));
@@ -683,44 +688,164 @@
         $("agent-readonly").addEventListener("change", () =>
             agentConfig().catch(() => {}),
         );
+        let previewBusy = false, previewPollBusy = false, attemptedRevision = "";
+        const runtimePending = new Map();
+        function runtimeRequest(request) {
+            if (!preview) return Promise.reject(new Error("No preview is running"));
+            const id = crypto.randomUUID().replaceAll("-", "");
+            return new Promise((resolve, reject) => {
+                const timer = setTimeout(() => { runtimePending.delete(id); reject(new Error("Runtime response timed out")); }, 5000);
+                runtimePending.set(id, { resolve, reject, timer, session: preview.session });
+                $("preview-frame").contentWindow.postMessage({ type: "aurum-runtime-request", session: preview.session, id, request }, preview.origin);
+            });
+        }
+        async function restoreWhenReady(checkpoint) {
+            const deadline = Date.now() + 30000;
+            while (Date.now() < deadline) {
+                const probe = await runtimeRequest({ op: "inspect" }).catch(() => ({ ok: false }));
+                if (probe.ok) {
+                    if (!checkpoint) { $("reload-status").textContent = "Started a fresh preview."; return; }
+                    const restored = await runtimeRequest({ op: "restore", checkpoint });
+                    if (!restored.ok) throw new Error(restored.error || "Checkpoint restore failed");
+                    $("reload-status").textContent = restored.complete
+                        ? "Rebuilt and restored the checkpoint."
+                        : `Rebuilt with partial state restoration (${restored.skipped} unsupported or changed entries).`;
+                    return;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 250));
+            }
+            throw new Error("The new game did not make its runtime bridge ready");
+        }
+        async function adoptPreview(result, checkpoint) {
+            const url = new URL(result.url);
+            if (url.protocol !== "http:" || url.hostname !== "127.0.0.1") throw new Error("The server returned an invalid preview origin");
+            const previous = preview;
+            const previousFrame = $("preview-frame");
+            const unchanged = previousFrame.src === result.url;
+            let nextFrame = previousFrame;
+            if (!unchanged) {
+                $("reload-status").textContent = checkpoint ? "Restoring checkpoint..." : "Starting a fresh preview...";
+                nextFrame = previousFrame.cloneNode(false);
+                previousFrame.id = "preview-frame-previous";
+                previousFrame.hidden = true;
+                nextFrame.id = "preview-frame";
+                nextFrame.src = result.url;
+                previousFrame.before(nextFrame);
+            }
+            preview = { ...result, origin: url.origin };
+            $("preview-frame").hidden = false;
+            $("preview-empty").hidden = true;
+            $("preview-revision").textContent = `Source ${(result.source_sha256 || "").slice(0, 8)}`;
+            $("preview-session").textContent = "Isolated browser preview";
+            if (!unchanged) {
+                try {
+                    $("preview-state").textContent = "Loading game";
+                    await restoreWhenReady(checkpoint);
+                    await api("/api/preview", { action: "commit", session: result.session });
+                    previousFrame.remove();
+                } catch (error) {
+                    nextFrame.remove();
+                    previousFrame.id = "preview-frame";
+                    previousFrame.hidden = !previous;
+                    preview = previous;
+                    if (previous) await api("/api/preview", { action: "rollback", session: result.session }).catch(() => {});
+                    if (previous && checkpoint) await runtimeRequest({ op: "resume", paused: checkpoint.paused }).catch(() => {});
+                    $("preview-state").textContent = previous ? "Preview retained" : "Preview unavailable";
+                    if (previous) $("preview-revision").textContent = `Source ${(previous.source_sha256 || "").slice(0, 8)}`;
+                    throw error;
+                }
+            }
+            else if (checkpoint) await runtimeRequest({ op: "resume", paused: checkpoint.paused });
+            setPanel("scene");
+        }
+        async function captureBeforeRebuild() {
+            if (!preview || !$("preserve-state").checked) return null;
+            const saved = await runtimeRequest({ op: "checkpoint", freeze: true });
+            if (!saved.ok) throw new Error(saved.error || "Could not capture runtime state. Turn off state preservation only if a fresh run is intended.");
+            return saved.checkpoint;
+        }
         async function startPreview(force = false) {
+            if (previewBusy) return;
+            if (!activeRoot) throw new Error("Open a project before starting a preview");
+            previewBusy = true;
             const project = activeRoot;
             const previousState = $("preview-state").textContent;
+            let checkpoint = null;
+            $("reload-status").textContent = preview && $("preserve-state").checked ? "Capturing a checkpoint..." : "Starting a fresh preview...";
             $("run-web").disabled = true;
             $("preview-state").textContent = "Building preview";
             $("preview-detail").textContent =
                 "Importing and exporting a private project snapshot. The first build can take a moment.";
             try {
+                checkpoint = await captureBeforeRebuild();
                 const result = await api("/api/preview", { project, force });
                 if (activeRoot !== project) return;
-                const url = new URL(result.url);
-                if (url.protocol !== "http:" || url.hostname !== "127.0.0.1")
-                    throw new Error(
-                        "The server returned an invalid preview origin",
-                    );
-                preview = { ...result, origin: url.origin };
-                const unchanged = $("preview-frame").src === result.url;
-                if (!unchanged) $("preview-frame").src = result.url;
-                $("preview-frame").hidden = false;
-                $("preview-empty").hidden = true;
-                $("preview-state").textContent = unchanged
-                    ? previousState
-                    : "Loading game";
-                $("preview-session").textContent = "Isolated browser preview";
-                setPanel("scene");
+                await adoptPreview(result, checkpoint);
+                if (result.reused) $("preview-state").textContent = previousState;
             } catch (error) {
+                if (checkpoint) await runtimeRequest({ op: "resume", paused: checkpoint.paused }).catch(() => {});
                 $("preview-state").textContent = preview
                     ? "Preview retained"
                     : "Preview unavailable";
                 $("preview-detail").textContent = error.message;
                 throw error;
             } finally {
+                previewBusy = false;
                 $("run-web").disabled = false;
             }
         }
-        async function stopPreview() {
-            if (preview) await api("/api/preview", { action: "stop" });
+        setInterval(async () => {
+            if (!preview || previewBusy || previewPollBusy) return;
+            previewPollBusy = true;
+            try {
+                const status = await api("/api/preview");
+                if (status.active === false) { await stopPreview(false); return; }
+                if (!preview || status.project !== activeRoot) return;
+                if (status.session !== preview.session) {
+                    previewBusy = true;
+                    try {
+                        const checkpoint = await captureBeforeRebuild();
+                        await adoptPreview(status, checkpoint);
+                    } finally { previewBusy = false; }
+                }
+                $("preview-revision").textContent = status.stale ? "Source changed" : `Source ${(status.source_sha256 || "").slice(0, 8)}`;
+                if (status.stale && $("auto-rebuild").checked && attemptedRevision !== status.current_sha256) {
+                    attemptedRevision = status.current_sha256;
+                    await startPreview(false);
+                }
+            } catch (error) { $("reload-status").textContent = error.message; }
+            finally { previewPollBusy = false; }
+        }, 2000);
+        bind("inspect-runtime", "Inspect live", async () => {
+            $("runtime-status").textContent = "Inspecting live values...";
+            const result = await runtimeRequest({ op: "inspect", path: $("runtime-path").value.trim() || "." });
+            if (!result.ok) throw new Error(result.error);
+            $("runtime-properties").replaceChildren();
+            for (const property of result.properties.slice(0, 64)) {
+                const label = document.createElement("label");
+                label.textContent = property.name;
+                const input = document.createElement("input");
+                input.setAttribute("aria-label", `Live ${property.name}`);
+                input.value = JSON.stringify(property.value);
+                input.addEventListener("change", async () => {
+                    try {
+                        const value = JSON.parse(input.value);
+                        const applied = await runtimeRequest({ op: "apply", changes: [{ path: result.path, property: property.name, value }] });
+                        if (!applied.ok) throw new Error(applied.error);
+                        property.value = value;
+                        $("runtime-status").textContent = `${property.name} applied without restarting.`;
+                    } catch (error) { $("runtime-status").textContent = error.message; input.value = JSON.stringify(property.value); }
+                });
+                label.append(input);
+                $("runtime-properties").append(label);
+            }
+            $("runtime-status").textContent = `${result.class}: ${result.properties.length} editable values. Children: ${result.children.map((node) => node.path).join(", ") || "none"}`;
+        });
+        async function stopPreview(notifyServer = true) {
+            if (preview && notifyServer) await api("/api/preview", { action: "stop" });
             preview = null;
+            for (const pending of runtimePending.values()) { clearTimeout(pending.timer); pending.reject(new Error("Preview stopped")); }
+            runtimePending.clear();
             $("preview-frame").removeAttribute("src");
             $("preview-frame").hidden = true;
             $("preview-empty").hidden = false;
@@ -883,6 +1008,15 @@
                     $("preview-state").textContent = "Preview ready";
                 return;
             }
+            if (data.type === "aurum-runtime-response") {
+                const pending = runtimePending.get(data.id);
+                if (pending && pending.session === data.session && data.response && typeof data.response === "object" && JSON.stringify(data.response).length <= 1048576) {
+                    clearTimeout(pending.timer);
+                    runtimePending.delete(data.id);
+                    pending.resolve(data.response);
+                }
+                return;
+            }
             if (
                 data.type === "aurum-preview-state" &&
                 data.state &&
@@ -913,6 +1047,9 @@
                     "dashes",
                     "credits",
                     "workshops",
+                    "upgrades",
+                    "view_width",
+                    "view_height",
                 ]) {
                     const value = Number(state[key]);
                     snapshot[key] = Number.isFinite(value)
@@ -927,6 +1064,12 @@
                     typeof state.weapon === "string"
                         ? state.weapon.slice(0, 24)
                         : "";
+                snapshot.choices = Array.isArray(state.choices)
+                    ? state.choices
+                          .slice(0, 3)
+                          .filter((value) => typeof value === "string")
+                          .map((value) => value.slice(0, 32))
+                    : [];
                 $("live-runtime-state").dataset.snapshot =
                     JSON.stringify(snapshot);
             } else if (

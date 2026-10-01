@@ -6,6 +6,33 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-01
+
+### Added
+
+- Typed live property inspection and editing, automatic source-fresh preview rebuilds, checkpoint restoration and rollback.
+- Shared headless/rendered playtests with input timelines, real PNG captures, configurable budgets and retained failure diagnostics.
+- Rust Web side-module builds, managed SDK discovery and private native class-registry staging.
+- A twelve-encounter Orbit Break campaign with three flight frames, three stations, three phased bosses, meaningful three-choice upgrades, persistent records and original music.
+- Downloadable Windows Studio and game packages, with portable launchers and SHA256 checksums.
+
+### Fixed
+
+- Same-size source edits and deleted files no longer reuse stale browser exports.
+- Export profiles retain HTML options, include/exclude filters and legal notices.
+- Failed builds or rejected checkpoints retain and resume the previous game; stopping during export prevents late publication.
+- Cold asset inspection and read-only inspection during private exports no longer require reopening an editor.
+- Windows process identity queries use read-only native handles rather than slow WMI subprocesses.
+- The 3D demo registers its base class, and Rust Web builds avoid incompatible exception-tag imports.
+
+### Boundaries
+
+- Windows and Chromium are acceptance-tested. Mobile/VR hardware, signing and store delivery remain separate gates.
+- Checkpoint rebuilding is not arbitrary memory migration. Native registration changes can still require a controlled editor restart.
+- Rust Web support is experimental; portable dependencies and the optional Web SDK are required.
+
+## [0.2.0]
+
 ### Playable MVP workflow
 
 - Fixed existing-file path resolution so headless file reads and undo work consistently on clean Windows, Linux and macOS runners; added a regression test.

@@ -16,6 +16,8 @@ pub const OPERATIONS: &[&str] = &[
     "build",
     "validate",
     "play",
+    "capture",
+    "web_build",
     "export",
     "presets",
     "configure_export",
@@ -88,6 +90,10 @@ pub fn execute(root: &Path, input: &Value, read_only: bool) -> Result<Value, Str
             | "draft_save"
             | "draft_read"
             | "draft_clear"
+            | "scene_inspect"
+            | "classes"
+            | "class_info"
+            | "runtime_info"
     ) {
         Some(crate::BuildLock::try_acquire(&project.root).map_err(|e| e.to_string())?)
     } else {
@@ -170,7 +176,8 @@ pub fn execute(root: &Path, input: &Value, read_only: bool) -> Result<Value, Str
         }
         "package" => package_windows(&project, input),
         "validate" => validate(&project),
-        "play" => play_project(&project, input),
+        "play" | "capture" => play_project(&project, input),
+        "web_build" => crate::web_build::build(&project),
         "export" => {
             let preset = field(input, "preset")?;
             let output = managed_path(&project.root, field(input, "output")?)?;
@@ -217,7 +224,7 @@ fn play_options(input: &Value) -> Result<(u64, Option<u64>, Vec<String>), String
         }
         Ok(value)
     };
-    let frames = integer("frames", 120, 36000)?;
+    let frames = integer("frames", 120, 3_600_000)?;
     let fixed_fps = input
         .get("fixed_fps")
         .map(|_| integer("fixed_fps", 60, 240))
@@ -250,68 +257,11 @@ fn play_options(input: &Value) -> Result<(u64, Option<u64>, Vec<String>), String
 }
 
 fn play_project(project: &Project, input: &Value) -> Result<Value, String> {
-    let (frames, fixed_fps, mut user_args) = play_options(input)?;
-    let mut args = vec![
-        "--headless".into(),
-        "--path".into(),
-        godot_root(project)?.display().to_string(),
-        "--quit-after".into(),
-        frames.to_string(),
-    ];
-    if let Some(fps) = fixed_fps {
-        args.extend(["--fixed-fps".into(), fps.to_string()]);
-    }
-    if let Some(scene) = input.get("scene").and_then(Value::as_str) {
-        args.push("--scene".into());
-        args.push(
-            managed_path(godot_root(project)?, scene)?
-                .display()
-                .to_string(),
-        );
-    }
-    let report_path = if input
-        .get("report")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        let path = files::confined(
-            &project.root,
-            &format!(
-                ".aurum/playtests/{}/report.json",
-                crate::random::session_id()
-            ),
-        )?;
-        std::fs::create_dir_all(path.parent().ok_or("report directory is missing")?)
-            .map_err(|e| e.to_string())?;
-        user_args.extend(["--aurum-report".into(), path.display().to_string()]);
-        Some(path)
-    } else {
-        None
-    };
-    // These arguments always follow the engine separator. They cannot replace
-    // engine flags, the project path, timeout, or the bounded frame count.
-    if !user_args.is_empty() {
-        args.push("--".into());
-        args.extend(user_args);
-    }
-    let mut result = engine_run(project, &args, Duration::from_secs(90))?;
-    if let Some(path) = report_path {
-        let report = read_play_report(&path);
-        result["report_path"] = json!(path);
-        match report {
-            Ok(report) => {
-                result["ok"] = json!(result["ok"] == true && report["ok"] == true);
-                result["report"] = report;
-            }
-            Err(error) => {
-                result["ok"] = json!(false);
-                result["report_error"] = json!(error);
-            }
-        }
-    }
-    Ok(result)
+    let (frames, fixed_fps, user_args) = play_options(input)?;
+    crate::playtest::run(project, input, frames, fixed_fps, user_args)
 }
 
+#[cfg(test)]
 fn read_play_report(path: &Path) -> Result<Value, String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|_| "game did not write the requested report")?;
@@ -671,6 +621,15 @@ pub fn engine_binary(project: &Project) -> Result<PathBuf, String> {
     Err("Aurum runtime is not configured. Set AURUM_GODOT or install the runtime under AURUM_STUDIO_HOME/runtime".into())
 }
 
+/// Godot 4.7 on Windows can crash after completing first-import shutdown.
+/// Never retry an actual resource error, an incomplete import, or a wall timeout.
+pub fn import_shutdown_crash(code: Option<i32>, log: &str) -> bool {
+    cfg!(windows)
+        && code == Some(-1073741819)
+        && log.contains("loading_editor_layout")
+        && !log.contains("ERROR:")
+}
+
 fn engine_run(project: &Project, args: &[String], timeout: Duration) -> Result<Value, String> {
     let result = crate::Command::new(engine_binary(project)?)
         .args(args.iter().cloned())
@@ -690,6 +649,8 @@ fn engine_run(project: &Project, args: &[String], timeout: Duration) -> Result<V
 }
 
 fn validate(project: &Project) -> Result<Value, String> {
+    let _cache_lock = crate::BuildLock::try_acquire(&godot_root(project)?.join(".godot"))
+        .map_err(|e| e.to_string())?;
     let args = vec![
         "--headless".into(),
         "--editor".into(),
@@ -761,6 +722,12 @@ pub fn build_project(project: &Project, release: bool) -> Result<Value, String> 
 }
 
 fn headless_operation(project: &Project, input: &Value) -> Result<Value, String> {
+    if matches!(
+        input["op"].as_str(),
+        Some("scene_inspect" | "scene_edit" | "set_main_scene")
+    ) {
+        ensure_imported(project)?;
+    }
     let godot = godot_root(project)?;
     let root = project
         .root
@@ -846,6 +813,16 @@ fn headless_operation(project: &Project, input: &Value) -> Result<Value, String>
         .ok_or_else(|| format!("headless operation did not return a result: {execution}"))?;
     if execution["ok"] != true {
         response["ok"] = json!(false);
+        response["error"] = json!(execution["errors"]
+            .as_array()
+            .map(|errors| errors
+                .iter()
+                .filter_map(Value::as_str)
+                .take(4)
+                .collect::<Vec<_>>()
+                .join("\n"))
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| "Headless operation failed; inspect diagnostics".into()));
         response["diagnostics"] = execution;
     }
     if response["ok"] == true
@@ -882,9 +859,96 @@ fn headless_operation(project: &Project, input: &Value) -> Result<Value, String>
     Ok(response)
 }
 
+/// Resource inspection must work without requiring the user to open an editor first.
+/// Import only when source changed, serialize native cache writers, and never edit scene data.
+fn ensure_imported(project: &Project) -> Result<(), String> {
+    let godot = godot_root(project)?;
+    // Preview exports build a private copy. They must not block read-only inspection.
+    // Only native import-cache writers share this separate lock.
+    let _cache_lock =
+        crate::BuildLock::try_acquire(&godot.join(".godot")).map_err(|e| e.to_string())?;
+    let revision = crate::snapshot::fingerprint(godot)?;
+    let stamp = files::confined(&project.root, ".aurum/import.json")?;
+    let cached = std::fs::metadata(&stamp)
+        .ok()
+        .filter(|metadata| metadata.is_file() && metadata.len() <= 4096)
+        .and_then(|_| std::fs::read(&stamp).ok())
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    if godot.join(".godot").is_dir()
+        && cached
+            .as_ref()
+            .is_some_and(|value| value["source_sha256"] == revision)
+    {
+        return Ok(());
+    }
+    let args = vec![
+        "--headless".into(),
+        "--editor".into(),
+        "--path".into(),
+        godot.display().to_string(),
+        "--import".into(),
+    ];
+    let mut result = engine_run(project, &args, Duration::from_secs(120))?;
+    let log = result["log"]
+        .as_array()
+        .map(|lines| {
+            lines
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    if import_shutdown_crash(
+        result["exit_code"]
+            .as_i64()
+            .and_then(|code| i32::try_from(code).ok()),
+        &log,
+    ) {
+        files::write_atomic(
+            &files::confined(&project.root, ".aurum/import-first-crash.json")?,
+            &serde_json::to_vec(&result).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        result = engine_run(project, &args, Duration::from_secs(120))?;
+    }
+    if result["ok"] != true {
+        return Err(format!(
+            "Project asset import failed before scene inspection: {result}"
+        ));
+    }
+    // Importers may generate resource identifiers and remap metadata. Hash their final state.
+    let value = json!({"source_sha256":crate::snapshot::fingerprint(godot)?});
+    files::write_atomic(
+        &stamp,
+        &serde_json::to_vec(&value).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_completed_windows_import_shutdown_crashes_are_recoverable() {
+        let complete = "[ DONE ] loading_editor_layout";
+        assert_eq!(
+            import_shutdown_crash(Some(-1073741819), complete),
+            cfg!(windows)
+        );
+        for (code, log) in [
+            (None, complete),
+            (Some(1), complete),
+            (Some(-1073741819), "reimport started"),
+            (
+                Some(-1073741819),
+                "loading_editor_layout\nSCRIPT ERROR: bad script",
+            ),
+        ] {
+            assert!(!import_shutdown_crash(code, log));
+        }
+    }
     #[test]
     fn play_options_are_bounded_and_user_arguments_are_validated() {
         assert_eq!(play_options(&json!({})).unwrap(), (120, None, vec![]));
@@ -895,7 +959,7 @@ mod tests {
         );
         for input in [
             json!({"frames":0}),
-            json!({"frames":36001}),
+            json!({"frames":3600001}),
             json!({"frames":1.5}),
             json!({"fixed_fps":241}),
             json!({"user_args":"x"}),

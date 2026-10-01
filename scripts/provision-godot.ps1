@@ -43,7 +43,7 @@ if($Mode -in @('WebTemplates','All')){
     $archive=Verified-Archive 'Godot_v4.7-stable_export_templates.tpz' '9714459dc071907c0f3d5f17d608faf69e7cda21331fc5d39c4503ffa4e99eec' $TemplateArchive
     $zip=[IO.Compression.ZipFile]::OpenRead($archive)
     try {
-        foreach($name in @('web_nothreads_release.zip','web_nothreads_debug.zip')){
+        foreach($name in @('web_nothreads_release.zip','web_nothreads_debug.zip','web_dlink_nothreads_release.zip','web_dlink_nothreads_debug.zip')){
             Extract-Entry $zip "templates/$name" (Join-Path $Destination "templates/4.7.stable/$name")
         }
     } finally {$zip.Dispose()}

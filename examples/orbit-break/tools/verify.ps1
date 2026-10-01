@@ -35,6 +35,9 @@ $env:AURUM_STUDIO_HOME = Join-Path $work 'state'
 $env:AURUM_GODOT = $GodotBinary
 $results = [ordered]@{work=$work}
 function Invoke-ProjectOperation($request) {
+    if ($request.op -eq 'play' -and $request.frames -ge 36000 -and -not $request.ContainsKey('timeout_seconds')) {
+        $request.timeout_seconds = 300
+    }
     $text = (& $AurumBinary project $project --request-json ($request | ConvertTo-Json -Depth 30 -Compress)) -join "`n"
     $code = $LASTEXITCODE
     [IO.File]::AppendAllText((Join-Path $work 'commands.log'),"$($request.op) exit=$code`n$text`n")
@@ -44,14 +47,19 @@ function Invoke-ProjectOperation($request) {
 try {
     $results.validation = Invoke-ProjectOperation @{op='validate'}
     $results.menu = Invoke-ProjectOperation @{op='play';frames=5;fixed_fps=60}
-    $results.gameplay = Invoke-ProjectOperation @{op='play';scene='tests/acceptance.tscn';frames=120;fixed_fps=60;user_args=@('--acceptance');report=$true}
+    $results.gameplay = Invoke-ProjectOperation @{op='play';scene='tests/acceptance.tscn';frames=240;fixed_fps=60;user_args=@('--acceptance');report=$true}
     if (-not $results.gameplay.report.ok) { throw 'Gameplay report failed.' }
     $results.autoplay = Invoke-ProjectOperation @{op='play';frames=36000;fixed_fps=60;user_args=@('--autoplay');report=$true}
     $results.lance = Invoke-ProjectOperation @{op='play';frames=36000;fixed_fps=60;user_args=@('--autoplay','--weapon','1');report=$true}
     $results.arc = Invoke-ProjectOperation @{op='play';frames=36000;fixed_fps=60;user_args=@('--autoplay','--weapon','2');report=$true}
     foreach ($scenario in @('autoplay','lance','arc')) {
         $report = $results[$scenario].report
-        if (-not $report.won -or $report.workshops -ne 4 -or $report.boss_phases -ne 3) { throw "$scenario did not complete all workshops and boss phases." }
+        if (-not $report.won -or $report.workshops -ne 11 -or $report.bosses -ne 3 -or $report.boss_phases -ne 9 -or $report.salvage -ne 6) { throw "$scenario did not complete all workshops, objectives and boss phases." }
+    }
+    $results.bastion = Invoke-ProjectOperation @{op='play';frames=36000;fixed_fps=60;user_args=@('--autoplay','--frame','bastion');report=$true}
+    $results.relay = Invoke-ProjectOperation @{op='play';frames=36000;fixed_fps=60;user_args=@('--autoplay','--frame','relay');report=$true}
+    foreach ($scenario in @('bastion','relay')) {
+        if (-not $results[$scenario].report.won -or $results[$scenario].report.bosses -ne 3) { throw "$scenario did not clear the campaign." }
     }
     $results.idle = Invoke-ProjectOperation @{op='play';frames=36000;fixed_fps=60;user_args=@('--idle-test');report=$true}
     if ($Package) { $results.package = Invoke-ProjectOperation @{op='package';output='dist/windows'} }

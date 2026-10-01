@@ -118,6 +118,8 @@ struct Shell {
     port: u16,
     godot_hint: Option<PathBuf>,
     preview: Arc<Mutex<Option<preview::Preview>>>,
+    fallback_preview: Arc<Mutex<Option<preview::Preview>>>,
+    preview_epoch: Arc<AtomicUsize>,
 }
 
 impl Server {
@@ -177,6 +179,8 @@ impl Server {
                 port: address.port(),
                 godot_hint: config.godot_hint,
                 preview: Arc::new(Mutex::new(None)),
+                fallback_preview: Arc::new(Mutex::new(None)),
+                preview_epoch: Arc::new(AtomicUsize::new(0)),
             }),
             address,
         })
@@ -244,6 +248,11 @@ impl Server {
             .unwrap_or_else(|e| e.into_inner())
             .take();
         self.shell.supervisor.wait_for_shutdown();
+        self.shell
+            .fallback_preview
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
     }
 
     /// Ask the accept loop to finish.
@@ -569,7 +578,10 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
     };
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => Routed::Once(
-            Response::html(assets::INDEX_HTML).with_header("Cache-Control", "no-store"),
+            Response::html(assets::INDEX_HTML)
+                .with_header("Cache-Control", "no-store")
+                .with_header("Cross-Origin-Opener-Policy", "same-origin")
+                .with_header("Cross-Origin-Embedder-Policy", "require-corp"),
         ),
         ("GET", "/app.js") => Routed::Once(
             Response::new(200, "text/javascript; charset=utf-8", assets::APP_JS)
@@ -596,14 +608,58 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
             })
         }
         ("GET", "/api/state") => Routed::Once(Response::json(200, &state_json(shell))),
+        ("GET", "/api/preview") => {
+            let active = shell.preview.lock().unwrap_or_else(|e| e.into_inner());
+            let value = match active.as_ref() {
+                Some(preview) => Project::open(&preview.project)
+                    .map_err(|e| e.to_string())
+                    .and_then(|project| preview.freshness(&project)),
+                None => Ok(serde_json::json!({"ok":true,"active":false})),
+            };
+            Routed::Once(match value {
+                Ok(value) => Response::json(200, &value),
+                Err(error) => Response::json(400, &serde_json::json!({"ok":false,"error":error})),
+            })
+        }
         ("POST", "/api/preview") => {
             let result = (|| -> Result<serde_json::Value, String> {
                 let input: serde_json::Value =
                     serde_json::from_slice(&request.body).map_err(|e| e.to_string())?;
                 let mut active = shell.preview.lock().unwrap_or_else(|e| e.into_inner());
                 if input["action"] == "stop" {
+                    shell.preview_epoch.fetch_add(1, Ordering::SeqCst);
                     active.take();
+                    shell
+                        .fallback_preview
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
                     return Ok(serde_json::json!({"ok":true,"stopped":true}));
+                }
+                if matches!(input["action"].as_str(), Some("commit" | "rollback")) {
+                    let current = active.as_ref().ok_or("No active preview")?;
+                    if current.describe(true)["session"] != input["session"] {
+                        return Err(
+                            "Preview changed before confirmation; nothing was replaced".into()
+                        );
+                    }
+                    let mut fallback = shell
+                        .fallback_preview
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if input["action"] == "rollback" {
+                        let previous = fallback
+                            .take()
+                            .ok_or("There is no previous preview to restore")?;
+                        *active = Some(previous);
+                        shell.preview_epoch.fetch_add(1, Ordering::SeqCst);
+                        return Ok(active.as_ref().unwrap().describe(true));
+                    }
+                    fallback.take();
+                    return Ok(serde_json::json!({"ok":true,"committed":true}));
+                }
+                if input.get("force").is_some_and(|v| !v.is_boolean()) {
+                    return Err("'force' must be a boolean".into());
                 }
                 let root = input
                     .get("project")
@@ -612,6 +668,7 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
                     .unwrap_or_else(|| selected_root(shell));
                 let project = Project::open(&root).map_err(|e| e.to_string())?;
                 if input["action"] == "export" {
+                    drop(active);
                     let origin = format!("http://127.0.0.1:{}", shell.port);
                     let fresh =
                         preview::Preview::build(&project, shell.godot_hint.as_deref(), &origin)?;
@@ -619,15 +676,32 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
                 }
                 if input["force"] != true {
                     if let Some(preview) = active.as_ref().filter(|p| p.project == project.root) {
-                        return Ok(preview.describe(true));
+                        if preview.is_fresh(&project)? {
+                            return Ok(preview.describe(true));
+                        }
                     }
                 }
                 let default_origin = format!("http://127.0.0.1:{}", shell.port);
                 let origin = request.header("origin").unwrap_or(&default_origin);
+                let previous_session = active.as_ref().map(|p| p.describe(true)["session"].clone());
+                let previous_epoch = shell.preview_epoch.load(Ordering::SeqCst);
+                drop(active);
                 let preview =
                     preview::Preview::build(&project, shell.godot_hint.as_deref(), origin)?;
                 let result = preview.describe(false);
-                *active = Some(preview);
+                let mut active = shell.preview.lock().unwrap_or_else(|e| e.into_inner());
+                if !shell.running.load(Ordering::SeqCst)
+                    || shell.preview_epoch.load(Ordering::SeqCst) != previous_epoch
+                    || active.as_ref().map(|p| p.describe(true)["session"].clone())
+                        != previous_session
+                {
+                    return Err("Another client changed the preview during this build; the active preview was preserved".into());
+                }
+                *shell
+                    .fallback_preview
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = active.replace(preview);
+                shell.preview_epoch.fetch_add(1, Ordering::SeqCst);
                 Ok(result)
             })();
             Routed::Once(match result {

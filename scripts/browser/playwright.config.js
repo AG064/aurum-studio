@@ -13,7 +13,13 @@ export default defineConfig({
         screenshot: "only-on-failure",
         trace: "retain-on-failure",
         launchOptions: {
-            args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
+            args:
+                process.env.AURUM_BROWSER_HARDWARE === "1"
+                    ? []
+                    : [
+                          "--use-angle=swiftshader",
+                          "--enable-unsafe-swiftshader",
+                      ],
         },
     },
 });

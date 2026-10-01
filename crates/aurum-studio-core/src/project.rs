@@ -75,6 +75,10 @@ pub struct ProjectConfig {
     pub engine_path_hint: Option<String>,
     /// A project-specific validation command, run by `doctor`.
     pub validation_command: Option<String>,
+    /// Portable Rust Web build profile. Machine SDK paths stay in the environment.
+    pub web_features: Vec<String>,
+    pub web_toolchain: Option<String>,
+    pub web_preset: Option<String>,
 }
 
 impl Default for ProjectConfig {
@@ -88,6 +92,9 @@ impl Default for ProjectConfig {
             modules: Vec::new(),
             engine_path_hint: None,
             validation_command: None,
+            web_features: Vec::new(),
+            web_toolchain: None,
+            web_preset: None,
         }
     }
 }
@@ -163,6 +170,20 @@ impl ProjectConfig {
             },
             engine_path_hint: optional_string("engine.path_hint")?,
             validation_command: optional_string("validation.command")?,
+            web_features: match document.get("web.features") {
+                Some(value) => {
+                    value
+                        .as_array()
+                        .map(<[String]>::to_vec)
+                        .ok_or_else(|| ConfigError::Field {
+                            field: "web.features",
+                            problem: "must be an array of strings".into(),
+                        })?
+                }
+                None => Vec::new(),
+            },
+            web_toolchain: optional_string("web.toolchain")?,
+            web_preset: optional_string("web.preset")?,
         })
     }
 
@@ -210,6 +231,26 @@ impl ProjectConfig {
         if let Some(command) = &self.validation_command {
             out.push_str("\n[validation]\n");
             out.push_str(&format!("command = \"{}\"\n", escape(command)));
+        }
+        if !self.web_features.is_empty()
+            || self.web_toolchain.is_some()
+            || self.web_preset.is_some()
+        {
+            out.push_str("\n[web]\n");
+            if !self.web_features.is_empty() {
+                let values: Vec<_> = self
+                    .web_features
+                    .iter()
+                    .map(|s| format!("\"{}\"", escape(s)))
+                    .collect();
+                out.push_str(&format!("features = [{}]\n", values.join(", ")));
+            }
+            if let Some(value) = &self.web_toolchain {
+                out.push_str(&format!("toolchain = \"{}\"\n", escape(value)));
+            }
+            if let Some(value) = &self.web_preset {
+                out.push_str(&format!("preset = \"{}\"\n", escape(value)));
+            }
         }
         out
     }
@@ -486,6 +527,13 @@ command = "pwsh scripts/tests/phase0_contract.ps1"
     fn a_name_is_required() {
         let error = ProjectConfig::parse("schema_version = 1\n").unwrap_err();
         assert!(matches!(error, ConfigError::Field { field: "name", .. }));
+    }
+
+    #[test]
+    fn web_profiles_round_trip_without_machine_paths() {
+        let config = ProjectConfig::parse("name = \"web-game\"\n[web]\nfeatures = [\"godot/experimental-wasm\", \"nothreads\"]\ntoolchain = \"nightly-2026-09-30\"\npreset = \"Browser\"\n").unwrap();
+        assert_eq!(ProjectConfig::parse(&config.to_toml()).unwrap(), config);
+        assert!(ProjectConfig::parse("name = \"bad\"\n[web]\nfeatures = true\n").is_err());
     }
 
     #[test]

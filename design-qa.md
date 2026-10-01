@@ -39,3 +39,87 @@ No actionable P0/P1/P2 design findings remain in the tested states. P3 follow-up
 - Use real gameplay and acknowledgements as evidence, not concept screenshots.
 - Keep source metadata and infrequent tools out of the main working area.
 - Retain screenshots, traces and reproducible disposable test commands.
+
+## User-requested game presentation follow-up
+
+The later request supersedes the old game's shop and simple geometry, not the
+approved Studio interface. The new game presents exactly three reward cards,
+with weapons in that same pool and no extra purchase or continuation controls.
+The backdrop and deck are bundled generated textures; ships, lighting, shadows
+and combat effects are rendered in the game. The interface stays clear of the
+central combat area. A portrait stack and compact landscape layout keep the
+three options usable in smaller previews. Text is rasterized at its final
+canvas size to avoid blurred scaled labels.
+
+The latest local visual pass inspected the real menu, combat, two workshop
+states, fullscreen view and a 390 by 844 browser layout. The 55-check gameplay/HUD
+suite and seven browser scenarios passed in disposable projects, including
+single-choice protection, meaningful weapon effects, live tuning and export.
+A further targeted render pass verified the final small-screen text correction.
+Local gameplay capture is test evidence, not a performance benchmark or a claim
+of mobile-device certification. These follow-up edits are not represented by
+the previously published CI run until they are published and checked again.
+
+## Instrument HUD refinement
+
+The HUD now has layered, clipped housings with upper-edge highlights and
+inset equipment diagrams. Hull, weapon and dash form one primary cluster;
+sector progress and score form a smaller secondary cluster. The center and
+lower-middle remain clear. Damage leaves a short gauge echo, while the dash
+dial shows actual recharge progress. Reduced motion skips the gauge trail
+and animated focus transition. No extra workshop actions were introduced.
+
+Screenshot review found crowded effect text in both short and tall portrait
+modules. The corrected layouts reserve space below two-line descriptions.
+The browser suite now captures embedded portrait, fullscreen portrait,
+compact landscape and portrait combat, and checks that layout changes do not
+advance the paused workshop. Native assertions cover the gauge values,
+presentation-only damage echo, matching diagrams/shortcuts and safe label bounds.
+Desktop and portrait browser checks are not physical-device certification.
+
+## Scene and material depth
+
+The next review found that the textured arena still had a flat silhouette and
+that wire diagrams did little to give equipment a physical character. The
+updated scene has raised perimeter panels and ribs, a layered reactor lens,
+faceted ship hulls, cockpits, hardpoints, contact shadows and directional light.
+Station armour is merged into one mesh. Surface normals reveal deck detail;
+perspective separates the near and far edges. Module illustrations now use
+shaded housings and emitters, with a recessed well and layered frame. Locally
+bundled Barlow Condensed is used for titles and large instrument values.
+
+Native before/after captures use the same fixture states and viewport sizes.
+Review found two functional presentation issues: portrait framing cropped the
+movement boundary, and the background stretched across aspect ratios. The
+camera now fits the full boundary and the backdrop crops to cover the view.
+The 56-check suite includes a camera contract for desktop, portrait and compact
+layouts; all three ordinary moving weapon campaigns still win, while idle play
+loses. Windows and Web exports were built, and the font notice was verified in
+both PCKs. The earlier seven browser scenarios were not rerun for this revision:
+the browser tool rejected the preview URL. Current visual evidence is native
+OpenGL, with no shader diagnostics in the inspected captures.
+
+## Campaign expansion
+
+The larger game adds three stations, twelve encounters, three flight frames,
+seven patrol types, three distinct bosses, fifteen module/weapon choices,
+recovery/defense/hold objectives, a tactical archive and an original score.
+Shared art and interface treatments keep those additions coherent. Hangar,
+workshop, boss salvage, each station, pause builds and flight records were
+captured in disposable native renderer fixtures. Long effect captions found
+in review were shortened; a font-metric assertion now checks the complete
+offer pool. The current deterministic suite has 85 checks.
+
+Five ordinary scenarios covering every weapon and frame clear the full route.
+The stationary scenario exposed recovery soft-locking; recovery now fails at
+its displayed lockdown deadline. A diagnostic run traced shutdown warnings to
+headless audio playback objects. Headless tests skip audio construction and
+runtime exit hooks stop playback. The final campaign gate has no warnings.
+Native music checks cover looping, mute and resume. Browser test entry flows
+were updated for the hangar, but current browser execution remains unverified
+after the tool's earlier URL-policy rejection. Native fixtures are explicitly
+staged for repeatable visual comparisons, not human playtime or performance claims.
+
+## Release acceptance update
+
+The integration-fix pass subsequently exercised the expanded game in Chromium: hangar entry, movement/dash/pause, live tuning, three-choice upgrades, weapon acquisition, portrait/fullscreen layouts, save/undo, failure recovery, origin isolation and standalone export/play. These are scoped local browser runs, not physical-device or human-playtime claims. The v0.3.0 delivery runs versioned acceptance and links its GitHub checks separately.

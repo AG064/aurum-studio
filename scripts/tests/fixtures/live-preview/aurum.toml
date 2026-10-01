@@ -1,0 +1,3 @@
+schema_version = 1
+name = "live-preview"
+godot_version = "4.7"

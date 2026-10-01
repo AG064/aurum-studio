@@ -25,6 +25,8 @@ Matching an old build artifact with an installed library never bypasses Cargo's 
 
 Declarations are compared against the previous source snapshot so changing an ordinary method body does not automatically become a structural change. Deleted files are included. Studio never force-closes an unrelated process.
 
+Browser previews now expose typed live properties and optional automatic checkpoint-based rebuilding. Code and scene edits boot a new runtime while preserving compatible state, with rollback when the replacement fails. This does not migrate arbitrary native memory. See [runtime editing and agent verification](INTEGRATION.md) and [Rust Web builds](RUST_WEB.md).
+
 ## Prove the real workflow
 
 ```powershell

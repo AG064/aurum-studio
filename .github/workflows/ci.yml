@@ -84,6 +84,8 @@ jobs:
           if($LASTEXITCODE){throw 'Project acceptance failed'}
           ./scripts/tests/studio_editor_acceptance.ps1 -EditorDll ./target/debug/aurum_editor.dll -GodotBinary $env:AURUM_GODOT
           if($LASTEXITCODE){throw 'Editor acceptance failed'}
+          ./scripts/tests/runtime_bridge_acceptance.ps1 -GodotBinary $env:AURUM_GODOT
+          if($LASTEXITCODE){throw 'Runtime checkpoint acceptance failed'}
           ./examples/orbit-break/tools/verify.ps1 -AurumBinary ./target/debug/aurum.exe -GodotBinary $env:AURUM_GODOT -Package
           if($LASTEXITCODE){throw 'Game acceptance failed'}
       - name: Retain runtime evidence
@@ -113,7 +115,7 @@ jobs:
   browser-windows:
     name: Browser gameplay, live editing and isolation
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -129,6 +131,12 @@ jobs:
           "AURUM_BINARY=$env:GITHUB_WORKSPACE/target/debug/aurum.exe" >> $env:GITHUB_ENV
       - name: Build Studio
         run: cargo build -p aurum-cli --locked
+      - name: Provision isolated Rust Web toolchain
+        shell: pwsh
+        run: |
+          ./scripts/provision-web-toolchain.ps1 -Destination "$env:RUNNER_TEMP/web-toolchain"
+          "AURUM_EMSDK=$env:RUNNER_TEMP/web-toolchain/emsdk" >> $env:GITHUB_ENV
+          "AURUM_WEB_EXTENSION_TEMPLATE=$env:RUNNER_TEMP/godot/templates/4.7.stable/web_dlink_nothreads_release.zip" >> $env:GITHUB_ENV
       - name: Install pinned browser test dependencies
         working-directory: scripts/browser
         run: |

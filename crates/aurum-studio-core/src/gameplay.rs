@@ -35,6 +35,8 @@ pub struct Game {
     /// re-checks the record against the live process, which is what makes a
     /// stale record harmless and a recycled identifier survivable.
     pub running: Option<OwnershipRecord>,
+    /// In-memory launch witness. On-disk ownership claims cannot replace it.
+    last_owned: Option<OwnershipRecord>,
 }
 
 impl Game {
@@ -49,6 +51,7 @@ impl Game {
             request,
             session,
             running: None,
+            last_owned: None,
         }
     }
 
@@ -56,6 +59,7 @@ impl Game {
     pub fn start(&mut self) -> Result<u32, LaunchError> {
         let launched = launch(&self.request, &self.session)?;
         let pid = launched.pid();
+        self.last_owned = Some(launched.record.clone());
         self.running = Some(launched.record);
         Ok(pid)
     }
@@ -102,6 +106,15 @@ impl Game {
             // stop. Keeping it means a later change re-checks the same claim
             // rather than silently forgetting the process.
             StopOutcome::Refused(reason) => {
+                // A different creation time proves our witnessed launch exited.
+                // Never signal the recycled PID. Unknown or edited identities still refuse.
+                if self.last_owned.as_ref().is_some_and(|owned| {
+                    crate::ownership::inspect(previous.pid)
+                        .is_some_and(|live| witnessed_exit(&previous, owned, &live))
+                }) {
+                    let _ = previous.remove(&self.session.ownership_directory());
+                    return self.start_again();
+                }
                 let pid = previous.pid;
                 self.running = Some(previous);
                 Restart::Refused { pid, reason }
@@ -122,6 +135,19 @@ impl Game {
             },
         }
     }
+}
+
+fn witnessed_exit(
+    previous: &OwnershipRecord,
+    owned: &OwnershipRecord,
+    live: &crate::ownership::LiveProcess,
+) -> bool {
+    previous == owned
+        && live.pid == owned.pid
+        && live
+            .started
+            .as_ref()
+            .is_some_and(|started| started != &owned.started)
 }
 
 /// What happened to the game.
@@ -505,7 +531,8 @@ mod tests {
     #[test]
     fn a_restart_after_the_game_already_exited_starts_a_fresh_one() {
         let (root, _session, editor, mut game) = scene("exited");
-        let first = game.running.as_ref().unwrap().pid;
+        let first_record = game.running.as_ref().unwrap().clone();
+        let first = first_record.pid;
         let _ = terminate(
             game.running.as_ref().unwrap(),
             true,
@@ -520,7 +547,10 @@ mod tests {
             Duration::from_secs(30),
         );
         match &response {
-            Response::Game(Restart::Started { pid }) => assert_ne!(*pid, first),
+            Response::Game(Restart::Started { pid }) => {
+                assert_eq!(*pid, game.running.as_ref().unwrap().pid);
+                assert_ne!(game.running.as_ref().unwrap().started, first_record.started);
+            }
             other => panic!("expected a fresh start, got {other:?}"),
         }
         assert!(
@@ -528,11 +558,38 @@ mod tests {
                 .session
                 .ownership_directory()
                 .join(format!("game-{first}.json"))
-                .exists(),
+                .exists()
+                || game.running.as_ref().unwrap().pid == first,
             "the record of the process that exited should be cleared"
         );
 
         cleanup(&editor, &mut game, &root);
+    }
+
+    #[test]
+    fn witnessed_pid_reuse_is_distinct_from_unknown_or_tampered_identity() {
+        let owned = OwnershipRecord {
+            session: "s".into(),
+            executable: "game".into(),
+            pid: 42,
+            started: "first".into(),
+            project: "project".into(),
+            kind: ProcessKind::Game,
+        };
+        let mut live = crate::ownership::LiveProcess {
+            pid: 42,
+            executable: "unrelated".into(),
+            started: Some("second".into()),
+        };
+        assert!(witnessed_exit(&owned, &owned, &live));
+        live.started = None;
+        assert!(!witnessed_exit(&owned, &owned, &live));
+        live.started = Some("first".into());
+        assert!(!witnessed_exit(&owned, &owned, &live));
+        live.started = Some("second".into());
+        let mut edited = owned.clone();
+        edited.executable = "forged".into();
+        assert!(!witnessed_exit(&edited, &owned, &live));
     }
 
     #[test]

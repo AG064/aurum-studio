@@ -161,9 +161,12 @@ test("real export boots a rendered game on an isolated origin", async ({}, info)
 });
 
 test("keyboard play and acknowledged live edits preserve the same run", async ({}, info) => {
+    test.setTimeout(300000);
     const canvas = page.frameLocator("#preview-frame").locator("canvas");
     const menu = await state();
     await canvas.press("Enter");
+    await expect.poll(async () => (await state()).phase).toBe("hangar");
+    await canvas.press("Digit1");
     await page.keyboard.press("Space");
     // Pause before inspecting state: slow software-rendered CI can spend seconds
     // on each locator/trace snapshot while the actual game keeps progressing.
@@ -186,9 +189,17 @@ test("keyboard play and acknowledged live edits preserve the same run", async ({
         .toMatch(/^(paused|upgrade)$/);
     const before = await state();
     const session = await page.locator("#preview-frame").getAttribute("src");
-    await page.getByLabel("Live player speed").focus();
-    await page.keyboard.press("Home");
-    for (let i = 0; i < 60; i++) await page.keyboard.press("ArrowRight");
+    const speed = page.getByLabel("Live player speed");
+    await speed.press("Home");
+    await speed.press("ArrowRight");
+    await expect(speed).toHaveValue("3.1");
+    // Preserve a real keyboard check, then batch the remaining native range steps.
+    // This drives the UI input event, not the game state or a hidden test endpoint.
+    await speed.evaluate(input => {
+        input.stepUp(59);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
     await page.getByLabel("Live damage multiplier").fill("1.75");
     await page.getByLabel("Live spawn interval").fill("0.7");
     await expect(page.locator("#live-status")).toHaveText(
@@ -210,25 +221,88 @@ test("keyboard play and acknowledged live edits preserve the same run", async ({
         await page.screenshot({
             path: info.outputPath("workbench-playing.png"),
         });
+        await page
+            .locator("#preview-frame")
+            .screenshot({ path: info.outputPath("gameplay-polished.png") });
     }
     // Normal simulation, no state injection or forced wins. The first wave opens the workshop.
     await expect
         .poll(async () => (await state()).phase, { timeout: 60_000 })
         .toBe("upgrade");
     const workshop = await state();
-    expect(workshop.credits).toBeGreaterThanOrEqual(80);
-    await canvas.press("Digit3");
-    await expect
-        .poll(async () => (await state()).credits)
-        .toBe(workshop.credits - 60);
-    await canvas.press("q");
-    await expect.poll(async () => (await state()).weapon).toBe("LANCE");
-    expect((await state()).time).toBe(workshop.time);
+    expect(workshop.choices).toEqual(["evolve", "lance", "arc"]);
+    expect(workshop.upgrades).toBe(0);
     await page.screenshot({ path: info.outputPath("workshop.png") });
-    await canvas.press("Enter");
+    expect((await state()).time).toBe(workshop.time);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect
+        .poll(async () => {
+            const current = await state();
+            return current.view_height > current.view_width;
+        })
+        .toBe(true);
+    await page
+        .locator("#preview-frame")
+        .screenshot({ path: info.outputPath("workshop-portrait.png") });
+    expect((await state()).choices).toHaveLength(3);
+    await page.getByRole("button", { name: "Full-screen preview" }).click();
+    await expect
+        .poll(async () => (await page.locator("#preview-frame").boundingBox())?.height)
+        .toBeGreaterThan(620);
+    await page
+        .locator("#preview-frame")
+        .screenshot({ path: info.outputPath("workshop-portrait-fullscreen.png") });
+    // Browser chrome does not receive synthetic Escape as a trusted fullscreen exit.
+    // Use the browser API for layout cleanup, without changing game state.
+    await page.evaluate(() => document.exitFullscreen());
+    await expect
+        .poll(async () => (await page.locator("#preview-frame").boundingBox())?.height)
+        .toBeLessThan(620);
+    expect((await state()).phase).toBe("upgrade");
+    expect((await state()).time).toBe(workshop.time);
+    await page.setViewportSize({ width: 1024, height: 720 });
+    await expect
+        .poll(async () => {
+            const current = await state();
+            const frame = await page.locator("#preview-frame").boundingBox();
+            // Godot's stretched design viewport is not the physical iframe size.
+            return current.view_width > current.view_height && frame?.height < 520;
+        })
+        .toBe(true);
+    await page
+        .locator("#preview-frame")
+        .screenshot({ path: info.outputPath("workshop-compact.png") });
+    await page.setViewportSize({ width: 1488, height: 1056 });
+    await expect
+        .poll(async () => {
+            const current = await state();
+            return current.view_width > current.view_height;
+        })
+        .toBe(true);
+    await canvas.press("Digit2");
     await page.keyboard.press("Escape");
     await expect.poll(async () => (await state()).wave).toBe(2);
+    await expect.poll(async () => (await state()).weapon).toBe("LANCE");
+    expect((await state()).upgrades).toBe(1);
+    expect((await state()).choices).toEqual([]);
     await expect.poll(async () => (await state()).phase).toBe("paused");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect
+        .poll(async () => {
+            const current = await state();
+            return current.view_height > current.view_width;
+        })
+        .toBe(true);
+    await canvas.press("Escape");
+    await expect.poll(async () => (await state()).phase).toBe("playing");
+    const narrowStart = (await state()).time;
+    await expect.poll(async () => (await state()).time).toBeGreaterThan(narrowStart + 1);
+    await page
+        .locator("#preview-frame")
+        .screenshot({ path: info.outputPath("instruments-portrait.png") });
+    await page.keyboard.press("Escape");
+    await expect.poll(async () => (await state()).phase).toBe("paused");
+    await page.setViewportSize({ width: 1488, height: 1056 });
     await page.screenshot({ path: info.outputPath("workbench-wave-two.png") });
     await page
         .locator("#preview-frame")
@@ -279,9 +353,10 @@ test("source save and undo work; invalid rebuild retains the running preview", a
             session,
         );
         const retained = await (
-            await control("/api/preview", { project })
+            await control("/api/preview")
         ).json();
         expect(retained.url).toBe(session);
+        expect(retained.stale).toBe(true);
         expect((await state()).phase).toBe("paused");
     } finally {
         const changed = await (
@@ -365,7 +440,13 @@ test("responsive inspector and keyboard file navigation remain usable", async ({
     expect(errors).toEqual([]);
 });
 
-test("browser export produces a portable bundle without the Studio bridge", async () => {
+test("browser export produces a portable bundle without the Studio bridge", async ({
+    browser,
+}, info) => {
+    await page.goto(endpoint);
+    await expect(page.locator("#workspace-status")).toHaveText(
+        "Load workspace complete",
+    );
     await page
         .locator(".header-actions")
         .getByRole("button", { name: "Export", exact: true })
@@ -434,7 +515,19 @@ test("browser export produces a portable bundle without the Studio bridge", asyn
     await new Promise((resolve) =>
         staticServer.listen(0, "127.0.0.1", resolve),
     );
-    const standalone = await context.newPage();
+    const captureVideo = Boolean(process.env.AURUM_CAPTURE_VIDEO);
+    const playerContext = await browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        ...(captureVideo
+            ? {
+                  recordVideo: {
+                      dir: info.outputPath("video"),
+                      size: { width: 1280, height: 800 },
+                  },
+              }
+            : {}),
+    });
+    const standalone = await playerContext.newPage();
     const standaloneErrors = [];
     standalone.on("pageerror", (error) => standaloneErrors.push(error.message));
     try {
@@ -456,13 +549,56 @@ test("browser export produces a portable bundle without the Studio bridge", asyn
             .toBe("menu");
         await standalone.locator("canvas").press("Enter");
         await expect
+            .poll(() => standalone.evaluate(() => JSON.parse(window.aurumState).phase))
+            .toBe("hangar");
+        await standalone.locator("canvas").press("Digit1");
+        await expect
             .poll(() =>
                 standalone.evaluate(() => JSON.parse(window.aurumState).phase),
             )
             .toBe("playing");
+        if (captureVideo) {
+            for (const key of ["d", "s", "a", "w"]) {
+                await standalone.keyboard.down(key);
+                await standalone.keyboard.press("Space");
+                await standalone.waitForTimeout(900);
+                await standalone.keyboard.up(key);
+            }
+            await standalone.screenshot({
+                path: info.outputPath("pulse-combat.png"),
+            });
+            await expect
+                .poll(
+                    () =>
+                        standalone.evaluate(
+                            () => JSON.parse(window.aurumState).phase,
+                        ),
+                    { timeout: 60000 },
+                )
+                .toBe("upgrade");
+            await standalone.screenshot({
+                path: info.outputPath("three-choices.png"),
+            });
+            await standalone.locator("canvas").press("Digit3");
+            for (const key of ["d", "s", "a", "w", "d", "s", "a", "w"]) {
+                await standalone.keyboard.down(key);
+                await standalone.keyboard.press("Space");
+                await standalone.waitForTimeout(900);
+                await standalone.keyboard.up(key);
+            }
+            await standalone.screenshot({
+                path: info.outputPath("arc-combat.png"),
+            });
+        }
         expect(standaloneErrors).toEqual([]);
     } finally {
-        await standalone.close();
+        const recording = standalone.video();
+        await playerContext.close();
+        if (recording)
+            await info.attach("combat-video", {
+                path: await recording.path(),
+                contentType: "video/webm",
+            });
         await new Promise((resolve) => staticServer.close(resolve));
     }
 });

@@ -16,8 +16,10 @@ The supported workflow is Windows Studio plus local MCP and CLI access, using th
 - Local installation with a bundled runtime, preserved state, and backups of replaced binaries.
 - Explicit test scenes, game arguments, fixed-rate play and fresh JSON gameplay verdicts across CLI, HTTP and MCP.
 - Preset creation for Windows, Linux, macOS, Web, Android and iOS, with bounded diagnostics in Studio.
-- Isolated in-workspace web preview, acknowledged live tuning and standalone browser export for script projects.
-- The source-complete [Orbit Break example](../examples/orbit-break), its 47 gameplay checks, three winning weapon campaigns, stationary losing scenario, salvage workshop and phased boss.
+- Isolated Web previews with source revisions, generic live properties, checkpoint-based rebuilds, preserved export profiles and standalone browser export.
+- Shared headless and rendered playtests with input timelines, PNG captures, sampled state, configurable budgets and explicit termination diagnostics.
+- Explicit Rust Web side-module builds and private host-registry staging. See [target requirements](RUST_WEB.md).
+- The [Orbit Break campaign](../examples/orbit-break), with 85 gameplay/HUD checks, twelve encounters, three stations, three frames, seven patrol types, three phased bosses, five winning campaign scenarios and three-choice module stops.
 
 ## Evidence
 
@@ -30,10 +32,13 @@ Individual acceptance scripts:
 - `studio_project_acceptance.ps1`: save/reopen, failed batches, stale writes, undo, scripts, validation, gameplay, discovery, MCP, HTTP, and optional packaged-game execution.
 - `studio_editor_acceptance.ps1`: create, save, undo, redo, and save again in a real editor process.
 - `studio_dev_acceptance.ps1`: source edits reach one running editor; a compiler failure preserves its working DLL and the watcher recovers.
-- `examples/orbit-break/tools/verify.ps1`: isolated game validation, 47 behavior checks, three winning weapon campaigns, a stationary loss and optional portable packaging. Supply `-GodotBinary` when a bundled runtime is not discoverable.
+- `runtime_bridge_acceptance.ps1`: typed edits, secret/traversal refusal, batch prevalidation, int64/collection round trips and complete Orbit gameplay checkpoint reconstruction in private fixtures.
+- `examples/orbit-break/tools/verify.ps1`: isolated game validation, 85 gameplay/HUD checks, five winning weapon/frame scenarios, stationary mission failure and optional portable packaging. Supply `-GodotBinary` when a bundled runtime is not discoverable.
 - `scripts/browser`: real Chromium/Wasm play, keyboard controls, live-edit state preservation, save/undo, failed-build preservation, origin isolation, mobile-layout and standalone-export tests. See [browser setup](WEB_PREVIEW.md).
 
 Verification receipts are generated beside each temporary run. Historical August Phase 0 and September prototype evidence remains historical; it does not replace these current gates.
+
+The [2026-10-01 integration verification](INTEGRATION_VERIFICATION.md) records the current local results, installed release fingerprint and remaining platform limits. It does not claim remote CI has run for unpushed changes.
 
 ## Boundaries
 
@@ -45,4 +50,4 @@ Verification receipts are generated beside each temporary run. Historical August
 - VR/text genre modules and compile-time module feature selection remain separate engine work, not implemented Studio controls.
 - A full runtime is included in portable packages, so they are larger than exports using stripped templates.
 - Configured export presets do not imply matching templates, SDK installation, signing or a tested mobile/headset build.
-- The browser preview currently requires script-only projects. Desktop Rust DLLs do not automatically become web-compatible extensions.
+- Rust browser previews require the Emscripten SDK, nightly compiler and extension-enabled templates. Platform-specific libraries still need compatible Web implementations.

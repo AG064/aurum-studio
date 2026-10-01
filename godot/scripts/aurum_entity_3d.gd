@@ -1,6 +1,7 @@
 extends Node3D
+class_name AurumEntity3D
 
-# AurumEntity3D — 3D entity that mirrors a Rust-side engine entity.
+# AurumEntity3D: 3D entity that mirrors a Rust-side engine entity.
 #
 # Same pattern as `aurum_entity.gd` but for Node3D. On _ready, spawns
 # an entity in the engine and attaches Position3D + Velocity3D. On

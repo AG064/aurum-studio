@@ -1,0 +1,9 @@
+config_version=5
+[application]
+config/name="Aurum live preview fixture"
+run/main_scene="res://main.tscn"
+[display]
+window/size/viewport_width=960
+window/size/viewport_height=540
+[rendering]
+renderer/rendering_method="gl_compatibility"

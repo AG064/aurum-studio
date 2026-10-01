@@ -14,14 +14,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-// Only Windows and macOS shell out. Linux reads /proc directly, so importing
-// the command runner there leaves an unused import, and `-D warnings` turns an
-// unused import into a build failure — on one of the three platforms CI builds,
-// which is why this was invisible from a Windows desk.
-#[cfg(any(windows, target_os = "macos"))]
+// Windows uses process handles and Linux reads /proc. Only macOS shells out.
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 use crate::process::Command;
 
 /// What a recorded process is.
@@ -160,7 +157,7 @@ impl LiveProcess {
 }
 
 /// How long to wait for the platform to answer a process query.
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Ask the operating system about a process.
@@ -196,42 +193,74 @@ pub fn inspect(pid: u32) -> Option<LiveProcess> {
 
 #[cfg(windows)]
 fn inspect_windows(pid: u32) -> Option<LiveProcess> {
-    // Emit one delimited line so the answer parses without a JSON dependency
-    // on the shell side.
-    let script = format!(
-        "$p = Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\" -ErrorAction SilentlyContinue; \
-         if ($p) {{ \"$($p.ProcessId)|$($p.ExecutablePath)|$($p.CreationDate.ToString('o'))\" }}"
+    use std::ffi::{c_void, OsString};
+    use std::os::windows::ffi::OsStringExt;
+    #[repr(C)]
+    #[derive(Default)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+        fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+        fn QueryFullProcessImageNameW(
+            handle: *mut c_void,
+            flags: u32,
+            buffer: *mut u16,
+            size: *mut u32,
+        ) -> i32;
+        fn GetProcessTimes(
+            handle: *mut c_void,
+            created: *mut FileTime,
+            exited: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
+    }
+    struct Handle(*mut c_void);
+    impl Drop for Handle {
+        fn drop(&mut self) {
+            // SAFETY: this is the non-null owned handle returned by OpenProcess.
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+    // Read-only query and synchronization rights. No termination or memory-write rights.
+    // SAFETY: scalar inputs and a handle checked before use; no inherited handles.
+    let raw = unsafe { OpenProcess(0x1000 | 0x0010_0000, 0, pid) };
+    if raw.is_null() {
+        return None;
+    }
+    let handle = Handle(raw);
+    let mut path = vec![0u16; 32768];
+    let mut size = path.len() as u32;
+    let (mut created, mut exited, mut kernel, mut user) = (
+        FileTime::default(),
+        FileTime::default(),
+        FileTime::default(),
+        FileTime::default(),
     );
-    let outcome = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .run(INSPECT_TIMEOUT)
-        .ok()?;
-    if !outcome.success() {
+    // SAFETY: valid owned handle, bounded writable UTF-16 buffer and correctly laid-out outputs.
+    unsafe {
+        if QueryFullProcessImageNameW(handle.0, 0, path.as_mut_ptr(), &mut size) == 0
+            || GetProcessTimes(handle.0, &mut created, &mut exited, &mut kernel, &mut user) == 0
+            || WaitForSingleObject(handle.0, 0) != 258
+        {
+            return None;
+        }
+    }
+    if size == 0 || size as usize >= path.len() {
         return None;
     }
-
-    let line = outcome
-        .stdout
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())?;
-    let mut parts = line.split('|');
-    let pid: u32 = parts.next()?.trim().parse().ok()?;
-    let executable = parts.next()?.trim();
-    let started = parts.next()?.trim();
-
-    if executable.is_empty() {
-        // A process we cannot name is one we cannot prove ownership of.
-        return None;
-    }
+    let ticks = ((created.high as u64) << 32) | created.low as u64;
     Some(LiveProcess {
         pid,
-        executable: PathBuf::from(executable),
-        started: if started.is_empty() {
-            None
-        } else {
-            Some(started.to_string())
-        },
+        executable: PathBuf::from(OsString::from_wide(&path[..size as usize])),
+        started: Some(format!("windows-filetime:{ticks}")),
     })
 }
 
@@ -630,4 +659,19 @@ mod tests {
         assert!(!finished('S'));
         assert!(!finished('R'));
     }
+}
+#[cfg(windows)]
+#[test]
+fn native_identity_is_stable_and_invalid_ids_are_refused() {
+    let first = inspect(std::process::id()).unwrap();
+    assert!(first
+        .started
+        .as_ref()
+        .unwrap()
+        .starts_with("windows-filetime:"));
+    for _ in 0..32 {
+        assert_eq!(inspect(std::process::id()).unwrap(), first);
+    }
+    assert!(inspect(0).is_none());
+    assert!(inspect(u32::MAX).is_none());
 }

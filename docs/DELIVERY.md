@@ -1,5 +1,7 @@
 # Aurum Studio delivery
 
+For the current versioned Windows distribution and published source, see [release delivery](RELEASES.md). The earlier 0.2 acceptance narrative below is historical; [integration verification](INTEGRATION_VERIFICATION.md) describes the later implementation pass.
+
 ## Product contract
 
 The owner opens Aurum Studio to select or create a project, develop, validate,
@@ -116,3 +118,40 @@ badge and its run-specific artifacts remain the source of truth for each commit.
 [design QA](../design-qa.md) document the current scope. This work does not claim
 arbitrary state-preserving script replacement, native Rust web-extension
 support, mobile/headset validation, or public hosting deployment.
+
+## Game presentation follow-up
+
+The owner's follow-up replaced the shop with exactly three reward cards and
+one selection per stop. New weapons appear in that same flow. The game gained
+bundled orbital/deck artwork, custom ship silhouettes, lighting/shadows,
+weapon effects, pooled particles, shield feedback and a quieter responsive HUD.
+The refined HUD groups hull, weapon and dash into a primary instrument, with
+wave progress and score opposite it. Layered housings, segmented gauges and
+equipment diagrams give the game a consistent spacecraft identity. The revised
+deterministic suite has 56 checks, including the three-choice contract, effect
+cleanup, gauge accuracy and reduced-motion feedback. Verification receipts and screenshots are
+generated from disposable project copies. These local follow-up changes are
+distinct from the previously published CI run until published and checked again.
+
+The visual-depth follow-up added perspective framing, raised station structure,
+layered ship armour, material shading, contact shadows, display typography and
+shaded equipment modules. Its native checks include keeping all arena movement
+limits visible at desktop, portrait and compact sizes. The bundled font's OFL
+notice is added by a small export plugin to Windows and browser PCKs. Native
+render fixtures supply the updated game screenshots. Browser execution of this
+visual revision has not been rechecked because the browser tool blocked access.
+
+## Orbit Break campaign expansion
+
+The subsequent game expansion replaces the five-wave route with twelve authored
+encounters across Breakwater Dock, Aperture Relay and Ash Foundry. It adds three
+flight frames, four objective structures, seven patrol types, three boss fights,
+fifteen module/weapon options, persistent flight records and original music.
+Workshop stops remain exactly three choices with one reward per stop.
+
+Current native acceptance has 85 checks. Five ordinary campaign scenarios cover
+each weapon and frame and clear eleven workshops, three bosses, nine boss
+phases and six caches. Idle play fails a recovery objective. Native audio and
+renderer checks cover looping/mute/resume and the new interface surfaces.
+Windows and Web bundles are generated from isolated project copies. Historical
+browser and GitHub results are not presented as tests of this unpushed revision.

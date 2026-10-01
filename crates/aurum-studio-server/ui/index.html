@@ -26,6 +26,7 @@
                 <div class="header-actions">
                     <button
                         id="run-web"
+                        disabled
                         class="primary"
                         title="Run the project in an isolated web preview"
                     >
@@ -200,6 +201,7 @@
                             </div>
                             <iframe
                                 id="preview-frame"
+                                allow="cross-origin-isolated; fullscreen"
                                 title="Playable game preview"
                                 sandbox="allow-scripts allow-same-origin allow-pointer-lock"
                                 allow="autoplay; fullscreen; gamepad"
@@ -210,6 +212,7 @@
                         <div class="preview-caption">
                             <span id="preview-session">No preview running</span
                             ><span id="live-runtime-state"></span>
+                            <span id="preview-revision" role="status"></span>
                         </div>
                         <details class="scene-operations">
                             <summary>Scene operations</summary>
@@ -303,6 +306,11 @@
                                     ><input id="test-report" type="checkbox" />
                                     Require JSON verdict</label
                                 ><button id="headless-play">Run test</button>
+                                <button id="capture-playtest" class="quiet">Capture frame</button>
+                            </div>
+                            <div class="row">
+                                <label>Frame budget<input id="test-frames" type="number" min="1" max="3600000" placeholder="Automatic" aria-label="Playtest frame budget" /></label>
+                                <label>Wall budget (seconds)<input id="test-timeout" type="number" min="1" max="600" value="90" aria-label="Playtest wall budget" /></label>
                             </div>
                             <pre id="test-result" aria-live="polite"></pre>
                         </details>
@@ -503,6 +511,19 @@
                             Loading tuning
                         </p>
                     </section>
+                    <details class="inspector-section" id="runtime-inspector">
+                        <summary>Live properties</summary>
+                        <p class="hint">Edit exported script values and supported runtime properties without restarting.</p>
+                        <div class="row">
+                            <input id="runtime-path" value="." aria-label="Runtime node path" />
+                            <button id="inspect-runtime" class="quiet">Inspect live</button>
+                        </div>
+                        <div id="runtime-properties"></div>
+                        <p id="runtime-status" class="hint" role="status">Run a preview to inspect its live nodes.</p>
+                        <label class="check-label"><input id="preserve-state" type="checkbox" checked /> Preserve supported state on rebuild</label>
+                        <label class="check-label"><input id="auto-rebuild" type="checkbox" checked /> Rebuild when source changes</label>
+                        <p id="reload-status" class="hint" role="status"></p>
+                    </details>
                     <details class="inspector-section">
                         <summary>Advanced properties</summary>
                         <textarea
