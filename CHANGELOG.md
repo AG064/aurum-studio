@@ -22,6 +22,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Concurrent live saves keep their staging files out of source scans and exports; Windows replacements handle brief reader/scanner locks with bounded waits.
 - Frozen checkpoints suspend preview rendering during private builds and restore the original rendering state on resume or rollback.
 - Native Web build stages and bounded fixture logs provide actionable diagnostics for pending exports.
+- Private native builds isolate Godot settings and caches from source inspection and user editors.
 - Export profiles retain HTML options, include/exclude filters and legal notices.
 - Failed builds or rejected checkpoints retain and resume the previous game; stopping during export prevents late publication.
 - Cold asset inspection and read-only inspection during private exports no longer require reopening an editor.

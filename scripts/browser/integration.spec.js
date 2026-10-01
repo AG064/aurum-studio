@@ -138,19 +138,25 @@ test("external API builds reach the visible preview and restore progress", async
         await input.fill("187"); await input.press("Tab");
         await expect(page.locator("#runtime-status")).toHaveText("counter applied without restarting.");
     }
-    const building = control("/api/preview", { project, force: true });
-    const current = await Promise.race([
-        control("/api/preview"),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Preview status was blocked by export")), 5000)),
-    ]);
-    expect(current.url).toBe(await page.locator("#preview-frame").getAttribute("src"));
-    const scene = await control("/api/project", { project, op: "scene_inspect", scene: "main.tscn" });
-    expect(scene.tree.type).toBe("Node2D");
-    const external = await building;
-    await expect(page.locator("#preview-frame")).toHaveAttribute("src", external.url, { timeout: 120000 });
-    await expect(page.locator("#reload-status")).toHaveText("Rebuilt and restored the checkpoint.", { timeout: 120000 });
-    await inspect();
-    await expect(page.getByLabel("Live counter", { exact: true })).toHaveValue("187");
+    // Exercise cold source import alongside a private export repeatedly. Each
+    // comment edit invalidates the native source cache without changing gameplay.
+    const file = join(project, "godot/main.gd");
+    for (let iteration = 0; iteration < 3; iteration++) {
+        await writeFile(file, (await readFile(file, "utf8")) + `\n# Native concurrency probe ${iteration}\n`);
+        const building = control("/api/preview", { project, force: true });
+        const current = await Promise.race([
+            control("/api/preview"),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Preview status was blocked by export")), 5000)),
+        ]);
+        expect(current.url).toBe(await page.locator("#preview-frame").getAttribute("src"));
+        const scene = await control("/api/project", { project, op: "scene_inspect", scene: "main.tscn" });
+        expect(scene.tree.type).toBe("Node2D");
+        const external = await building;
+        await expect(page.locator("#preview-frame")).toHaveAttribute("src", external.url, { timeout: 120000 });
+        await expect(page.locator("#reload-status")).toHaveText("Rebuilt and restored the checkpoint.", { timeout: 120000 });
+        await inspect();
+        await expect(page.getByLabel("Live counter", { exact: true })).toHaveValue("187");
+    }
 });
 test("invalid builds retain the old preview and its checkpoint", async () => {
     const before = await page.locator("#preview-frame").getAttribute("src");

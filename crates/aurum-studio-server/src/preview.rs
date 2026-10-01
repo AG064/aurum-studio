@@ -174,12 +174,26 @@ impl Preview {
         files::write_atomic(&setup, include_bytes!("preview_setup.gd"))
             .map_err(|e| e.to_string())?;
         let setup_report = work.join("setup.json");
+        // Native editor/export processes must not share mutable settings and
+        // cache directories with source inspection or an open user editor.
+        let native_state = work.join("native-state");
+        let native_data = native_state.join("data");
+        let native_config = native_state.join("config");
+        let native_cache = native_state.join("cache");
+        for directory in [&native_data, &native_config, &native_cache] {
+            std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+        }
         let run = |args: Vec<String>, label: &str| -> Result<(), String> {
             let started = std::time::Instant::now();
             eprintln!("AURUM_WEB_STAGE stage={label} status=start");
             let mut result = aurum_studio_core::Command::new(&engine)
                 .args(args.clone())
                 .directory(&work)
+                .env("APPDATA", native_config.to_string_lossy())
+                .env("LOCALAPPDATA", native_data.to_string_lossy())
+                .env("XDG_DATA_HOME", native_data.to_string_lossy())
+                .env("XDG_CONFIG_HOME", native_config.to_string_lossy())
+                .env("XDG_CACHE_HOME", native_cache.to_string_lossy())
                 .run(Duration::from_secs(180))
                 .map_err(|e| e.to_string())?;
             let mut log = format!("{}\n{}", result.stdout, result.stderr);
@@ -191,6 +205,11 @@ impl Preview {
                 result = aurum_studio_core::Command::new(&engine)
                     .args(args)
                     .directory(&work)
+                    .env("APPDATA", native_config.to_string_lossy())
+                    .env("LOCALAPPDATA", native_data.to_string_lossy())
+                    .env("XDG_DATA_HOME", native_data.to_string_lossy())
+                    .env("XDG_CONFIG_HOME", native_config.to_string_lossy())
+                    .env("XDG_CACHE_HOME", native_cache.to_string_lossy())
                     .run(Duration::from_secs(180))
                     .map_err(|e| e.to_string())?;
                 log = format!("{}\n{}", result.stdout, result.stderr);
