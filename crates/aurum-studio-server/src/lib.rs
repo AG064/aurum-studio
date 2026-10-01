@@ -294,11 +294,18 @@ impl Shell {
     fn connections_sub(&self) {
         // Saturating: a handler that ran without an increment must not wrap
         // the counter to a huge number and permanently refuse connections.
-        let _ = self
-            .connections
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                Some(count.saturating_sub(1))
-            });
+        let mut count = self.connections.load(Ordering::SeqCst);
+        loop {
+            match self.connections.compare_exchange_weak(
+                count,
+                count.saturating_sub(1),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(current) => count = current,
+            }
+        }
     }
 }
 
