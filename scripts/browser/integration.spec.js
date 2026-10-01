@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { mkdtemp, cp, readFile, writeFile, readdir } from "node:fs/promises";
+import { mkdtemp, cp, readFile, writeFile, readdir, mkdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,6 +41,27 @@ test.afterAll(async ({}, info) => {
     if (child?.exitCode === null) child.kill();
     await writeFile(info.outputPath("studio.log"), token ? output.replaceAll(token, "[redacted]") : output);
     await writeFile(info.outputPath("evidence.json"), JSON.stringify({work,project},null,2));
+    // Keep completed native-stage logs even if the browser fails while a new
+    // export is pending. Only this disposable fixture's logs are collected.
+    let logCount = 0;
+    const collect = async (directory, relative = "", depth = 0) => {
+        if (depth > 8 || logCount >= 64) return;
+        for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+            const path = join(directory, entry.name), name = join(relative, entry.name);
+            if (entry.isDirectory()) await collect(path, name, depth + 1);
+            else if (entry.isFile() && entry.name.endsWith(".log") && logCount < 64) {
+                const metadata = await stat(path).catch(() => null);
+                if (!metadata || metadata.size > 2 * 1024 * 1024) continue;
+                const text = await readFile(path, "utf8").catch(() => null);
+                if (text === null) continue;
+                const target = info.outputPath("native-logs", name);
+                await mkdir(dirname(target), { recursive: true });
+                await writeFile(target, token ? text.replaceAll(token, "[redacted]") : text);
+                logCount++;
+            }
+        }
+    };
+    if (project) await collect(join(project, ".aurum", "web"));
 });
 test("ordinary projects preserve export filters, HTML options and notices", async ({}, info) => {
     // Cold native import/export and visible runtime checks share this bounded budget.

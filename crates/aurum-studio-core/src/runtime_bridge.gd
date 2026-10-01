@@ -9,6 +9,22 @@ var _callback
 var _window
 var _baseline: Dictionary = {}
 var _baseline_scene_id = 0
+var _render_suspended = false
+var _render_before_freeze = true
+
+func _suspend_rendering():
+	if not _render_suspended:
+		_render_before_freeze = RenderingServer.is_render_loop_enabled()
+	_render_suspended = true
+	RenderingServer.set_render_loop_enabled(false)
+
+func _resume_rendering():
+	if _render_suspended:
+		RenderingServer.set_render_loop_enabled(_render_before_freeze)
+		_render_suspended = false
+
+func _exit_tree():
+	_resume_rendering()
 
 func _process(_delta):
 	_ensure_baseline()
@@ -69,11 +85,13 @@ func request(input):
 			var result = _capture()
 			if input.get("freeze", false) and result.get("ok", false):
 				get_tree().paused = true
+				_suspend_rendering()
 			return result
 		"restore":
 			return _restore(input.get("checkpoint"))
 		"resume":
 			get_tree().paused = bool(input.get("paused", false))
+			_resume_rendering()
 			return {"ok": true, "paused": get_tree().paused}
 	return {"ok": false, "error": "Unknown runtime operation"}
 
@@ -143,6 +161,7 @@ func _capture() -> Dictionary:
 	_ensure_baseline()
 	var scene = get_tree().current_scene
 	var checkpoint = {"version": 1, "scene": scene.scene_file_path, "paused": get_tree().paused}
+	checkpoint["render_loop_enabled"] = _render_before_freeze if _render_suspended else RenderingServer.is_render_loop_enabled()
 	if scene.has_method("aurum_capture_state") and scene.has_method("aurum_restore_state"):
 		var custom = _encode(scene.call("aurum_capture_state"))
 		if _unsupported(custom):
@@ -176,6 +195,8 @@ func _restore(checkpoint) -> Dictionary:
 	_ensure_baseline()
 	if not checkpoint is Dictionary or checkpoint.get("version") != 1 or checkpoint.get("scene") != get_tree().current_scene.scene_file_path or JSON.stringify(checkpoint).length() > MAX_BYTES:
 		return {"ok": false, "error": "Checkpoint schema or scene does not match"}
+	if checkpoint.has("render_loop_enabled") and not checkpoint.render_loop_enabled is bool:
+		return {"ok": false, "error": "Checkpoint rendering state is invalid"}
 	var scene = get_tree().current_scene
 	var applied = 0
 	var reconfigured = 0
@@ -214,6 +235,9 @@ func _restore(checkpoint) -> Dictionary:
 			item[0].set(item[1], item[2])
 			applied += 1
 	get_tree().paused = bool(checkpoint.get("paused", false))
+	_resume_rendering()
+	if checkpoint.has("render_loop_enabled"):
+		RenderingServer.set_render_loop_enabled(checkpoint.render_loop_enabled)
 	return {"ok": true, "applied": applied, "skipped": skipped, "reconfigured": reconfigured, "complete": skipped == 0, "mode": "custom" if checkpoint.has("custom") else "properties"}
 
 func _compatible(old, value) -> bool:

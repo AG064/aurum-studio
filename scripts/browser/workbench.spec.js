@@ -165,8 +165,15 @@ test("keyboard play and acknowledged live edits preserve the same run", async ({
     test.setTimeout(300000);
     const canvas = page.frameLocator("#preview-frame").locator("canvas");
     const menu = await state();
-    await canvas.press("Enter");
-    await expect.poll(async () => (await state()).phase).toBe("hangar");
+    // Give the embedded game actual focus and keep the key down through an
+    // acknowledged simulation frame on low-FPS software-rendered runners.
+    await canvas.click({ position: { x: 8, y: 8 } });
+    await page.keyboard.down("Enter");
+    try {
+        await expect.poll(async () => (await state()).phase).toBe("hangar");
+    } finally {
+        await page.keyboard.up("Enter");
+    }
     await canvas.press("Digit1");
     await page.keyboard.press("Space");
     // Pause before inspecting state: slow software-rendered CI can spend seconds

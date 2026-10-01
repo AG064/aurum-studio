@@ -778,6 +778,7 @@
                 "Importing and exporting a private project snapshot. The first build can take a moment.";
             try {
                 checkpoint = await captureBeforeRebuild();
+                $("reload-status").textContent = checkpoint ? "Checkpoint captured. Building private snapshot..." : "Building private snapshot...";
                 const result = await api("/api/preview", { project, force });
                 if (activeRoot !== project) return;
                 await adoptPreview(result, checkpoint);

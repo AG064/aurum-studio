@@ -175,6 +175,8 @@ impl Preview {
             .map_err(|e| e.to_string())?;
         let setup_report = work.join("setup.json");
         let run = |args: Vec<String>, label: &str| -> Result<(), String> {
+            let started = std::time::Instant::now();
+            eprintln!("AURUM_WEB_STAGE stage={label} status=start");
             let mut result = aurum_studio_core::Command::new(&engine)
                 .args(args.clone())
                 .directory(&work)
@@ -195,6 +197,12 @@ impl Preview {
             }
             files::write_atomic(&work.join(format!("{label}.log")), log.as_bytes())
                 .map_err(|e| e.to_string())?;
+            eprintln!(
+                "AURUM_WEB_STAGE stage={label} status=finished elapsed_ms={} success={} wall_timeout={}",
+                started.elapsed().as_millis(),
+                result.success(),
+                result.timed_out
+            );
             if !result.success() || log.contains("ERROR:") {
                 return Err(format!(
                     "Web preview {label} failed (exit {:?}, wall_timeout={}): {}\nEvidence: {}",

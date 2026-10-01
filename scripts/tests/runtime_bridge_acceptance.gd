@@ -43,8 +43,10 @@ func _run():
 	check(not bridge.request({"op": "apply", "changes": [{"property": "steps", "value": [1e30]}]}).ok, "unsafe typed array integers refused")
 	check(bridge.request({"op": "apply", "changes": [{"property": "weights", "value": [2, 3]}]}).ok and scene.weights == [2.0, 3.0], "typed float array numeric coercion")
 	scene.position = Vector2(40, 25)
+	var render_before = RenderingServer.is_render_loop_enabled()
 	var captured = bridge.request({"op": "checkpoint", "freeze": true})
 	check(captured.ok and paused, "checkpoint capture and freeze")
+	check(not RenderingServer.is_render_loop_enabled(), "frozen previews stop rendering while retaining runtime callbacks")
 	var checkpoint = JSON.parse_string(JSON.stringify(captured.checkpoint))
 	scene.speed = 1.0
 	scene.counter = 0
@@ -57,6 +59,15 @@ func _run():
 	check(scene.amounts.gold == 5 and scene.amounts.is_typed(), "typed dictionary state preserved")
 	check(scene.identifier == 9223372036854775807, "int64 state preserved without JSON precision loss")
 	check(not paused, "original pause state restored")
+	check(RenderingServer.is_render_loop_enabled() == render_before, "checkpoint restores original rendering state")
+	bridge.request({"op": "checkpoint", "freeze": true})
+	bridge.request({"op": "resume", "paused": false})
+	check(not paused and RenderingServer.is_render_loop_enabled() == render_before, "failed-build resume restores rendering and pause state")
+	RenderingServer.set_render_loop_enabled(false)
+	var disabled = bridge.request({"op": "checkpoint", "freeze": true})
+	bridge.request({"op": "restore", "checkpoint": disabled.checkpoint})
+	check(not RenderingServer.is_render_loop_enabled(), "intentionally disabled rendering is preserved")
+	RenderingServer.set_render_loop_enabled(render_before)
 	checkpoint.scene = "res://different.tscn"
 	check(not bridge.request({"op": "restore", "checkpoint": checkpoint}).ok, "incompatible scene refused")
 	var result = {"ok": failures.is_empty(), "checks": checks, "failures": failures}
