@@ -70,3 +70,6 @@ if($WebGameDirectory){Archive ([IO.Path]::GetFullPath($WebGameDirectory)) "Orbit
 $sums=@($assets|ForEach-Object{ '{0}  {1}' -f (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant(),(Split-Path $_ -Leaf) })
 $sums|Out-File (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding utf8
 @{ok=$true;version=$version;directory=$OutputDirectory;assets=$assets;binary_sha256=(Get-FileHash -LiteralPath $Binary).Hash;runtime_sha256=(Get-FileHash -LiteralPath $GodotBinary).Hash;global_environment_changed=$false}|ConvertTo-Json -Depth 6
+# Robocopy returns 1 for a successful copy. Do not leak that native status
+# from a completed release into callers that check the script's exit code.
+exit 0
