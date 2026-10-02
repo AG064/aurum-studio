@@ -689,6 +689,7 @@
             agentConfig().catch(() => {}),
         );
         let previewBusy = false, previewPollBusy = false, attemptedRevision = "";
+        let externalCheckpoint = null;
         const runtimePending = new Map();
         function runtimeRequest(request) {
             if (!preview) return Promise.reject(new Error("No preview is running"));
@@ -802,12 +803,26 @@
                 const status = await api("/api/preview");
                 if (status.active === false) { await stopPreview(false); return; }
                 if (!preview || status.project !== activeRoot) return;
+                if (status.building) {
+                    if (!externalCheckpoint && $("preserve-state").checked) {
+                        const checkpoint = await captureBeforeRebuild();
+                        if (checkpoint) externalCheckpoint = { session: preview.session, checkpoint };
+                    }
+                    $("reload-status").textContent = externalCheckpoint ? "Agent build in progress. Existing run frozen." : "Agent build in progress.";
+                    return;
+                }
                 if (status.session !== preview.session) {
                     previewBusy = true;
                     try {
-                        const checkpoint = await captureBeforeRebuild();
+                        const checkpoint = externalCheckpoint?.session === preview.session ? externalCheckpoint.checkpoint : await captureBeforeRebuild();
+                        externalCheckpoint = null;
                         await adoptPreview(status, checkpoint);
                     } finally { previewBusy = false; }
+                } else if (externalCheckpoint?.session === preview.session) {
+                    const checkpoint = externalCheckpoint.checkpoint;
+                    externalCheckpoint = null;
+                    await runtimeRequest({ op: "resume", paused: checkpoint.paused });
+                    $("reload-status").textContent = "Agent build finished. Existing preview resumed.";
                 }
                 $("preview-revision").textContent = status.stale ? "Source changed" : `Source ${(status.source_sha256 || "").slice(0, 8)}`;
                 if (status.stale && $("auto-rebuild").checked && attemptedRevision !== status.current_sha256) {
@@ -845,6 +860,7 @@
         async function stopPreview(notifyServer = true) {
             if (preview && notifyServer) await api("/api/preview", { action: "stop" });
             preview = null;
+            externalCheckpoint = null;
             for (const pending of runtimePending.values()) { clearTimeout(pending.timer); pending.reject(new Error("Preview stopped")); }
             runtimePending.clear();
             $("preview-frame").removeAttribute("src");

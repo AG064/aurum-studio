@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { monitorHttp } from "./http-diagnostics.js";
+import { openWorkspace } from "./workspace-ready.js";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 let child, work, project, endpoint, token, origin, page, context;
@@ -137,7 +138,10 @@ test.afterAll(async ({}, info) => {
 });
 
 test("real export boots a rendered game on an isolated origin", async ({}, info) => {
-    await page.goto(endpoint);
+    // Cold native readiness, browser boot and explicit captures have separate
+    // bounded waits; this total budget accommodates those required phases.
+    test.setTimeout(360000);
+    await openWorkspace(page, endpoint);
     await expect(page.locator("#project")).toHaveText("orbit-break");
     await expect(page.locator("#workspace-status")).toHaveText(
         "Load workspace complete",
@@ -476,7 +480,7 @@ test("responsive inspector and keyboard file navigation remain usable", async ({
 test("browser export produces a portable bundle without the Studio bridge", async ({
     browser,
 }, info) => {
-    await page.goto(endpoint);
+    await openWorkspace(page, endpoint);
     await expect(page.locator("#workspace-status")).toHaveText(
         "Load workspace complete",
     );
@@ -645,7 +649,7 @@ test("an ordinary 2D project boots without the example-specific live bridge", as
         template: "2d",
     });
     expect(created.ok).toBeTruthy();
-    await page.goto(endpoint);
+    await openWorkspace(page, endpoint);
     await expect(page.locator("#workspace-status")).toHaveText(
         "Load workspace complete",
     );

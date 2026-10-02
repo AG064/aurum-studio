@@ -5,6 +5,7 @@ import { resolve, join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { monitorHttp } from "./http-diagnostics.js";
+import { openWorkspace } from "./workspace-ready.js";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 let work, project, child, output = "", origin, token, endpoint, page, context;
@@ -70,18 +71,7 @@ test.afterAll(async ({}, info) => {
 test("ordinary projects preserve export filters, HTML options and notices", async ({}, info) => {
     // Cold native import/export and visible runtime checks share this bounded budget.
     test.setTimeout(300000);
-    // A cold scene inspection can import project resources. Wait for that
-    // bounded native operation explicitly, then enforce normal UI readiness.
-    const [inspection] = await Promise.all([
-        page.waitForResponse(response => {
-            if (new URL(response.url()).pathname !== "/api/project") return false;
-            try { return response.request().postDataJSON()?.op === "scene_inspect"; }
-            catch { return false; }
-        }, { timeout: 180000 }),
-        page.goto(endpoint),
-    ]);
-    expect(inspection.ok()).toBe(true);
-    expect(await inspection.json()).toMatchObject({ ok: true });
+    await openWorkspace(page, endpoint);
     await expect(page.locator("#project")).toHaveText("live-preview");
     await expect(page.locator("#workspace-status")).toHaveText("Load workspace complete");
     await page.locator("#run-web").click();
@@ -153,6 +143,7 @@ test("external API builds reach the visible preview and restore progress", async
             new Promise((_, reject) => setTimeout(() => reject(new Error("Preview status was blocked by export")), 5000)),
         ]);
         expect(current.url).toBe(await page.locator("#preview-frame").getAttribute("src"));
+        await expect(page.locator("#reload-status")).toHaveText("Agent build in progress. Existing run frozen.");
         const scene = await control("/api/project", { project, op: "scene_inspect", scene: "main.tscn" });
         expect(scene.tree.type).toBe("Node2D");
         const external = await building;

@@ -120,6 +120,36 @@ struct Shell {
     preview: Arc<Mutex<Option<preview::Preview>>>,
     fallback_preview: Arc<Mutex<Option<preview::Preview>>>,
     preview_epoch: Arc<AtomicUsize>,
+    preview_builds: Arc<Mutex<std::collections::BTreeMap<PathBuf, usize>>>,
+}
+
+struct PreviewBuildGuard<'a> {
+    builds: &'a Mutex<std::collections::BTreeMap<PathBuf, usize>>,
+    project: PathBuf,
+}
+impl<'a> PreviewBuildGuard<'a> {
+    fn new(
+        builds: &'a Mutex<std::collections::BTreeMap<PathBuf, usize>>,
+        project: PathBuf,
+    ) -> Self {
+        *builds
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(project.clone())
+            .or_default() += 1;
+        Self { builds, project }
+    }
+}
+impl Drop for PreviewBuildGuard<'_> {
+    fn drop(&mut self) {
+        let mut builds = self.builds.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = builds.get_mut(&self.project) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                builds.remove(&self.project);
+            }
+        }
+    }
 }
 
 impl Server {
@@ -181,6 +211,7 @@ impl Server {
                 preview: Arc::new(Mutex::new(None)),
                 fallback_preview: Arc::new(Mutex::new(None)),
                 preview_epoch: Arc::new(AtomicUsize::new(0)),
+                preview_builds: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             }),
             address,
         })
@@ -620,7 +651,20 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
             let value = match active.as_ref() {
                 Some(preview) => Project::open(&preview.project)
                     .map_err(|e| e.to_string())
-                    .and_then(|project| preview.freshness(&project)),
+                    .and_then(|project| preview.freshness(&project))
+                    .map(|mut value| {
+                        value["building"] = serde_json::json!(
+                            shell
+                                .preview_builds
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .get(&preview.project)
+                                .copied()
+                                .unwrap_or(0)
+                                > 0
+                        );
+                        value
+                    }),
                 None => Ok(serde_json::json!({"ok":true,"active":false})),
             };
             Routed::Once(match value {
@@ -693,6 +737,7 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
                 let previous_session = active.as_ref().map(|p| p.describe(true)["session"].clone());
                 let previous_epoch = shell.preview_epoch.load(Ordering::SeqCst);
                 drop(active);
+                let _building = PreviewBuildGuard::new(&shell.preview_builds, project.root.clone());
                 let preview =
                     preview::Preview::build(&project, shell.godot_hint.as_deref(), origin)?;
                 let result = preview.describe(false);
@@ -1042,6 +1087,21 @@ pub fn event_json(event: &Event) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn preview_build_activity_is_project_scoped_and_released_on_drop() {
+        let builds = std::sync::Mutex::new(std::collections::BTreeMap::new());
+        let project = std::path::PathBuf::from("project-a");
+        let other = std::path::PathBuf::from("project-b");
+        let first = super::PreviewBuildGuard::new(&builds, project.clone());
+        let second = super::PreviewBuildGuard::new(&builds, project.clone());
+        assert_eq!(builds.lock().unwrap().get(&project), Some(&2));
+        assert!(!builds.lock().unwrap().contains_key(&other));
+        drop(first);
+        assert_eq!(builds.lock().unwrap().get(&project), Some(&1));
+        drop(second);
+        assert!(builds.lock().unwrap().is_empty());
+    }
+
     use super::*;
 
     #[test]

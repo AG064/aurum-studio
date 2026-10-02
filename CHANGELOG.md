@@ -26,6 +26,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Native editor cache-writer phases use a fair, deadline-bound queue; status, file reads and ordinary runtime probes remain independent.
 - Script-only source scene inspection and staged edits use immutable revision/runtime-keyed private caches without re-importing the original `.godot` directory.
 - Windows atomic saves support extended paths; native inspection caches use shorter temporary locations for process and helper-tool compatibility.
+- Agent/API preview builds report project-scoped activity so the connected UI freezes rendering early and restores the same run on adoption or failure.
 - Export profiles retain HTML options, include/exclude filters and legal notices.
 - Failed builds or rejected checkpoints retain and resume the previous game; stopping during export prevents late publication.
 - Cold asset inspection and read-only inspection during private exports no longer require reopening an editor.
