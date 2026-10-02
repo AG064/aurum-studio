@@ -125,17 +125,16 @@ test("automatic rebuild reaches the visible preview", async () => {
     await expect(page.getByLabel("Live caption", { exact: true })).toHaveValue('"Version3"');
     await page.locator("#auto-rebuild").uncheck();
 });
-test("external API builds reach the visible preview and restore progress", async () => {
-    await inspect();
-    const input = page.getByLabel("Live counter", { exact: true });
-    if (await input.inputValue() !== "187") {
-        await input.fill("187"); await input.press("Tab");
-        await expect(page.locator("#runtime-status")).toHaveText("counter applied without restarting.");
-    }
-    // Exercise cold source import alongside a private export repeatedly. Each
-    // comment edit invalidates the native source cache without changing gameplay.
-    const file = join(project, "godot/main.gd");
-    for (let iteration = 0; iteration < 3; iteration++) {
+for (let iteration = 0; iteration < 3; iteration++) {
+    test(`external API rebuild ${iteration + 1} reaches the visible preview and restores progress`, async () => {
+        await inspect();
+        const input = page.getByLabel("Live counter", { exact: true });
+        if (await input.inputValue() !== "187") {
+            await input.fill("187"); await input.press("Tab");
+            await expect(page.locator("#runtime-status")).toHaveText("counter applied without restarting.");
+        }
+        // Each source edit makes inspection cold without changing gameplay.
+        const file = join(project, "godot/main.gd");
         await writeFile(file, (await readFile(file, "utf8")) + `\n# Native concurrency probe ${iteration}\n`);
         const building = control("/api/preview", { project, force: true });
         const current = await Promise.race([
@@ -151,8 +150,8 @@ test("external API builds reach the visible preview and restore progress", async
         await expect(page.locator("#reload-status")).toHaveText("Rebuilt and restored the checkpoint.", { timeout: 120000 });
         await inspect();
         await expect(page.getByLabel("Live counter", { exact: true })).toHaveValue("187");
-    }
-});
+    });
+}
 test("invalid builds retain the old preview and its checkpoint", async () => {
     const before = await page.locator("#preview-frame").getAttribute("src");
     const file = join(project, "godot/main.gd"); const valid = await readFile(file, "utf8");
