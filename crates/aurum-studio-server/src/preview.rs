@@ -186,31 +186,32 @@ impl Preview {
         let run = |args: Vec<String>, label: &str| -> Result<(), String> {
             let started = std::time::Instant::now();
             eprintln!("AURUM_WEB_STAGE stage={label} status=start");
-            let mut result = aurum_studio_core::Command::new(&engine)
+            let command = aurum_studio_core::Command::new(&engine)
                 .args(args.clone())
                 .directory(&work)
                 .env("APPDATA", native_config.to_string_lossy())
                 .env("LOCALAPPDATA", native_data.to_string_lossy())
                 .env("XDG_DATA_HOME", native_data.to_string_lossy())
                 .env("XDG_CONFIG_HOME", native_config.to_string_lossy())
-                .env("XDG_CACHE_HOME", native_cache.to_string_lossy())
-                .run(Duration::from_secs(180))
-                .map_err(|e| e.to_string())?;
+                .env("XDG_CACHE_HOME", native_cache.to_string_lossy());
+            let mut result =
+                aurum_studio_core::native_runtime::run(&command, Duration::from_secs(180))
+                    .map_err(|e| e.to_string())?;
             let mut log = format!("{}\n{}", result.stdout, result.stderr);
             if label == "import"
                 && aurum_studio_core::project_ops::import_shutdown_crash(result.code, &log)
             {
                 files::write_atomic(&work.join("import-first-crash.log"), log.as_bytes())
                     .map_err(|e| e.to_string())?;
-                result = aurum_studio_core::Command::new(&engine)
+                let command = aurum_studio_core::Command::new(&engine)
                     .args(args)
                     .directory(&work)
                     .env("APPDATA", native_config.to_string_lossy())
                     .env("LOCALAPPDATA", native_data.to_string_lossy())
                     .env("XDG_DATA_HOME", native_data.to_string_lossy())
                     .env("XDG_CONFIG_HOME", native_config.to_string_lossy())
-                    .env("XDG_CACHE_HOME", native_cache.to_string_lossy())
-                    .run(Duration::from_secs(180))
+                    .env("XDG_CACHE_HOME", native_cache.to_string_lossy());
+                result = aurum_studio_core::native_runtime::run(&command, Duration::from_secs(180))
                     .map_err(|e| e.to_string())?;
                 log = format!("{}\n{}", result.stdout, result.stderr);
             }

@@ -47,6 +47,7 @@ pub mod files;
 pub mod gameplay;
 pub mod hash;
 pub mod modules;
+pub mod native_runtime;
 pub mod native_schema;
 pub mod ownership;
 pub mod playtest;

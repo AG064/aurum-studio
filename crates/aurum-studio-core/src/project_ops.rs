@@ -631,11 +631,10 @@ pub fn import_shutdown_crash(code: Option<i32>, log: &str) -> bool {
 }
 
 fn engine_run(project: &Project, args: &[String], timeout: Duration) -> Result<Value, String> {
-    let result = crate::Command::new(engine_binary(project)?)
+    let command = crate::Command::new(engine_binary(project)?)
         .args(args.iter().cloned())
-        .directory(&project.root)
-        .run(timeout)
-        .map_err(|e| e.to_string())?;
+        .directory(&project.root);
+    let result = crate::native_runtime::run(&command, timeout).map_err(|e| e.to_string())?;
     let errors: Vec<_> = result
         .stdout
         .lines()
