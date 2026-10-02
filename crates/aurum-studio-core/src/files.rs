@@ -27,12 +27,31 @@ pub fn replace(source: &Path, destination: &Path) -> io::Result<()> {
         unsafe extern "system" {
             fn MoveFileExW(source: *const u16, destination: *const u16, flags: u32) -> i32;
         }
-        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-        let destination: Vec<u16> = destination
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
+        let extended_path = |path: &Path| -> io::Result<Vec<u16>> {
+            let absolute = std::path::absolute(path)?;
+            let mut wide: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+            for value in &mut wide {
+                if *value == b'/' as u16 {
+                    *value = b'\\' as u16;
+                }
+            }
+            let prefix: Vec<u16> = "\\\\?\\".encode_utf16().collect();
+            let mut result = if wide.starts_with(&prefix) {
+                wide
+            } else if wide.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+                let mut result: Vec<u16> = "\\\\?\\UNC\\".encode_utf16().collect();
+                result.extend_from_slice(&wide[2..]);
+                result
+            } else {
+                let mut result = prefix;
+                result.extend(wide);
+                result
+            };
+            result.push(0);
+            Ok(result)
+        };
+        let source = extended_path(source)?;
+        let destination = extended_path(destination)?;
         // Same-volume replace; the destination is never removed first.
         let mut attempt = 0;
         loop {
@@ -123,6 +142,23 @@ pub fn confined(root: &Path, relative: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn atomic_replacement_handles_extended_windows_paths() {
+        let root =
+            std::env::temp_dir().join(format!("aurum-atomic-long-{}", crate::random::session_id()));
+        let mut directory = root.clone();
+        for index in 0..14 {
+            directory.push(format!("nested-source-directory-{index:02}"));
+        }
+        let target = directory.join("state.json");
+        assert!(target.as_os_str().len() > 260);
+        write_atomic(&target, b"before").unwrap();
+        write_atomic(&target, b"after").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"after");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[cfg(windows)]
     #[test]
     fn atomic_write_survives_a_brief_windows_reader_lock() {

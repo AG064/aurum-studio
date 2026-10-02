@@ -65,7 +65,7 @@ test.afterAll(async ({}, info) => {
             }
         }
     };
-    if (project) await collect(join(project, ".aurum", "web"));
+    if (project) await collect(join(project, ".aurum"));
 });
 test("ordinary projects preserve export filters, HTML options and notices", async ({}, info) => {
     // Cold native import/export and visible runtime checks share this bounded budget.

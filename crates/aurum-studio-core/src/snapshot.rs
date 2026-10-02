@@ -113,16 +113,26 @@ pub fn copy_excluding(source: &Path, destination: &Path, excluded: &[&str]) -> R
 /// Hash paths and bytes, not timestamps: same-size edits and deletes invalidate a build.
 /// The root tuning file is live data and intentionally does not invalidate code exports.
 pub fn fingerprint(source: &Path) -> Result<String, String> {
+    fingerprint_with_live_data(source, false)
+}
+
+/// Inspection caches include live files because script initializers can read
+/// them. Preview code freshness intentionally uses the lighter contract above.
+pub fn fingerprint_all(source: &Path) -> Result<String, String> {
+    fingerprint_with_live_data(source, true)
+}
+
+fn fingerprint_with_live_data(source: &Path, include_live: bool) -> Result<String, String> {
     let mut hash = Sha256::new();
     visit(
         source,
         source,
         0,
-        true,
+        !include_live,
         &mut 0,
         &mut 0,
         &mut |path, relative| {
-            if relative == "tuning.json" || relative.ends_with("/tuning.json") {
+            if !include_live && (relative == "tuning.json" || relative.ends_with("/tuning.json")) {
                 return Ok(());
             }
             hash.update(&(relative.len() as u64).to_le_bytes());
@@ -223,6 +233,9 @@ mod tests {
         std::fs::write(root.join("main.gd"), "one").unwrap();
         let first = fingerprint(&root).unwrap();
         std::fs::write(root.join("tuning.json"), "{}").unwrap();
+        let complete = fingerprint_all(&root).unwrap();
+        std::fs::write(root.join("tuning.json"), "{\"speed\":9}").unwrap();
+        assert_ne!(fingerprint_all(&root).unwrap(), complete);
         std::fs::write(root.join(".godot/cache"), "cached").unwrap();
         assert_eq!(fingerprint(&root).unwrap(), first);
         std::fs::write(root.join("main.gd"), "two").unwrap();

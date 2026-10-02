@@ -721,10 +721,16 @@ pub fn build_project(project: &Project, release: bool) -> Result<Value, String> 
 }
 
 fn headless_operation(project: &Project, input: &Value) -> Result<Value, String> {
-    if matches!(
+    let needs_import = matches!(
         input["op"].as_str(),
-        Some("scene_inspect" | "scene_edit" | "set_main_scene")
-    ) {
+        Some("scene_inspect" | "scene_create" | "scene_edit" | "set_main_scene")
+    );
+    let inspection_source = if needs_import && project.config.rust_package.is_none() {
+        Some(private_inspection_source(project)?)
+    } else {
+        None
+    };
+    if needs_import && inspection_source.is_none() {
         ensure_imported(project)?;
     }
     let godot = godot_root(project)?;
@@ -797,7 +803,11 @@ fn headless_operation(project: &Project, input: &Value) -> Result<Value, String>
         &[
             "--headless".into(),
             "--path".into(),
-            godot.display().to_string(),
+            inspection_source
+                .as_deref()
+                .unwrap_or(godot)
+                .display()
+                .to_string(),
             "--script".into(),
             script.display().to_string(),
             "--".into(),
@@ -860,6 +870,94 @@ fn headless_operation(project: &Project, input: &Value) -> Result<Value, String>
 
 /// Resource inspection must work without requiring the user to open an editor first.
 /// Import only when source changed, serialize native cache writers, and never edit scene data.
+/// Import script-only scene workers in immutable, revision-keyed snapshots.
+/// Never re-import a user's original cache to service a source inspection/edit.
+fn private_inspection_source(project: &Project) -> Result<PathBuf, String> {
+    let godot = godot_root(project)?;
+    let engine = engine_binary(project)?;
+    let source_revision = crate::snapshot::fingerprint_all(godot)?;
+    let runtime_revision = crate::sha256_file(&engine).map_err(|e| e.to_string())?;
+    let revision = crate::sha256_hex(
+        format!(
+            "{}\n{source_revision}\n{runtime_revision}",
+            project.root.display()
+        )
+        .as_bytes(),
+    );
+    // Keep native working directories short: Windows process startup and
+    // Godot's helper tools still have stricter limits than Rust file I/O.
+    let cache_root = std::env::temp_dir();
+    let relative = format!("aurum-inspection-{revision}");
+    let work = files::confined(&cache_root, &relative)?;
+    let _cache_lock = crate::BuildLock::try_acquire(&work).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    let ready = files::confined(&cache_root, &format!("{relative}/ready.json"))?;
+    if let Some(stage) = std::fs::read(&ready)
+        .ok()
+        .filter(|bytes| bytes.len() <= 4096)
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|value| value["stage"].as_str().map(str::to_owned))
+        .filter(|stage| {
+            stage
+                .strip_prefix("stage-")
+                .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        })
+    {
+        let cached = files::confined(&cache_root, &format!("{relative}/{stage}/source"))?;
+        if cached.join("project.godot").is_file() && cached.join(".godot").is_dir() {
+            return Ok(cached);
+        }
+    }
+    let stage_name = format!("stage-{}", crate::random::session_id());
+    let stage = work.join(&stage_name);
+    let source = stage.join("source");
+    crate::snapshot::copy_excluding(godot, &source, &["addons/aurum_editor"])?;
+    if crate::snapshot::fingerprint_all(godot)? != source_revision {
+        return Err("Source changed while preparing scene inspection; reload after saving".into());
+    }
+    let state = stage.join("native-state");
+    std::fs::create_dir_all(&state).map_err(|e| e.to_string())?;
+    let command = crate::Command::new(engine)
+        .args([
+            "--headless".into(),
+            "--editor".into(),
+            "--path".into(),
+            source.display().to_string(),
+            "--import".into(),
+        ])
+        .directory(&cache_root)
+        .env("APPDATA", state.to_string_lossy())
+        .env("LOCALAPPDATA", state.to_string_lossy())
+        .env("XDG_DATA_HOME", state.to_string_lossy())
+        .env("XDG_CONFIG_HOME", state.to_string_lossy())
+        .env("XDG_CACHE_HOME", state.to_string_lossy());
+    let mut outcome = crate::native_runtime::run(&command, Duration::from_secs(120))
+        .map_err(|e| e.to_string())?;
+    let mut log = format!("{}\n{}", outcome.stdout, outcome.stderr);
+    if import_shutdown_crash(outcome.code, &log) {
+        files::write_atomic(&stage.join("import-first-crash.log"), log.as_bytes())
+            .map_err(|e| e.to_string())?;
+        outcome = crate::native_runtime::run(&command, Duration::from_secs(120))
+            .map_err(|e| e.to_string())?;
+        log = format!("{}\n{}", outcome.stdout, outcome.stderr);
+    }
+    files::write_atomic(&stage.join("import.log"), log.as_bytes()).map_err(|e| e.to_string())?;
+    if !outcome.success() || log.contains("ERROR:") {
+        return Err(format!(
+            "Private scene import failed: {} (wall_timeout={}). Evidence: {}",
+            outcome.tail(20).join("\n"),
+            outcome.timed_out,
+            stage.display()
+        ));
+    }
+    files::write_atomic(
+        &ready,
+        &serde_json::to_vec(&json!({"stage":stage_name})).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(source)
+}
+
 fn ensure_imported(project: &Project) -> Result<(), String> {
     let godot = godot_root(project)?;
     // Preview exports build a private copy. They must not block read-only inspection.

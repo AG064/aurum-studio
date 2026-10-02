@@ -39,6 +39,7 @@ try {
     Check $status.headless 'Project is available headlessly'
     $scene=Op @{op='scene_inspect';scene='main.tscn'}
     Check ($scene.tree.children.Count -eq 3) '3D starter has camera, light, and mesh'
+    Check (-not (Test-Path -LiteralPath (Join-Path $project 'godot/.godot'))) 'Script-only inspection does not import into the original project cache'
     $changed=Op @{op='scene_edit';scene='main.tscn';expected_sha256=$scene.sha256;operations=@(@{op='create';parent='.';name='Probe';type='MeshInstance3D';properties=@{position=@{x=2;y=1;z=0};mesh=@{resource='BoxMesh'}}})}
     Check $changed.saved 'Scene batch saved successfully'
     $reopened=Op @{op='scene_inspect';scene='main.tscn'}

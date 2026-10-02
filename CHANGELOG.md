@@ -24,6 +24,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Native Web build stages and bounded fixture logs provide actionable diagnostics for pending exports.
 - Private native builds isolate Godot settings and caches from source inspection and user editors.
 - Native editor cache-writer phases use a fair, deadline-bound queue; status, file reads and ordinary runtime probes remain independent.
+- Script-only source scene inspection and staged edits use immutable revision/runtime-keyed private caches without re-importing the original `.godot` directory.
+- Windows atomic saves support extended paths; native inspection caches use shorter temporary locations for process and helper-tool compatibility.
 - Export profiles retain HTML options, include/exclude filters and legal notices.
 - Failed builds or rejected checkpoints retain and resume the previous game; stopping during export prevents late publication.
 - Cold asset inspection and read-only inspection during private exports no longer require reopening an editor.
