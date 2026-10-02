@@ -116,6 +116,8 @@ jobs:
     name: Browser acceptance (${{ matrix.suite }})
     runs-on: windows-latest
     timeout-minutes: 35
+    env:
+      AURUM_NATIVE_DIAGNOSTICS: '1'
     strategy:
       fail-fast: false
       matrix:

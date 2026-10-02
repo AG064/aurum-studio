@@ -86,7 +86,12 @@ pub fn run(command: &crate::Command, budget: Duration) -> io::Result<crate::Outc
             "Native editor phase budget expired while queued",
         ));
     }
-    command.run(remaining)
+    let diagnostic = std::env::var("AURUM_NATIVE_DIAGNOSTICS").as_deref() == Ok("1");
+    if diagnostic {
+        command.clone().arg("--verbose").run(remaining)
+    } else {
+        command.run(remaining)
+    }
 }
 
 #[cfg(test)]
