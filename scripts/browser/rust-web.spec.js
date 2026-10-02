@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve, dirname, join, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { monitorHttp } from "./http-diagnostics.js";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 test("a real Rust GDExtension boots in an isolated Web preview", async ({ browser }, info) => {
@@ -19,6 +20,7 @@ test("a real Rust GDExtension boots in an isolated Web preview", async ({ browse
     child.stdout.on("data",data=>output+=data);child.stderr.on("data",data=>output+=data);
     const context=await browser.newContext({viewport:{width:1488,height:1056}});
     const page=await context.newPage();
+    const httpDiagnostics=monitorHttp(page);
     page.on("pageerror",error=>browserErrors.push(error.message));
     page.on("console",message=>{if(message.type()==="error")browserErrors.push(message.text());});
     try{
@@ -55,5 +57,6 @@ test("a real Rust GDExtension boots in an isolated Web preview", async ({ browse
         if(child.exitCode===null)child.kill();
         await writeFile(info.outputPath("studio.log"),token?output.replaceAll(token,"[redacted]"):output);
         await writeFile(info.outputPath("browser-errors.json"),JSON.stringify(browserErrors,null,2));
+        await writeFile(info.outputPath("http-diagnostics.json"),JSON.stringify(httpDiagnostics(),null,2));
     }
 });

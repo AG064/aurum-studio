@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { resolve, join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { monitorHttp } from "./http-diagnostics.js";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 let work, project, child, output = "", origin, token, endpoint, page, context;
+let httpDiagnostics;
 const control = async (path, body) => {
     const response = await fetch(origin + path, { method: body ? "POST" : "GET", headers: { "Content-Type": "application/json", "X-Aurum-Token": token }, ...(body ? { body: JSON.stringify(body) } : {}) });
     const result = await response.json();
@@ -33,6 +35,7 @@ test.beforeAll(async ({ browser }) => {
     origin = new URL(endpoint).origin; token = new URL(endpoint).searchParams.get("t");
     context = await browser.newContext({ viewport: { width: 1488, height: 1056 } });
     page = await context.newPage();
+    httpDiagnostics = monitorHttp(page);
 });
 test.afterAll(async ({}, info) => {
     if (context) await context.close();
@@ -41,6 +44,7 @@ test.afterAll(async ({}, info) => {
     if (child?.exitCode === null) child.kill();
     await writeFile(info.outputPath("studio.log"), token ? output.replaceAll(token, "[redacted]") : output);
     await writeFile(info.outputPath("evidence.json"), JSON.stringify({work,project},null,2));
+    if (httpDiagnostics) await writeFile(info.outputPath("http-diagnostics.json"), JSON.stringify(httpDiagnostics(), null, 2));
     // Keep completed native-stage logs even if the browser fails while a new
     // export is pending. Only this disposable fixture's logs are collected.
     let logCount = 0;

@@ -5,12 +5,14 @@ import { resolve, join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
+import { monitorHttp } from "./http-diagnostics.js";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 let child, work, project, endpoint, token, origin, page, context;
 let processOutput = "",
     errors = [];
 let workshopState;
+let httpDiagnostics;
 const state = async () =>
     JSON.parse(
         await page.locator("#live-runtime-state").getAttribute("data-snapshot"),
@@ -89,6 +91,7 @@ test.beforeAll(async ({ browser }) => {
         viewport: { width: 1488, height: 1056 },
     });
     page = await context.newPage();
+    httpDiagnostics = monitorHttp(page);
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => {
         if (message.type() === "error") errors.push(message.text());
@@ -121,6 +124,7 @@ test.afterAll(async ({}, info) => {
     }
     if (child?.exitCode === null) child.kill();
     if (work) {
+        if (httpDiagnostics) await writeFile(info.outputPath("http-diagnostics.json"), JSON.stringify(httpDiagnostics(), null, 2));
         const redacted = token
             ? processOutput.replaceAll(token, "[redacted]")
             : processOutput;
