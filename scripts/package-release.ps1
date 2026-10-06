@@ -48,6 +48,7 @@ function Copy-SourceTree([string]$Source,[string]$Target){
     if($LASTEXITCODE -ge 8){throw "Source copy failed: $Source"}
 }
 Copy-SourceTree (Join-Path $repo 'examples/orbit-break') (Join-Path $studio 'examples/orbit-break')
+Copy-SourceTree (Join-Path $repo 'examples/relay-yard') (Join-Path $studio 'examples/relay-yard')
 Copy-SourceTree (Join-Path $repo 'docs') (Join-Path $studio 'docs')
 New-Item -ItemType Directory -Path (Join-Path $studio 'scripts') | Out-Null
 foreach($name in @('provision-godot.ps1','provision-web-toolchain.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $studio "scripts/$name")}

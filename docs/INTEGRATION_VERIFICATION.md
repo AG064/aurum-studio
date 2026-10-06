@@ -1,5 +1,17 @@
 # Integration verification, 2026-10-01
 
+## Development verification, 2026-10-07
+
+The redesigned Studio was checked against a freshly compiled Rust backend, not only Claude's stand-in server. Across the bounded browser runs, 12 distinct scenarios passed: isolated export, actual keyboard play/live edits, workshop behavior, responsive/fullscreen handling, source save/undo and failed-build preservation, hostile-origin/message refusal, keyboard Source navigation, standalone export, ordinary 2D projects, actual operation-contract rendering and headless execution receipts with malformed-input refusal.
+
+The original browser selectors were updated for the new ARIA tabs and Source label without weakening workflow assertions. Initial failures and traces were retained; the new headless-receipt test's expected status wording was corrected to the actual UI label. No fixture icons or server were shipped.
+
+Strict Rust workspace tests passed 758 assertions across 28 result blocks. Formatting and all-feature/all-target Clippy passed. A build-supervisor test was corrected to wait for an in-flight result before interpreting quiet output as idle; its started/finished equality check remains unchanged.
+
+Relay Yard revision 2 independently passed 129 native assertions, native campaign/idle/input checks, three real browser workflow cases, standalone browser controls and an extracted Windows package campaign. These are local development results, not a published version bump or evidence that a new hosted CI run has passed.
+
+## Historical October 1 verification
+
 The six reported integration faults have implementations and local acceptance coverage: preview freshness, live properties/state-preserving rebuilds, export profile/notices preservation, rendered agent verification, explicit test budgets/diagnostics and Rust browser extensions. Additional acceptance failures identified and fixed cold asset inspection, blocked inspection during private exports, a missing 3D demo class declaration and slow Windows process identity queries.
 
 ## Checked locally

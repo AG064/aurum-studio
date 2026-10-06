@@ -54,6 +54,7 @@ pub mod playtest;
 pub mod presets;
 pub mod process;
 pub mod project;
+pub mod project_contract;
 pub mod project_ops;
 pub mod random;
 pub mod registry;

@@ -1269,12 +1269,16 @@ pub fn list_payload_with(read_only_only: bool, denied: &[String]) -> Value {
         .filter(|t| t.name == STATUS_TOOL || !denied.iter().any(|d| d == t.name))
         .filter(|t| !read_only_only || t.read_only)
         .map(|t| {
-            json!({
+            let mut entry = json!({
                 "name": t.name,
                 "description": t.description,
                 "inputSchema": t.input_schema,
                 "annotations": { "readOnlyHint": t.read_only },
-            })
+            });
+            if matches!(t.name, "aurum_project_query" | "aurum_project_action") {
+                entry["outputSchema"] = json!({"type":"object"});
+            }
+            entry
         })
         .collect();
     json!({ "tools": tools })

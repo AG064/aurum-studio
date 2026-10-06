@@ -1,0 +1,263 @@
+{
+  "version": 1,
+  "format": "glTF 2.0",
+  "units": "source metres",
+  "assets": {
+    "courier": {
+      "file": "courier.glb",
+      "source_pack": "space",
+      "source_file": "Models/GLTF format/craft_speederA.glb",
+      "sha256": "f42352580494ccb90eabc166e6198d13b9543db5d0f65fe79c89edd22b8fcce0",
+      "bytes": 15904,
+      "vertices": 1800,
+      "meshes": 1,
+      "size": [
+        2,
+        0.800000011920929,
+        2.0999999046325684
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "drone": {
+      "file": "drone.glb",
+      "source_pack": "space",
+      "source_file": "Models/GLTF format/craft_speederD.glb",
+      "sha256": "9fc849af714e1faba608a505b3de8477c65d12128a1515b35e2b972eb929d4f5",
+      "bytes": 17836,
+      "vertices": 2032,
+      "meshes": 1,
+      "size": [
+        2.799999952316284,
+        0.8999999761581421,
+        2.225670576095581
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "warden": {
+      "file": "warden.glb",
+      "source_pack": "space",
+      "source_file": "Models/GLTF format/craft_miner.glb",
+      "sha256": "5c3d543d70e006e7bbcab9996e70def73ebb7efca9eba4337bf903d220289e30",
+      "bytes": 20876,
+      "vertices": 2416,
+      "meshes": 1,
+      "size": [
+        1.7999999523162842,
+        0.699999988079071,
+        2.5999999046325684
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "generator": {
+      "file": "generator.glb",
+      "source_pack": "space",
+      "source_file": "Models/GLTF format/machine_generatorLarge.glb",
+      "sha256": "b3b85ff826c954f362540bf9052552316d602e7e6fc381e9a0174eaf5ef139cd",
+      "bytes": 7736,
+      "vertices": 744,
+      "meshes": 1,
+      "size": [
+        1,
+        0.6830127239227295,
+        1.2999999523162842
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "transmitter": {
+      "file": "transmitter.glb",
+      "source_pack": "space",
+      "source_file": "Models/GLTF format/machine_wireless.glb",
+      "sha256": "7bc88d529f14e6c47c879540d9ab16e4aafca473f98781cea2c66499c9b6e425",
+      "bytes": 10268,
+      "vertices": 1072,
+      "meshes": 1,
+      "size": [
+        0.75,
+        0.6000000238418579,
+        0.5
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "reactor": {
+      "file": "reactor.glb",
+      "source_pack": "space",
+      "source_file": "Models/GLTF format/machine_barrelLarge.glb",
+      "sha256": "910c0739494c3459318beb11d56fd857639de89469a05870992a84a731237e0a",
+      "bytes": 10692,
+      "vertices": 1100,
+      "meshes": 1,
+      "size": [
+        0.7543277144432068,
+        0.6000000238418579,
+        0.7543277144432068
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "antenna": {
+      "file": "antenna.glb",
+      "source_pack": "space",
+      "source_file": "Models/GLTF format/satelliteDish_detailed.glb",
+      "sha256": "1e9c128901296664f598be58614adc1912b4d9e22e3a0d1072f49467464eb508",
+      "bytes": 20340,
+      "vertices": 2840,
+      "meshes": 1,
+      "size": [
+        0.699999988079071,
+        0.6164647936820984,
+        0.699999988079071
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "cargo": {
+      "file": "cargo.glb",
+      "source_pack": "space",
+      "source_file": "Models/GLTF format/craft_cargoA.glb",
+      "sha256": "90ed78edb9b9bc93dec8ab14d55c06398beb98b3f0d7e2dca9cf0a27444e66e5",
+      "bytes": 14732,
+      "vertices": 1632,
+      "meshes": 1,
+      "size": [
+        1.600000023841858,
+        0.800000011920929,
+        2.450000047683716
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "hangar": {
+      "file": "hangar.glb",
+      "source_pack": "space",
+      "source_file": "Models/GLTF format/hangar_smallA.glb",
+      "sha256": "44973f6659dfb65efa66569ec4c1ef2d43cac89776d76c92b575aa832f3d605b",
+      "bytes": 9900,
+      "vertices": 642,
+      "meshes": 2,
+      "size": [
+        2,
+        1,
+        2
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "barrel": {
+      "file": "barrel.glb",
+      "source_pack": "space",
+      "source_file": "Models/GLTF format/barrels.glb",
+      "sha256": "921e2d687ca5cb4aa3b6ad5740dbbd12dcfe84ab58daa131cc467120255b8838",
+      "bytes": 6840,
+      "vertices": 276,
+      "meshes": 2,
+      "size": [
+        0.550000011920929,
+        0.35,
+        0.49641016125679016
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "pipe": {
+      "file": "pipe.glb",
+      "source_pack": "space",
+      "source_file": "Models/GLTF format/pipe_straight.glb",
+      "sha256": "09f6eb94b319a0dc89f0569a790b156335de41cb6209f0e0ca7c5066b2599aca",
+      "bytes": 4872,
+      "vertices": 300,
+      "meshes": 1,
+      "size": [
+        0.6928203105926514,
+        0.600000038743028,
+        1
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "crate": {
+      "file": "crate.glb",
+      "source_pack": "station",
+      "source_file": "Models/GLB format/container-wide.glb",
+      "sha256": "5fb05bc2559ca0f0ec4cc7260a94f881a2f512949242ba67434e233dfdf59e10",
+      "bytes": 15884,
+      "vertices": 208,
+      "meshes": 1,
+      "size": [
+        0.6000000238418579,
+        0.699999988079071,
+        0.6000000238418579
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "crate_tall": {
+      "file": "crate_tall.glb",
+      "source_pack": "station",
+      "source_file": "Models/GLB format/container-tall.glb",
+      "sha256": "de9a85b62f39534d495c822fa016220d61f397f3380763c05a28cc6c32f6da8a",
+      "bytes": 16416,
+      "vertices": 204,
+      "meshes": 2,
+      "size": [
+        0.6000000238418579,
+        0.8999999761581421,
+        0.6000000238418579
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "terminal": {
+      "file": "terminal.glb",
+      "source_pack": "station",
+      "source_file": "Models/GLB format/computer-wide.glb",
+      "sha256": "19e778eec7d9131c4936ed20acf236cb09988f321a9302ad6530c9d64b63ac05",
+      "bytes": 19524,
+      "vertices": 298,
+      "meshes": 1,
+      "size": [
+        0.8000000417232513,
+        0.49684643745422363,
+        0.533178985118866
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "floor": {
+      "file": "floor.glb",
+      "source_pack": "station",
+      "source_file": "Models/GLB format/floor-detail.glb",
+      "sha256": "412d920648f4f984f9692a936ad10d7e05f9f5d9241b40aeb4c402945943711a",
+      "bytes": 11376,
+      "vertices": 76,
+      "meshes": 1,
+      "size": [
+        1,
+        0.32500001788139343,
+        1
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    },
+    "barrier": {
+      "file": "barrier.glb",
+      "source_pack": "station",
+      "source_file": "Models/GLB format/structure-barrier.glb",
+      "sha256": "08f3f4ad6b78adb1077048921b52d95c1248a8a7ee7aa35617b48235f5ecd1b3",
+      "bytes": 33668,
+      "vertices": 462,
+      "meshes": 16,
+      "size": [
+        1.1000000029802321,
+        1.000000001490116,
+        1.1000000029802321
+      ],
+      "pivot": "ground-centre",
+      "animations": []
+    }
+  }
+}

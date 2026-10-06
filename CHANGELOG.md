@@ -6,6 +6,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Shared, on-demand project-operation discovery through CLI, HTTP and MCP, with gameplay event examples and consistent frame/wall budgets.
+- A compact Studio workbench with accessible workspace tabs, responsive explorer/inspector drawers, source and draft indicators, operation contracts, bounded-test receipts and a dedicated diagnostics dock.
+- Structured MCP object results with compact JSON text and protocol-version-aware compatibility.
+- Relay Yard: Night Shift, a complete small native/Web action-extraction game with optimized CC0 models, heat-limited combat, dash/EMP, cargo delivery, escalating drones, a Warden encounter, original audio, settings, victory/failure/retry and combat-state rebuilding.
+- Windows native and Chromium acceptance gates for the 3D agent workflow.
+- Night Shift's authored Sodium Enamel model kit, shared detail textures, industrial instrument cluster, dispatch terminal, in-world docking gauges and enemy intent markings, with reproducible Godot authoring source and asset hashes.
+
+### Fixed
+
+- MCP discovery now advertises rendered captures, Rust Web builds and all supported playtest parameters from the shared backend registry.
+- Night Shift now uses lane-marking instruments and dispatch-stamp menus, with readable compact alerts and keyboard-following menu scrolling.
+- Night Shift materials gain shared non-emissive finishing and procedural deck plating; dash responds promptly and reduced motion prevents damage flicker.
+- Transferred Night Shift revision 2 keeps compact instrument text fully visible, preserves unrelated emissive materials and validates model identities, native play, browser controls and state-preserving rebuilding.
+- Status documentation distinguishes the published release from unpublished development work.
+- Failed preview replacement now clears the progress label and reports that the previous run was retained.
+- Studio preserves the Source tab during automatic builds, refuses project switching during a preview build and does not report a duplicate rebuild as successful.
+- Build-supervisor burst acceptance waits for in-flight build results before treating silence as idle, retaining its strict started/finished assertion.
+
 ## [0.3.0] - 2026-10-01
 
 ### Added

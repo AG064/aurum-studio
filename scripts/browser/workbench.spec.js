@@ -453,7 +453,7 @@ test("the game cannot operate Studio through shared loopback cookies or forged m
 });
 
 test("responsive inspector and keyboard file navigation remain usable", async ({}, info) => {
-    await page.getByRole("button", { name: "Scene", exact: true }).click();
+    await page.getByRole("tab", { name: "Scene", exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(
         page.getByRole("button", { name: "Inspector", exact: true }),
@@ -469,7 +469,7 @@ test("responsive inspector and keyboard file navigation remain usable", async ({
     });
     await page.getByRole("button", { name: "Inspector", exact: true }).click();
     await page.setViewportSize({ width: 1488, height: 1056 });
-    await page.getByRole("button", { name: "Files", exact: true }).focus();
+    await page.getByRole("tab", { name: "Source", exact: true }).focus();
     await page.keyboard.press("Enter");
     await expect(
         page.getByRole("textbox", { name: "Source editor", exact: true }),
@@ -484,10 +484,7 @@ test("browser export produces a portable bundle without the Studio bridge", asyn
     await expect(page.locator("#workspace-status")).toHaveText(
         "Load workspace complete",
     );
-    await page
-        .locator(".header-actions")
-        .getByRole("button", { name: "Export", exact: true })
-        .click();
+    await page.getByRole("tab", { name: "Export", exact: true }).click();
     await page.getByRole("button", { name: "Export browser game" }).click();
     await expect(page.locator("#workspace-status")).toHaveText(
         "Export browser game complete",
@@ -670,5 +667,45 @@ test("an ordinary 2D project boots without the example-specific live bridge", as
     expect(await page.locator("#preview-frame").getAttribute("src")).toBe(
         runningUrl,
     );
+    expect(errors).toEqual([]);
+});
+
+test("agent contract discovery renders actual backend schemas", async () => {
+    await page.getByRole("tab", { name: "Agents", exact: true }).click();
+    await page.locator("#describe-name").fill("");
+    await page.locator("#describe-op").click();
+    await expect(page.locator("#contract-list table")).toBeVisible();
+    await expect(page.locator("#contract-list")).toContainText("capture");
+    await expect(page.locator("#contract-list")).toContainText("draft_save");
+    await page.locator("#describe-name").fill("play");
+    await page.locator("#describe-op").click();
+    await expect(page.locator("#contract-raw")).toBeVisible();
+    const contract = JSON.parse(await page.locator("#contract-raw").textContent());
+    expect(contract.op).toBe("play");
+    expect(contract.input_schema.properties.frames.maximum).toBe(3600000);
+    expect(contract.read_only).toBe(false);
+    expect(errors).toEqual([]);
+});
+
+test("bounded headless runs produce real receipts and refuse malformed arguments", async () => {
+    await openWorkspace(page, endpoint);
+    await page.getByRole("tab", { name: "Agents", exact: true }).click();
+    await page.locator("#test-scene").fill("");
+    await page.locator("#test-frames").fill("8");
+    await page.locator("#test-timeout").fill("30");
+    await page.locator("#test-report").uncheck();
+    await page.locator("#test-args").fill("[]");
+    await page.locator("#headless-play").click();
+    await expect(page.locator("#workspace-status")).toHaveText("Headless playtest complete", { timeout: 120000 });
+    const result = JSON.parse(await page.locator("#test-result").textContent());
+    expect(result.ok).toBe(true);
+    await expect(page.locator("#receipts-list")).toContainText("play");
+    await expect(page.locator("#receipts-list")).toContainText("returned ok");
+    const receipts = await page.locator("#receipts-list > li").count();
+    await page.locator("#test-args").fill("{bad");
+    await page.locator("#headless-play").click();
+    await expect(page.locator("#workspace-status")).toHaveAttribute("data-state", "error");
+    await expect(page.locator("#workspace-status")).toContainText("JSON");
+    expect(await page.locator("#receipts-list > li").count()).toBe(receipts);
     expect(errors).toEqual([]);
 });

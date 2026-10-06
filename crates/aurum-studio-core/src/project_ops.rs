@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const OPERATIONS: &[&str] = &[
+    "describe",
     "status",
     "files",
     "read",
@@ -33,7 +34,8 @@ pub const OPERATIONS: &[&str] = &[
 pub fn is_read_only(op: &str) -> bool {
     matches!(
         op,
-        "status"
+        "describe"
+            | "status"
             | "files"
             | "read"
             | "draft_read"
@@ -82,7 +84,8 @@ pub fn execute(root: &Path, input: &Value, read_only: bool) -> Result<Value, Str
     let project = Project::open(root).map_err(|e| e.to_string())?;
     let _lock = if !matches!(
         op,
-        "status"
+        "describe"
+            | "status"
             | "files"
             | "read"
             | "write"
@@ -100,6 +103,10 @@ pub fn execute(root: &Path, input: &Value, read_only: bool) -> Result<Value, Str
         None
     };
     match op {
+        "describe" => crate::project_contract::describe(match input.get("operation") {
+            Some(value) => Some(value.as_str().ok_or("'operation' must be a string")?),
+            None => None,
+        }),
         "draft_save" | "draft_read" | "draft_clear" => draft(&project, input),
         "status" => Ok(
             json!({"name":project.config.name,"root":project.root,"godot_project":project.godot_project_dir(),"native_package":project.config.rust_package,"operations":OPERATIONS,"headless":true,"backend":"Godot","session_state":"headless MCP simulation is separate from project gameplay"}),
@@ -224,10 +231,10 @@ fn play_options(input: &Value) -> Result<(u64, Option<u64>, Vec<String>), String
         }
         Ok(value)
     };
-    let frames = integer("frames", 120, 3_600_000)?;
+    let frames = integer("frames", 120, crate::project_contract::MAX_FRAMES)?;
     let fixed_fps = input
         .get("fixed_fps")
-        .map(|_| integer("fixed_fps", 60, 240))
+        .map(|_| integer("fixed_fps", 60, crate::project_contract::MAX_FIXED_FPS))
         .transpose()?;
     let mut arguments = Vec::new();
     if let Some(value) = input.get("user_args") {

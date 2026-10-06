@@ -45,6 +45,7 @@ pub fn serve<R: BufRead, W: Write>(
     paths: &PathGuard,
     config: ServerConfig,
 ) -> std::io::Result<()> {
+    let mut structured_output = true;
     loop {
         const MAX_MESSAGE: u64 = 4 * 1024 * 1024;
         let mut bytes = Vec::new();
@@ -77,7 +78,7 @@ pub fn serve<R: BufRead, W: Write>(
         }
 
         let response = match parse_incoming(&line) {
-            Ok(message) => handle(message, engine, paths, &config),
+            Ok(message) => handle(message, engine, paths, &config, &mut structured_output),
             // A parse failure has no id to echo, so the reply carries null.
             Err(error) => Some(failure(Value::Null, &error)),
         };
@@ -120,6 +121,7 @@ fn handle(
     engine: &mut Engine,
     paths: &PathGuard,
     config: &ServerConfig,
+    structured_output: &mut bool,
 ) -> Option<Value> {
     let (id, method, params) = match message {
         Incoming::Request { id, method, params } => (Some(id), method, params),
@@ -143,14 +145,37 @@ fn handle(
     let result = match method.as_str() {
         "initialize" => {
             let requested = params.get("protocolVersion").and_then(Value::as_str);
-            Ok(protocol::initialize_result(
-                requested,
-                env!("CARGO_PKG_VERSION"),
-            ))
+            let result = protocol::initialize_result(requested, env!("CARGO_PKG_VERSION"));
+            *structured_output = result["protocolVersion"] == "2025-06-18";
+            Ok(result)
         }
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(tools::list_payload_with(config.read_only, &config.denied)),
-        "tools/call" => call_tool(engine, paths, config, &params),
+        "tools/list" => {
+            let mut list = tools::list_payload_with(config.read_only, &config.denied);
+            if !*structured_output {
+                if let Some(entries) = list["tools"].as_array_mut() {
+                    for entry in entries {
+                        entry
+                            .as_object_mut()
+                            .expect("tool descriptor")
+                            .remove("outputSchema");
+                    }
+                }
+            }
+            Ok(list)
+        }
+        "tools/call" => {
+            let mut result = call_tool(engine, paths, config, &params);
+            if !*structured_output {
+                if let Ok(value) = &mut result {
+                    value
+                        .as_object_mut()
+                        .expect("tool result")
+                        .remove("structuredContent");
+                }
+            }
+            result
+        }
         other => Err(RpcError::method_not_found(other)),
     };
 
@@ -205,6 +230,9 @@ fn call_tool(
     // to read the message and correct itself on the next call.
     Ok(match outcome {
         Ok(value) => protocol::tool_result(&value, false),
+        Err(error) if matches!(name, "aurum_project_query" | "aurum_project_action") => {
+            protocol::tool_result(&json!({"ok":false,"error":error.to_string()}), true)
+        }
         Err(error) => protocol::tool_result(&json!(error.to_string()), true),
     })
 }
@@ -213,6 +241,52 @@ fn call_tool(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn project_failures_keep_the_advertised_object_shape() {
+        let out = run_session(
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aurum_project_query","arguments":{"op":"execute_shell"}}}"#,
+            ],
+            ServerConfig::default(),
+        );
+        let result = &out[0]["result"];
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["structuredContent"]["ok"], false);
+        assert!(result["structuredContent"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown operation"));
+        assert_eq!(
+            serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap(),
+            result["structuredContent"]
+        );
+    }
+
+    #[test]
+    fn structured_results_follow_the_negotiated_protocol() {
+        for version in ["2024-11-05", "2025-03-26", "2025-06-18"] {
+            let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":version}}).to_string();
+            let out = run_session(
+                &[
+                    &init,
+                    r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+                    r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"aurum_mcp_status"}}"#,
+                ],
+                ServerConfig::default(),
+            );
+            let project = out[1]["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "aurum_project_query")
+                .unwrap();
+            let modern = version == "2025-06-18";
+            assert_eq!(project.get("outputSchema").is_some(), modern);
+            assert_eq!(out[2]["result"].get("structuredContent").is_some(), modern);
+            assert!(out[2]["result"]["content"][0]["text"].is_string());
+        }
+    }
 
     #[test]
     fn a_denied_tool_is_both_refused_and_hidden() {
@@ -506,9 +580,8 @@ mod tests {
             ],
             ServerConfig::default(),
         );
-        assert!(out[1]["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("\"entity_count\": 1"));
+        let payload: Value =
+            serde_json::from_str(out[1]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["entity_count"], 1);
     }
 }

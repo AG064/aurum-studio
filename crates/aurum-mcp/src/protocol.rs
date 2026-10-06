@@ -161,12 +161,16 @@ pub fn initialize_result(requested: Option<&str>, server_version: &str) -> Value
 pub fn tool_result(payload: &Value, is_error: bool) -> Value {
     let text = match payload {
         Value::String(s) => s.clone(),
-        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
+        other => other.to_string(),
     };
-    json!({
+    let mut result = json!({
         "content": [{ "type": "text", "text": text }],
         "isError": is_error,
-    })
+    });
+    if payload.is_object() {
+        result["structuredContent"] = payload.clone();
+    }
+    result
 }
 
 #[cfg(test)]
@@ -259,6 +263,8 @@ mod tests {
         assert_eq!(r["isError"], false);
         assert_eq!(r["content"][0]["type"], "text");
         assert!(r["content"][0]["text"].as_str().unwrap().contains("ok"));
+        assert_eq!(r["structuredContent"], json!({"ok":true}));
+        assert_eq!(r["content"][0]["text"], "{\"ok\":true}");
     }
 
     #[test]
@@ -266,5 +272,19 @@ mod tests {
         let r = tool_result(&json!("boom"), true);
         assert_eq!(r["isError"], true);
         assert_eq!(r["content"][0]["text"], "boom");
+        assert!(r.get("structuredContent").is_none());
+    }
+
+    #[test]
+    fn compact_text_round_trips_unicode_and_avoids_pretty_print_overhead() {
+        let payload =
+            json!({"nodes":[{"name":"Crate","position":{"x":1.0,"y":2.0,"z":3.0}}],"label":"тест"});
+        let result = tool_result(&payload, false);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(text).unwrap(), payload);
+        assert!(text.len() < serde_json::to_string_pretty(&payload).unwrap().len());
+        assert!(tool_result(&json!([1, 2]), false)
+            .get("structuredContent")
+            .is_none());
     }
 }

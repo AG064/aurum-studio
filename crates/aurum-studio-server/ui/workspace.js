@@ -17,6 +17,7 @@
             draftStored = true,
             pendingDraft = null;
         const draftId = crypto.randomUUID();
+        let saveFailed = false;
         let preview = null,
             liveFile = "",
             liveHash = null,
@@ -77,12 +78,16 @@
         }
         const bind = (id, label, callback) =>
             $(id).addEventListener("click", async () => {
+                const hadFocus = document.activeElement === $(id);
                 $(id).disabled = true;
+                $(id).setAttribute("aria-busy", "true");
                 try {
                     await task(label, callback);
                 } catch (_) {
                 } finally {
                     $(id).disabled = false;
+                    $(id).removeAttribute("aria-busy");
+                    if (hadFocus) $(id).focus();
                 }
             });
         const operation = (request, project = activeRoot) => {
@@ -91,16 +96,16 @@
         };
         async function showOperation(id, request) {
             $(id).textContent = "Running...";
+            const started = performance.now();
             try {
                 const result = await operation(request);
                 $(id).textContent = JSON.stringify(result, null, 2);
+                recordReceipt(request, result, true, started);
                 return result;
             } catch (error) {
-                $(id).textContent = JSON.stringify(
-                    error.result || { ok: false, error: error.message },
-                    null,
-                    2,
-                );
+                const value = error.result || { ok: false, error: error.message };
+                $(id).textContent = JSON.stringify(value, null, 2);
+                recordReceipt(request, value, false, started);
                 throw error;
             }
         }
@@ -121,6 +126,7 @@
             }
         }
         function queueDraft() {
+            saveFailed = false;
             dirty = true;
             draftStored = false;
             $("draft-status").textContent = "Unsaved changes; storing draft...";
@@ -233,6 +239,11 @@
                 );
                 $("file-list").append(button);
             }
+            if (!files.length) {
+                const note = document.createElement("div");
+                note.textContent = "No editable files in this project.";
+                $("file-list").append(note);
+            }
             liveFile =
                 result.files.find(
                     (path) =>
@@ -243,6 +254,7 @@
             if (liveFile && !liveBusy) await loadLiveTuning();
         }
         async function openFile(savedOnly = false) {
+            saveFailed = false;
             const path = $("file-path").value.trim(),
                 project = activeRoot;
             $("file-editor").disabled = true;
@@ -300,6 +312,9 @@
         }
         function selectNode(node) {
             selected = node;
+            document.querySelectorAll("#scene-tree button").forEach((item) =>
+                item.setAttribute("aria-current", String(item.dataset.path === node.path)),
+            );
             $("selected-node").value = node.path;
             $("node-label").textContent = node.name;
             $("node-type-label").textContent = node.type;
@@ -314,7 +329,13 @@
         function renderTree(node, container, depth = 0) {
             const button = document.createElement("button");
             button.style.paddingLeft = 12 + depth * 16 + "px";
-            button.textContent = node.name + "  " + node.type;
+            const name = document.createElement("span");
+            name.textContent = node.name;
+            const kind = document.createElement("span");
+            kind.className = "node-type";
+            kind.textContent = node.type;
+            button.dataset.path = node.path;
+            button.append(name, kind);
             button.addEventListener("click", () => selectNode(node));
             container.append(button);
             for (const child of node.children || [])
@@ -360,7 +381,7 @@
         }
         function setPanel(panel) {
             document
-                .querySelectorAll("[data-panel]")
+                .querySelectorAll("button[data-panel]")
                 .forEach((item) =>
                     item.setAttribute(
                         "aria-selected",
@@ -371,8 +392,14 @@
                 $("panel-" + name).hidden = name !== panel;
             });
             document.querySelector(".app").dataset.panel = panel;
+            document
+                .querySelectorAll(".workspace-tabs [role=tab]")
+                .forEach((tab) => {
+                    tab.tabIndex = tab.dataset.panel === panel ? 0 : -1;
+                });
+            closeDrawers();
         }
-        document.querySelectorAll("[data-panel]").forEach((button) =>
+        document.querySelectorAll("button[data-panel]").forEach((button) =>
             button.addEventListener("click", () => {
                 setPanel(button.dataset.panel);
                 if (button.dataset.panel === "agents")
@@ -380,6 +407,10 @@
             }),
         );
         async function settleLiveEdits() {
+            if (previewBusy)
+                throw new Error(
+                    "Wait for the preview build to finish before changing projects.",
+                );
             if (liveBusy)
                 throw new Error(
                     "Wait for the live tuning save to finish before changing projects.",
@@ -481,24 +512,34 @@
             watching = !watching;
             $("develop").textContent = watching ? "Stop watching" : "Develop";
         });
-        bind("validate-project", "Validation", () =>
-            operation({ op: "validate" }),
-        );
+        bind("validate-project", "Validation", () => {
+            showDock("checks");
+            return showOperation("validate-result", { op: "validate" });
+        });
         bind("package-project", "Package Windows app", async () => {
-            const result = await operation({
+            await showOperation("export-result", {
                 op: "package",
                 output: $("package-path").value.trim(),
             });
-            $("export-result").textContent = JSON.stringify(result, null, 2);
         });
         bind("package-web", "Export browser game", async () => {
-            const result = await api("/api/preview", {
-                action: "export",
-                project: activeRoot,
-                output: $("web-package-path").value.trim(),
-            });
+            const started = performance.now();
+            const request = { op: "web_export", output: $("web-package-path").value.trim() };
+            let result;
+            try {
+                result = await api("/api/preview", {
+                    action: "export",
+                    project: activeRoot,
+                    output: request.output,
+                });
+            } catch (error) {
+                $("export-result").textContent = error.message;
+                recordReceipt(request, error.result || { ok: false, error: error.message }, false, started);
+                throw error;
+            }
             $("export-result").textContent =
                 `${result.files} files exported to ${result.directory}\n\n${result.message}`;
+            recordReceipt(request, result, true, started);
         });
         bind("refresh-presets", "Read export presets", async () => {
             $("export-result").textContent = JSON.stringify(
@@ -524,7 +565,12 @@
             }),
         );
         async function playtest(rendered = false) {
-            const args = JSON.parse($("test-args").value);
+            let args;
+            try {
+                args = JSON.parse($("test-args").value);
+            } catch (error) {
+                throw new Error("Game arguments must be a JSON array of strings (" + error.message + ")");
+            }
             if (!Array.isArray(args))
                 throw new Error(
                     "Game arguments must be a JSON array of strings",
@@ -590,6 +636,20 @@
                     await openFile(true);
                     await refreshFiles();
                 }
+            } catch (error) {
+                // A refused save (for example the file changed on disk) must
+                // never cost the edit: store the draft before reporting.
+                saveFailed = true;
+                const stored = await flushDraft().then(
+                    () => true,
+                    () => false,
+                );
+                $("draft-status").textContent =
+                    "Save refused: " + error.message + " " +
+                    (stored
+                        ? "Your draft is stored. Load the saved version to compare, then Restore draft."
+                        : "The draft could not be stored; keep this tab open.");
+                throw error;
             } finally {
                 if (activeRoot === project) $("file-editor").disabled = false;
                 $("undo-file").disabled = false;
@@ -757,7 +817,6 @@
                 }
             }
             else if (checkpoint) await runtimeRequest({ op: "resume", paused: checkpoint.paused });
-            setPanel("scene");
         }
         async function captureBeforeRebuild() {
             if (!preview || !$("preserve-state").checked) return null;
@@ -766,7 +825,8 @@
             return saved.checkpoint;
         }
         async function startPreview(force = false) {
-            if (previewBusy) return;
+            if (previewBusy)
+                throw new Error("A preview build is already in progress.");
             if (!activeRoot) throw new Error("Open a project before starting a preview");
             previewBusy = true;
             const project = activeRoot;
@@ -790,6 +850,9 @@
                     ? "Preview retained"
                     : "Preview unavailable";
                 $("preview-detail").textContent = error.message;
+                $("reload-status").textContent = preview
+                    ? `Rebuild failed. ${error.message} Previous run retained.`
+                    : `Preview unavailable. ${error.message}`;
                 throw error;
             } finally {
                 previewBusy = false;
@@ -829,7 +892,7 @@
                     attemptedRevision = status.current_sha256;
                     await startPreview(false);
                 }
-            } catch (error) { $("reload-status").textContent = error.message; }
+            } catch (error) { $("reload-status").textContent = preview ? `${error.message} Previous run retained.` : error.message; }
             finally { previewPollBusy = false; }
         }, 2000);
         bind("inspect-runtime", "Inspect live", async () => {
@@ -870,6 +933,10 @@
             $("preview-session").textContent = "No preview running";
             $("live-runtime-state").textContent = "";
             delete $("live-runtime-state").dataset.snapshot;
+            $("preview-revision").textContent = "";
+            $("reload-status").textContent = "";
+            $("preview-detail").textContent =
+                "The preview origin is separate from Studio's control API.";
         }
         function liveStatus(text, error = false) {
             $("live-status").textContent = text;
@@ -1128,12 +1195,337 @@
             },
             true,
         );
+        // ---- Studio shell: menus, tabs, drawers, dock, editor, receipts ----
+        const app = document.querySelector(".app");
+        const menu = document.querySelector(".app-menu");
+        function closeDrawers() {
+            app.classList.remove("explorer-open", "inspector-open");
+            $("toggle-explorer").setAttribute("aria-expanded", "false");
+            $("toggle-inspector").setAttribute("aria-expanded", "false");
+        }
+        $("toggle-explorer").addEventListener("click", () => {
+            const open = !app.classList.contains("explorer-open");
+            closeDrawers();
+            app.classList.toggle("explorer-open", open);
+            $("toggle-explorer").setAttribute("aria-expanded", String(open));
+        });
+        $("toggle-inspector").addEventListener("click", () => {
+            if (app.classList.contains("inspector-open")) {
+                app.classList.remove("explorer-open");
+                $("toggle-explorer").setAttribute("aria-expanded", "false");
+            }
+        });
+        // Run and Rebuild are explicit requests to look at the preview. Automatic
+        // rebuilds must not move someone away from the file they are editing.
+        ["run-web", "rebuild-preview"].forEach((id) =>
+            $(id).addEventListener("click", () => setPanel("scene")),
+        );
+
+        const menuItems = () =>
+            [...menu.querySelectorAll("button, a")].filter((item) => !item.hidden);
+        document.addEventListener("click", (event) => {
+            if (menu.open && !menu.contains(event.target)) menu.open = false;
+        });
+        menu.addEventListener("keydown", (event) => {
+            const items = menuItems();
+            const index = items.indexOf(document.activeElement);
+            const summary = menu.querySelector("summary");
+            let next = null;
+            if (event.key === "ArrowDown")
+                next = items[(index + 1) % items.length];
+            else if (event.key === "ArrowUp")
+                next = items[(index <= 0 ? items.length : index) - 1];
+            else if (event.key === "Home") next = items[0];
+            else if (event.key === "End") next = items[items.length - 1];
+            if (!next) return;
+            event.preventDefault();
+            if (!menu.open) menu.open = true;
+            next.focus();
+        });
+        window.addEventListener("keydown", (event) => {
+            if (event.key !== "Escape" || event.defaultPrevented) return;
+            if (menu.open) {
+                menu.open = false;
+                menu.querySelector("summary").focus();
+            } else if (app.classList.contains("explorer-open")) {
+                closeDrawers();
+                $("toggle-explorer").focus();
+            } else if (app.classList.contains("inspector-open")) {
+                closeDrawers();
+                $("toggle-inspector").focus();
+            }
+        });
+
+        function tabKeys(list, onSelect) {
+            list.addEventListener("keydown", (event) => {
+                const tabs = [...list.querySelectorAll("[role=tab]")];
+                const index = tabs.indexOf(document.activeElement);
+                if (index < 0) return;
+                let next = null;
+                if (event.key === "ArrowRight" || event.key === "ArrowDown")
+                    next = tabs[(index + 1) % tabs.length];
+                else if (event.key === "ArrowLeft" || event.key === "ArrowUp")
+                    next = tabs[(index + tabs.length - 1) % tabs.length];
+                else if (event.key === "Home") next = tabs[0];
+                else if (event.key === "End") next = tabs[tabs.length - 1];
+                if (!next) return;
+                event.preventDefault();
+                next.focus();
+                onSelect(next);
+            });
+        }
+        tabKeys(document.querySelector(".workspace-tabs"), (tab) => tab.click());
+
+        function showDock(name) {
+            document.querySelectorAll("[data-dock]").forEach((tab) => {
+                const on = tab.dataset.dock === name;
+                tab.setAttribute("aria-selected", String(on));
+                tab.tabIndex = on ? 0 : -1;
+                $("dock-" + tab.dataset.dock).hidden = !on;
+            });
+            setDock(true);
+        }
+        function setDock(open) {
+            $("dock").dataset.open = String(open);
+            $("toggle-dock").setAttribute("aria-expanded", String(open));
+            $("toggle-dock").textContent = open ? "Collapse" : "Expand";
+        }
+        document
+            .querySelectorAll("[data-dock]")
+            .forEach((tab) =>
+                tab.addEventListener("click", () => showDock(tab.dataset.dock)),
+            );
+        tabKeys(document.querySelector(".dock-tabs"), (tab) =>
+            showDock(tab.dataset.dock),
+        );
+        $("toggle-dock").addEventListener("click", () =>
+            setDock($("dock").dataset.open !== "true"),
+        );
+
+        // Error notices stay until acknowledged or replaced by the next task.
+        const notice = $("workspace-status");
+        new MutationObserver(() => {
+            $("dismiss-status").hidden = notice.dataset.state !== "error";
+        }).observe(notice, { attributes: true, attributeFilter: ["data-state"] });
+        $("dismiss-status").addEventListener("click", () => {
+            notice.dataset.state = "ok";
+            notice.textContent = "Ready";
+        });
+
+        // Preview state colour comes from the text the real state machine wrote.
+        const previewState = $("preview-state");
+        const tone = () => {
+            const text = previewState.textContent;
+            previewState.dataset.tone = /^(Running|Ready|Preview ready)$/.test(text)
+                ? "live"
+                : /Building|Loading|Starting/.test(text)
+                  ? "busy"
+                  : /unavailable/.test(text)
+                    ? "bad"
+                    : "idle";
+        };
+        new MutationObserver(tone).observe(previewState, {
+            childList: true,
+            characterData: true,
+            subtree: true,
+        });
+        tone();
+
+        // Editor chrome: line numbers, cursor position, base hash, draft state.
+        const editor = $("file-editor");
+        const gutter = $("line-gutter");
+        function editorPosition() {
+            const before = editor.value.slice(0, editor.selectionStart);
+            const line = before.split("\n").length;
+            const column = before.length - before.lastIndexOf("\n");
+            $("editor-pos").textContent = `Ln ${line}, Col ${column}`;
+        }
+        function syncEditor() {
+            const lines = editor.value.split("\n").length;
+            if (gutter.dataset.lines !== String(lines)) {
+                const numbers = [];
+                for (let i = 1; i <= Math.min(lines, 50000); i++) numbers.push(i);
+                gutter.textContent = numbers.join("\n");
+                gutter.dataset.lines = String(lines);
+            }
+            gutter.scrollTop = editor.scrollTop;
+            $("editor-file").textContent =
+                loadedFile || $("file-path").value.trim() || "No file";
+            $("editor-base").textContent =
+                "Base " + (fileHash ? fileHash.slice(0, 8) : "none");
+            document.querySelector(".draft-row").dataset.state = saveFailed
+                ? "error"
+                : dirty
+                  ? draftStored
+                      ? "stored"
+                      : "pending"
+                  : "clean";
+            $("editor-dirty").hidden = !dirty;
+            editorPosition();
+        }
+        // Every path that loads or changes the editor also writes the draft
+        // status line, so one observer keeps the chrome in step with it.
+        new MutationObserver(syncEditor).observe($("draft-status"), {
+            childList: true,
+            characterData: true,
+            subtree: true,
+        });
+        editor.addEventListener("input", syncEditor);
+        editor.addEventListener("scroll", () => {
+            gutter.scrollTop = editor.scrollTop;
+        });
+        ["keyup", "click", "select"].forEach((name) =>
+            editor.addEventListener(name, editorPosition),
+        );
+
+        // Receipts: what ran in this session, how it ended, how long it took.
+        const MAX_RECEIPTS = 20;
+        function receiptFacts(value) {
+            const facts = [];
+            if (!value || typeof value !== "object") return facts;
+            for (const [key, item] of Object.entries(value)) {
+                if (key === "text" || facts.length >= 10) continue;
+                if (["string", "number", "boolean"].includes(typeof item))
+                    facts.push([key, String(item).slice(0, 240)]);
+                else if (Array.isArray(item) && item.every((x) => typeof x === "string"))
+                    facts.push([key, item.length ? item.slice(0, 5).join("; ").slice(0, 240) : "none"]);
+            }
+            return facts;
+        }
+        function recordReceipt(request, value, ok, started) {
+            const item = document.createElement("li");
+            const details = document.createElement("details");
+            const summary = document.createElement("summary");
+            const time = document.createElement("span");
+            time.className = "r-time";
+            time.textContent = new Date().toLocaleTimeString([], { hour12: false });
+            const op = document.createElement("span");
+            op.className = "r-op";
+            op.textContent = String(request.op || "operation");
+            const verdict = document.createElement("span");
+            verdict.className = "r-verdict " + (ok ? "ok" : "failed");
+            verdict.textContent = ok ? "returned ok" : "failed";
+            const duration = document.createElement("span");
+            duration.className = "r-dur";
+            duration.title = "Measured in this page, including network time";
+            duration.textContent = Math.round(performance.now() - started) + " ms";
+            summary.append(time, op, verdict, duration);
+            const facts = document.createElement("dl");
+            const asked = { ...request };
+            delete asked.text;
+            for (const [key, text] of [["request", JSON.stringify(asked)], ...receiptFacts(value)]) {
+                const dt = document.createElement("dt");
+                dt.textContent = key;
+                const dd = document.createElement("dd");
+                dd.textContent = text;
+                facts.append(dt, dd);
+            }
+            const raw = document.createElement("pre");
+            raw.textContent = JSON.stringify(value, null, 2).slice(0, 20000);
+            details.append(summary, facts, raw);
+            item.append(details);
+            $("receipts-list").prepend(item);
+            while ($("receipts-list").childElementCount > MAX_RECEIPTS)
+                $("receipts-list").lastElementChild.remove();
+            const count = $("receipts-list").childElementCount;
+            $("receipt-count").textContent = String(count);
+            $("receipt-count").hidden = false;
+            $("receipts-empty").hidden = true;
+            $("clear-receipts").hidden = false;
+        }
+        $("clear-receipts").addEventListener("click", () => {
+            $("receipts-list").replaceChildren();
+            $("receipt-count").hidden = true;
+            $("receipts-empty").hidden = false;
+            $("clear-receipts").hidden = true;
+        });
+
+        // Operation contract: read-only discovery from the shared registry.
+        function contractRows(result) {
+            const source =
+                result.operations ?? result.catalog ?? result.ops ?? null;
+            const entries = Array.isArray(source)
+                ? source
+                : source && typeof source === "object"
+                  ? Object.entries(source).map(([key, entry]) =>
+                        entry && typeof entry === "object" ? { name: key, ...entry } : { name: key },
+                    )
+                  : [];
+            return entries
+                .filter((entry) => entry && typeof entry === "object")
+                .map((entry) => {
+                    const access =
+                        entry.access ??
+                        entry.classification ??
+                        entry.class ??
+                        entry.kind ??
+                        (typeof entry.read_only === "boolean"
+                            ? entry.read_only ? "read" : "write"
+                            : typeof entry.write === "boolean"
+                              ? entry.write ? "write" : "read"
+                              : "");
+                    const required = entry.required ?? entry.required_fields ?? [];
+                    return {
+                        name: String(entry.op ?? entry.name ?? entry.operation ?? ""),
+                        access: String(access),
+                        required: Array.isArray(required) ? required.join(", ") : String(required),
+                        summary: String(entry.summary ?? entry.description ?? ""),
+                    };
+                })
+                .filter((row) => row.name);
+        }
+        bind("describe-op", "Read contract", async () => {
+            const name = $("describe-name").value.trim();
+            const request = name ? { op: "describe", operation: name } : { op: "describe" };
+            const list = $("contract-list");
+            list.replaceChildren();
+            $("contract-raw").hidden = true;
+            let result;
+            try {
+                result = await operation(request);
+            } catch (error) {
+                const note = document.createElement("p");
+                note.className = "error";
+                note.textContent = "Contract unavailable: " + error.message;
+                list.append(note);
+                throw error;
+            }
+            const rows = contractRows(result);
+            if (rows.length) {
+                const table = document.createElement("table");
+                const head = table.createTHead().insertRow();
+                for (const title of ["Operation", "Access", "Required", "Note"]) {
+                    const cell = document.createElement("th");
+                    cell.textContent = title;
+                    head.append(cell);
+                }
+                const body = table.createTBody();
+                for (const row of rows) {
+                    const tr = body.insertRow();
+                    for (const key of ["name", "access", "required", "summary"]) {
+                        const td = tr.insertCell();
+                        td.textContent = row[key];
+                        if (key === "access" && /write/i.test(row.access)) td.className = "write";
+                    }
+                }
+                list.append(table);
+            } else {
+                $("contract-raw").textContent = JSON.stringify(result, null, 2);
+                $("contract-raw").hidden = false;
+            }
+        });
+
         task("Load workspace", async () => {
             await projects();
             await agentConfig();
             await refreshFiles();
             await inspectScene();
-        }).catch(() => {});
+        }).catch(() => {
+            if ($("file-list").textContent.trim() === "Loading files") {
+                $("file-list").textContent =
+                    "Files could not be loaded. Use refresh once the problem in the status message is fixed.";
+            }
+        });
     };
     if (document.readyState === "loading")
         document.addEventListener("DOMContentLoaded", ready);

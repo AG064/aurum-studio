@@ -158,6 +158,7 @@ test("invalid builds retain the old preview and its checkpoint", async () => {
     await writeFile(file, valid + "\nfunc invalid(:\n");
     await page.locator("#run-web").click();
     await expect(page.locator("#preview-state")).toHaveText("Preview retained", { timeout: 120000 });
+    await expect(page.locator("#reload-status")).toContainText("Rebuild failed.");
     expect(await page.locator("#preview-frame").getAttribute("src")).toBe(before);
     await inspect();
     await expect(page.getByLabel("Live counter", { exact: true })).toHaveValue("187");

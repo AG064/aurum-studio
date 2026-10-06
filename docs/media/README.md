@@ -1,9 +1,9 @@
 # Documentation visuals
 
-These images accompany the Aurum Studio 0.2 documentation:
+These images accompany the Aurum Studio documentation. Capture dates below distinguish earlier release visuals from development examples:
 
 - `aurum-banner.svg`: an earlier decorative vector banner, retained for history and no longer used in the README.
-- `studio.png`: the actual browser workbench from the earlier HUD pass, with the live inspector open.
+- `studio.png`: the redesigned development workbench against the real Rust backend, captured on 7 October 2026 at 1488 by 1056 with an isolated Orbit Break export and live inspector. It is not Claude's fixture render.
 - `orbit-break-menu.png`: the title screen in the native renderer, with the current material and type treatment.
 - `orbit-break-gameplay.png`: a native combat fixture showing the perspective arena and grouped instrument HUD.
 - `orbit-break-workshop.png`: the current three-choice reward screen in the native renderer.
@@ -13,9 +13,11 @@ These images accompany the Aurum Studio 0.2 documentation:
 - `orbit-break-carrier.png`: the Carrier encounter in the native renderer.
 - `orbit-break-records.png`: a staged sortie ledger and tactical contact archive.
 - `design-reference.png`: the selected first visual concept. This is a design reference, not a running-app screenshot.
+- `relay-yard.png`: Night Shift revision 2 in the native renderer, captured on 7 October 2026 from a disposable input timeline after the Sodium Enamel model/material and instrument-HUD transfer. It shows the actual courier, dock kit and gameplay, not a mockup. Three browser cases verify real controls, live tuning, paused combat rebuilding and resize handling.
+- `relay-yard-menu.png`: The implemented DT-09 dispatch terminal from the same native capture, with the bundled Barlow font and actual game scene. Both images are native captures, not browser screenshots or concept illustrations. The transferred game passed 129 native assertions, campaign/idle checks and native package execution; a separate browser gate exercised the standalone export.
 
-The Studio screenshot was captured from a disposable project on 29 September
-2026 at a 1488 by 1056 browser viewport. The campaign images were captured on
+The Studio screenshot was captured from a disposable project on 7 October
+2026 at a 1488 by 1056 browser viewport. The Orbit Break campaign images were captured on
 30 September 2026 at 1280 by 800 in native OpenGL from disposable visual fixtures. Fixed combat values and
 positions make those fixtures repeatable; they are rendered by the game, not
 painted mockups. Portrait and compact captures remain in the local verification

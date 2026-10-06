@@ -1308,8 +1308,11 @@ mod tests {
                     quiet_since = std::time::Instant::now();
                 }
                 Some(_) => {}
-                // Idle long enough that nothing more is coming.
-                None if quiet_since.elapsed() > Duration::from_secs(3) => break,
+                // A running compiler can be quiet while it still owes a result.
+                // Only treat silence as idle after every started build finished.
+                None if started == finished && quiet_since.elapsed() > Duration::from_secs(3) => {
+                    break
+                }
                 None => {}
             }
         }

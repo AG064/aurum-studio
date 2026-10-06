@@ -11,400 +11,307 @@
     </head>
     <body>
         <div class="app">
-            <header class="chrome">
-                <div class="brand">Aurum Studio</div>
-                <div class="project-picker">
-                    <h1 id="project">Opening project</h1>
+            <header class="topbar">
+                <div class="brand" aria-label="Aurum Studio">
+                    <span class="brand-mark" aria-hidden="true"></span>
+                    <span class="brand-name">Aurum Studio</span>
+                </div>
+                <h1 id="project" class="sr-only">Opening project</h1>
+                <label class="project-picker">
+                    <span class="field-cap">Project</span>
                     <select
                         id="project-select"
                         aria-label="Registered projects"
                     ></select>
-                </div>
-                <div class="connection" id="connection" data-state="connecting">
-                    <span class="connection-text">Connecting</span>
-                </div>
-                <div class="header-actions">
+                </label>
+                <div class="run-group" role="group" aria-label="Preview control">
                     <button
                         id="run-web"
                         disabled
                         class="primary"
-                        title="Run the project in an isolated web preview"
+                        title="Build a private snapshot and run it in an isolated web preview"
                     >
-                        <img src="/icons/play.svg" alt="" />Run
+                        <img src="/icons/play.svg" alt="" /><span>Run</span>
                     </button>
-                    <button id="stop-preview">
-                        <img src="/icons/stop.svg" alt="" />Stop
+                    <button
+                        id="stop-preview"
+                        title="Stop the web preview and any native process Studio started"
+                    >
+                        <img src="/icons/stop.svg" alt="" /><span>Stop</span>
                     </button>
-                    <button data-panel="export" aria-selected="false">
-                        <img src="/icons/export.svg" alt="" />Export
+                </div>
+                <div class="topbar-end">
+                    <button
+                        id="toggle-explorer"
+                        class="quiet compact-only"
+                        aria-expanded="false"
+                        aria-controls="explorer"
+                    >
+                        Project
                     </button>
                     <button
                         id="toggle-inspector"
+                        class="quiet compact-only"
                         aria-expanded="false"
                         aria-controls="inspector"
                     >
                         Inspector
                     </button>
                     <details class="app-menu">
-                        <summary aria-label="Project tools">
-                            <img src="/icons/gear.svg" alt="" />
+                        <summary aria-label="Project and Studio commands" aria-haspopup="menu">
+                            <img src="/icons/gear.svg" alt="" /><span>Commands</span>
                         </summary>
-                        <div class="menu-surface">
-                            <button id="new-project">New project</button
-                            ><button id="import-project">Import project</button>
-                            <button id="develop">Develop</button
-                            ><button id="validate-project">
-                                Validate project
-                            </button>
-                            <button id="rebuild-preview">
-                                Rebuild web preview
-                            </button>
-                            <button data-command="start-game">Run native</button
-                            ><button data-command="start-editor">
-                                Open native editor
-                            </button>
-                            <button data-native data-command="build">
-                                Build native extension
-                            </button>
-                            <button
-                                data-native
-                                data-command="build"
-                                data-args='{"force":true}'
-                            >
-                                Rebuild native extension
-                            </button>
-                            <button
-                                data-native
-                                data-command="build"
-                                data-args='{"release":true}'
-                            >
-                                Build release extension
-                            </button>
-                            <button data-command="restart-editor">
-                                Restart native editor
-                            </button>
-                            <button data-command="doctor">Check runtime</button
-                            ><a
-                                href="/licenses.txt"
-                                target="_blank"
-                                rel="noopener"
-                                >Icon license</a
-                            ><button id="shutdown">Close Studio</button>
+                        <div class="menu-surface" role="menu" aria-label="Project and Studio commands">
+                            <div class="menu-group" role="presentation">Project</div>
+                            <button id="new-project" role="menuitem">New project</button>
+                            <button id="import-project" role="menuitem">Import project</button>
+                            <button id="develop" role="menuitem" title="Watch source and rebuild the native extension on change">Develop</button>
+                            <div class="menu-group" role="presentation">Native runtime</div>
+                            <button data-command="start-game" role="menuitem">Run native</button>
+                            <button data-command="start-editor" role="menuitem">Open native editor</button>
+                            <button data-command="restart-editor" role="menuitem">Restart native editor</button>
+                            <button data-native data-command="build" role="menuitem">Build native extension</button>
+                            <button data-native data-command="build" data-args='{"force":true}' role="menuitem">Rebuild native extension</button>
+                            <button data-native data-command="build" data-args='{"release":true}' role="menuitem">Build release extension</button>
+                            <div class="menu-group" role="presentation">Studio</div>
+                            <button data-command="doctor" role="menuitem">Check runtime</button>
+                            <a href="/licenses.txt" target="_blank" rel="noopener" role="menuitem">Icon license</a>
+                            <button id="shutdown" class="danger" role="menuitem">Close Studio</button>
                         </div>
                     </details>
                 </div>
             </header>
 
+            <div
+                id="workspace-status"
+                class="notice"
+                role="status"
+                aria-live="polite"
+                data-state="ok"
+            >Ready</div>
+            <button id="dismiss-status" class="notice-dismiss quiet" hidden>Dismiss</button>
+
             <div class="workbench">
-                <aside class="explorer" aria-label="Project explorer">
-                    <nav class="workspace-tabs" aria-label="Workspace panels">
-                        <button data-panel="scene" aria-selected="true">
-                            <img src="/icons/file.svg" alt="" />Scene
-                        </button>
-                        <button data-panel="files" aria-selected="false">
-                            <img src="/icons/folder.svg" alt="" />Files
-                        </button>
-                        <button data-panel="agents" aria-selected="false">
-                            <img src="/icons/users.svg" alt="" />Agents
-                        </button>
-                        <button data-panel="export" aria-selected="false">
-                            <img src="/icons/export.svg" alt="" />Export
-                        </button>
-                    </nav>
-                    <div class="explorer-heading">
-                        <span>Project files</span
-                        ><button
-                            id="refresh-files"
-                            class="icon-button"
-                            aria-label="Refresh files"
-                        >
+                <aside id="explorer" class="explorer" aria-label="Project explorer">
+                    <div class="explorer-head">
+                        <div class="explorer-title">
+                            <span class="field-cap">Files</span>
+                            <div id="project-path" class="project-path"></div>
+                        </div>
+                        <button id="refresh-files" class="icon-button quiet" aria-label="Refresh files" title="Refresh files">
                             <img src="/icons/arrow-clockwise.svg" alt="" />
                         </button>
                     </div>
-                    <div id="project-path" class="project-path"></div>
-                    <div
-                        id="file-list"
-                        class="file-list"
-                        aria-label="Project files"
-                    >
-                        Loading files
-                    </div>
-                    <details class="scene-details">
+                    <div id="file-list" class="file-list" aria-label="Project files">Loading files</div>
+                    <details class="scene-details" open>
                         <summary>Scene hierarchy</summary>
-                        <div id="scene-tree" class="scene-tree">
-                            Open a scene to inspect it.
-                        </div>
-                    </details>
-                    <details class="runtime-details">
-                        <summary>Runtime checks</summary>
-                        <div id="health" class="health">
-                            Checks have not run yet.
-                        </div>
+                        <div id="scene-tree" class="scene-tree">Open a scene to inspect it.</div>
                     </details>
                 </aside>
 
                 <main class="workspace" aria-label="Project workspace">
-                    <div
-                        id="workspace-status"
-                        class="workspace-status"
-                        role="status"
-                        aria-live="polite"
-                    >
-                        Ready
-                    </div>
-                    <section
-                        id="panel-scene"
-                        class="workspace-panel preview-panel"
-                        aria-label="Scene and game preview"
-                    >
-                        <div class="content-heading">
+                    <nav class="workspace-tabs" role="tablist" aria-label="Workspace">
+                        <button role="tab" id="tab-scene" data-panel="scene" aria-selected="true" aria-controls="panel-scene">
+                            <img src="/icons/file.svg" alt="" /><span>Scene</span>
+                        </button>
+                        <button role="tab" id="tab-files" data-panel="files" aria-selected="false" aria-controls="panel-files" tabindex="-1">
+                            <img src="/icons/folder.svg" alt="" /><span>Source</span>
+                            <i id="editor-dirty" class="dirty-dot" hidden title="Unsaved changes"></i>
+                        </button>
+                        <button role="tab" id="tab-agents" data-panel="agents" aria-selected="false" aria-controls="panel-agents" tabindex="-1">
+                            <img src="/icons/users.svg" alt="" /><span>Agents</span>
+                            <span id="receipt-count" class="count" hidden></span>
+                        </button>
+                        <button role="tab" id="tab-export" data-panel="export" aria-selected="false" aria-controls="panel-export" tabindex="-1">
+                            <img src="/icons/export.svg" alt="" /><span>Export</span>
+                        </button>
+                    </nav>
+
+                    <section id="panel-scene" role="tabpanel" aria-labelledby="tab-scene" class="workspace-panel preview-panel">
+                        <div class="toolbar">
                             <div class="scene-location">
-                                <input
-                                    id="scene-path"
-                                    value="main.tscn"
-                                    aria-label="Scene"
-                                /><span id="preview-state">Web preview</span>
+                                <label class="field-cap" for="scene-path">Scene</label>
+                                <input id="scene-path" value="main.tscn" spellcheck="false" />
+                                <button id="inspect-scene">Open scene</button>
                             </div>
-                            <div class="row compact">
-                                <button id="inspect-scene" class="quiet">
-                                    Open scene</button
-                                ><select
-                                    id="preview-size"
-                                    aria-label="Preview aspect ratio"
-                                >
+                            <div class="toolbar-end">
+                                <span id="preview-state" class="state-text" data-tone="idle">Web preview</span>
+                                <button id="rebuild-preview" title="Force a new private snapshot build. Supported state is captured first when enabled.">Rebuild</button>
+                                <select id="preview-size" aria-label="Preview aspect ratio">
                                     <option value="fit">Fit</option>
                                     <option value="wide">16:9</option>
-                                    <option value="classic">
-                                        16:10
-                                    </option></select
-                                ><button
-                                    id="fullscreen-preview"
-                                    class="icon-button"
-                                    aria-label="Full-screen preview"
-                                >
+                                    <option value="classic">16:10</option>
+                                </select>
+                                <button id="fullscreen-preview" class="icon-button quiet" aria-label="Full-screen preview" title="Full-screen preview">
                                     <img src="/icons/arrows-out.svg" alt="" />
                                 </button>
                             </div>
                         </div>
-                        <div id="preview-surface" class="preview-surface">
+                        <div id="preview-surface" class="preview-surface" data-size="fit">
                             <div id="preview-empty" class="preview-empty">
-                                <h2>Your game, in the workspace.</h2>
-                                <p>
-                                    Run a script project to start a browser
-                                    preview.<br />Use Run native for projects
-                                    with native extensions.
-                                </p>
-                                <p id="preview-detail">
-                                    The preview has a separate origin from
-                                    Studio's control API.
-                                </p>
+                                <h2>No preview running</h2>
+                                <p>Run builds a private snapshot of the project and plays it in a sandboxed frame on a separate origin. Script projects only; use Run native from Commands for projects with a native extension.</p>
+                                <p id="preview-detail" class="hint">The preview origin is separate from Studio's control API.</p>
                             </div>
                             <iframe
                                 id="preview-frame"
-                                allow="cross-origin-isolated; fullscreen"
                                 title="Playable game preview"
                                 sandbox="allow-scripts allow-same-origin allow-pointer-lock"
-                                allow="autoplay; fullscreen; gamepad"
+                                allow="cross-origin-isolated; fullscreen; autoplay; gamepad"
                                 referrerpolicy="no-referrer"
                                 hidden
                             ></iframe>
                         </div>
-                        <div class="preview-caption">
-                            <span id="preview-session">No preview running</span
-                            ><span id="live-runtime-state"></span>
-                            <span id="preview-revision" role="status"></span>
+                        <div class="source-strip" aria-label="Source and checkpoint status">
+                            <dl>
+                                <div><dt>Session</dt><dd id="preview-session">No preview running</dd></div>
+                                <div><dt>Revision</dt><dd id="preview-revision" role="status"></dd></div>
+                                <div><dt>Runtime</dt><dd id="live-runtime-state"></dd></div>
+                                <div class="wide"><dt>Rebuild</dt><dd id="reload-status" role="status"></dd></div>
+                            </dl>
                         </div>
                         <details class="scene-operations">
                             <summary>Scene operations</summary>
-                            <div class="row">
-                                <button id="create-scene">New scene</button
-                                ><button id="set-main-scene">
-                                    Make start scene</button
-                                ><button id="undo-scene">Undo last save</button>
+                            <div class="row compact">
+                                <button id="create-scene">New scene</button>
+                                <button id="set-main-scene">Make start scene</button>
+                                <button id="undo-scene">Undo last save</button>
                             </div>
+                            <p class="hint">Scene edits are written to the project and take effect on the next preview build.</p>
                         </details>
                     </section>
 
-                    <section
-                        id="panel-files"
-                        class="workspace-panel files-panel"
-                        hidden
-                        aria-label="Source editor"
-                    >
-                        <div class="content-heading">
-                            <h2>Files</h2>
-                            <div class="row compact">
-                                <button id="new-file">New</button
-                                ><button id="save-file" class="primary">
-                                    Save</button
-                                ><button id="undo-file">Undo save</button>
+                    <section id="panel-files" role="tabpanel" aria-labelledby="tab-files" class="workspace-panel files-panel" hidden>
+                        <div class="toolbar">
+                            <div class="file-location">
+                                <label class="field-cap" for="file-path">Path</label>
+                                <input id="file-path" placeholder="godot/main.gd" spellcheck="false" />
+                                <button id="open-file">Open</button>
+                                <button id="new-file" class="quiet">New</button>
+                            </div>
+                            <div class="toolbar-end">
+                                <button id="undo-file" class="quiet" title="Restore the version before the last save">Undo save</button>
+                                <button id="save-file" class="primary" title="Save (Ctrl+S)">Save</button>
                             </div>
                         </div>
-                        <div class="row">
-                            <input
-                                id="file-path"
-                                placeholder="godot/main.gd"
-                                aria-label="Project-relative file path"
-                            /><button id="open-file">Open</button>
+                        <div class="draft-row" data-state="clean">
+                            <span id="draft-status" role="status">Open a file to edit it.</span>
+                            <span class="draft-actions">
+                                <button id="open-saved-file" class="quiet" title="Load the version on disk. A stored draft is kept.">Saved version</button>
+                                <button id="restore-draft" class="quiet" title="Reload the retained draft">Restore draft</button>
+                            </span>
                         </div>
-                        <div class="draft-row">
-                            <span id="draft-status" role="status"
-                                >Open a file to edit it.</span
-                            >
-                            <div>
-                                <button id="open-saved-file" class="quiet">
-                                    Saved version</button
-                                ><button id="restore-draft" class="quiet">
-                                    Restore draft
-                                </button>
-                            </div>
+                        <div class="editor">
+                            <pre id="line-gutter" class="gutter" aria-hidden="true">1</pre>
+                            <textarea
+                                id="file-editor"
+                                spellcheck="false"
+                                wrap="off"
+                                aria-label="Source editor"
+                                placeholder="Choose a file from the explorer."
+                            ></textarea>
                         </div>
-                        <textarea
-                            id="file-editor"
-                            spellcheck="false"
-                            aria-label="Source editor"
-                            placeholder="Choose a file from the explorer."
-                        ></textarea>
+                        <div class="editor-meta" aria-live="off">
+                            <span id="editor-file">No file</span>
+                            <span id="editor-pos">Ln 1, Col 1</span>
+                            <span id="editor-base">Base none</span>
+                        </div>
                     </section>
 
-                    <section
-                        id="panel-agents"
-                        class="workspace-panel form-panel"
-                        hidden
-                    >
-                        <div class="content-heading"><h2>Agents</h2></div>
-                        <p>
-                            Connect a local MCP client to inspect, edit and test
-                            this project.
-                        </p>
-                        <div class="row">
-                            <label
-                                ><input id="agent-readonly" type="checkbox" />
-                                Read-only access</label
-                            ><button id="copy-agent">Copy configuration</button>
+                    <section id="panel-agents" role="tabpanel" aria-labelledby="tab-agents" class="workspace-panel form-panel" hidden>
+                        <div class="panel-head">
+                            <h2>Agents</h2>
+                            <p>Local MCP clients get a compact three-tool profile for this project. Execution evidence from this Studio session is listed under Receipts.</p>
                         </div>
-                        <pre id="agent-config"></pre>
-                        <details>
-                            <summary>Headless gameplay test</summary>
-                            <p class="hint">
-                                Game scripts run with your permissions. Use an
-                                isolated project for tests that change files.
-                            </p>
-                            <label
-                                >Test scene<input
-                                    id="test-scene"
-                                    placeholder="tests/acceptance.tscn"
-                                    aria-label="Test scene" /></label
-                            ><label
-                                >Game arguments<input
-                                    id="test-args"
-                                    value="[]"
-                                    aria-label="Game arguments as a JSON array"
-                            /></label>
-                            <div class="row">
-                                <label
-                                    ><input id="test-report" type="checkbox" />
-                                    Require JSON verdict</label
-                                ><button id="headless-play">Run test</button>
-                                <button id="capture-playtest" class="quiet">Capture frame</button>
+                        <section class="block">
+                            <h3>Connection</h3>
+                            <div class="row compact">
+                                <label class="check-label"><input id="agent-readonly" type="checkbox" /> Read-only access</label>
+                                <button id="copy-agent">Copy configuration</button>
                             </div>
-                            <div class="row">
+                            <pre id="agent-config" aria-label="MCP client configuration"></pre>
+                            <p class="hint">Project code runs with your permissions. Run agent tests in disposable copies.</p>
+                        </section>
+                        <section class="block">
+                            <h3>Operation contract</h3>
+                            <p class="hint">Discovery needs no editor or runtime and does not grant permission to execute.</p>
+                            <div class="row compact">
+                                <input id="describe-name" placeholder="All operations, or a name such as capture" aria-label="Operation name" spellcheck="false" />
+                                <button id="describe-op">Read contract</button>
+                            </div>
+                            <div id="contract-list" class="contract-list" aria-live="polite"></div>
+                            <pre id="contract-raw" hidden></pre>
+                        </section>
+                        <section class="block">
+                            <h3>Headless test</h3>
+                            <p class="hint">Bounded play: up to 3,600,000 frames and 600 wall seconds. A fixed frame rate does not guarantee deterministic game logic. Scripts run with your permissions.</p>
+                            <div class="grid-2">
+                                <label>Test scene<input id="test-scene" placeholder="tests/acceptance.tscn" aria-label="Test scene" spellcheck="false" /></label>
+                                <label>Game arguments (JSON array)<input id="test-args" value="[]" aria-label="Game arguments as a JSON array" spellcheck="false" /></label>
                                 <label>Frame budget<input id="test-frames" type="number" min="1" max="3600000" placeholder="Automatic" aria-label="Playtest frame budget" /></label>
                                 <label>Wall budget (seconds)<input id="test-timeout" type="number" min="1" max="600" value="90" aria-label="Playtest wall budget" /></label>
                             </div>
+                            <div class="row compact">
+                                <label class="check-label"><input id="test-report" type="checkbox" /> Require JSON verdict</label>
+                                <button id="headless-play" class="primary">Run test</button>
+                                <button id="capture-playtest">Capture frame</button>
+                            </div>
                             <pre id="test-result" aria-live="polite"></pre>
-                        </details>
+                        </section>
+                        <section class="block">
+                            <div class="block-head">
+                                <h3>Receipts</h3>
+                                <button id="clear-receipts" class="quiet" hidden>Clear</button>
+                            </div>
+                            <p id="receipts-empty" class="hint">No operations have run in this session. Tests, validation, exports and packages are recorded here with their outcome and duration. Receipts are not saved.</p>
+                            <ol id="receipts-list" class="receipts"></ol>
+                        </section>
                     </section>
 
-                    <section
-                        id="panel-export"
-                        class="workspace-panel form-panel"
-                        hidden
-                    >
-                        <div class="content-heading"><h2>Export</h2></div>
-                        <p>
-                            Create a standalone browser game from the current
-                            source. No Studio process is needed to play the
-                            exported build.
-                        </p>
-                        <label for="web-package-path"
-                            >Browser build folder</label
-                        >
-                        <div class="row">
-                            <input
-                                id="web-package-path"
-                                value="dist/web"
-                            /><button id="package-web" class="primary">
-                                Export browser game
-                            </button>
+                    <section id="panel-export" role="tabpanel" aria-labelledby="tab-export" class="workspace-panel form-panel" hidden>
+                        <div class="panel-head">
+                            <h2>Export</h2>
+                            <p>Output goes to a new folder inside the project. Existing builds are never overwritten, and nothing is published.</p>
                         </div>
-                        <p class="hint">
-                            Script projects only. Serve the output over HTTP(S).
-                            Publishing to a hosting service is a separate step.
-                        </p>
-                        <p>
-                            Or package a Windows game with its runtime included.
-                        </p>
-                        <label for="package-path">Windows build folder</label>
-                        <div class="row">
-                            <input
-                                id="package-path"
-                                value="dist/windows"
-                            /><button id="package-project">
-                                Package Windows app
-                            </button>
-                        </div>
-                        <p class="hint">
-                            Choose a new output folder. Existing builds are
-                            never overwritten.
-                        </p>
-                        <details>
+                        <section class="block">
+                            <h3>Browser game</h3>
+                            <p class="hint">Script projects only. Serve the output over HTTP(S); no Studio process is needed to play it.</p>
+                            <div class="row compact">
+                                <input id="web-package-path" value="dist/web" aria-label="Browser build folder" spellcheck="false" />
+                                <button id="package-web" class="primary">Export browser game</button>
+                            </div>
+                        </section>
+                        <section class="block">
+                            <h3>Windows app</h3>
+                            <p class="hint">Packages the game with its runtime. Verified only by running the result on Windows.</p>
+                            <div class="row compact">
+                                <input id="package-path" value="dist/windows" aria-label="Windows build folder" spellcheck="false" />
+                                <button id="package-project">Package Windows app</button>
+                            </div>
+                        </section>
+                        <details class="block presets">
                             <summary>Other platforms and presets</summary>
-                            <div class="row">
-                                <select
-                                    id="export-platform"
-                                    aria-label="Export platform"
-                                >
+                            <div class="row compact">
+                                <select id="export-platform" aria-label="Export platform">
                                     <option>Windows Desktop</option>
                                     <option>Linux</option>
                                     <option>macOS</option>
                                     <option>Web</option>
                                     <option>Android</option>
-                                    <option>iOS</option></select
-                                ><button id="configure-export">
-                                    Create or reuse preset
-                                </button>
+                                    <option>iOS</option>
+                                </select>
+                                <button id="configure-export">Create or reuse preset</button>
+                                <button id="refresh-presets" class="quiet">Read presets</button>
                             </div>
-                            <label
-                                >Preset<input
-                                    id="export-preset"
-                                    placeholder="Preset name"
-                                    aria-label="Export preset name" /></label
-                            ><label
-                                >Destination<input
-                                    id="platform-output"
-                                    placeholder="dist/web/index.html"
-                                    aria-label="Platform export destination"
-                            /></label>
-                            <div class="row">
-                                <label
-                                    ><input
-                                        id="export-debug"
-                                        type="checkbox"
-                                        checked
-                                    />
-                                    Debug build</label
-                                ><button id="export-project">
-                                    Export preset</button
-                                ><button id="refresh-presets">
-                                    Read presets
-                                </button>
+                            <div class="grid-2">
+                                <label>Preset<input id="export-preset" placeholder="Preset name" aria-label="Export preset name" spellcheck="false" /></label>
+                                <label>Destination<input id="platform-output" placeholder="dist/web/index.html" aria-label="Platform export destination" spellcheck="false" /></label>
                             </div>
-                            <p class="hint">
-                                Platform exports need matching templates, SDKs
-                                and signing where applicable. A preset alone
-                                does not establish device readiness.
-                            </p>
+                            <div class="row compact">
+                                <label class="check-label"><input id="export-debug" type="checkbox" checked /> Debug build</label>
+                                <button id="export-project">Export preset</button>
+                            </div>
+                            <p class="hint">Platform exports need matching templates, SDKs and signing where applicable. A preset alone does not establish that a target works. Android, iOS and VR need qualification on their own toolchains and devices.</p>
                         </details>
                         <pre id="export-result" aria-live="polite"></pre>
                     </section>
@@ -415,130 +322,57 @@
                         <h2 id="node-label">Scene</h2>
                         <span id="node-type-label">Select a node</span>
                     </div>
-                    <input
-                        id="selected-node"
-                        value="."
-                        aria-label="Node path"
-                        class="node-path"
-                    />
+                    <input id="selected-node" value="." aria-label="Node path" class="node-path" spellcheck="false" />
                     <section class="inspector-section">
                         <h3>Transform</h3>
                         <div class="position-inputs">
-                            <label
-                                >X<input
-                                    id="pos-x"
-                                    type="number"
-                                    step="0.1"
-                                    value="0" /></label
-                            ><label
-                                >Y<input
-                                    id="pos-y"
-                                    type="number"
-                                    step="0.1"
-                                    value="0" /></label
-                            ><label
-                                >Z<input
-                                    id="pos-z"
-                                    type="number"
-                                    step="0.1"
-                                    value="0"
-                            /></label>
+                            <label>X<input id="pos-x" type="number" step="0.1" value="0" /></label>
+                            <label>Y<input id="pos-y" type="number" step="0.1" value="0" /></label>
+                            <label>Z<input id="pos-z" type="number" step="0.1" value="0" /></label>
                         </div>
-                        <button id="apply-position" class="quiet">
-                            Save transform
-                        </button>
-                        <p class="hint">
-                            Scene edits apply on the next preview build.
-                        </p>
+                        <button id="apply-position" class="quiet">Save transform</button>
+                        <p class="hint">Saved to the scene file. Applies on the next preview build, not to the running game.</p>
                     </section>
                     <details class="inspector-section">
                         <summary>Script</summary>
-                        <input
-                            id="node-script"
-                            placeholder="res://main.gd"
-                            aria-label="Script path"
-                        /><button id="attach-script" class="quiet">
-                            Attach script
-                        </button>
-                        <p class="hint">
-                            Rebuild the preview after script changes.
-                        </p>
+                        <input id="node-script" placeholder="res://main.gd" aria-label="Script path" spellcheck="false" />
+                        <button id="attach-script" class="quiet">Attach script</button>
+                        <p class="hint">Rebuild the preview after script changes.</p>
                     </details>
                     <section id="live-tuning" class="inspector-section" hidden>
                         <h3>Live tuning</h3>
-                        <p class="hint">
-                            Changes reach a compatible running preview without
-                            resetting the run.
-                        </p>
-                        <label
-                            >Player speed<input
-                                id="live-speed"
-                                type="range"
-                                min="3"
-                                max="14"
-                                step="0.1"
-                                aria-label="Live player speed" /><output
-                                id="live-speed-value"
-                            ></output></label
-                        ><label
-                            >Spawn interval<input
-                                id="live-spawn"
-                                type="number"
-                                min="0.3"
-                                max="3"
-                                step="0.1"
-                                aria-label="Live spawn interval" /></label
-                        ><label
-                            >Damage multiplier<input
-                                id="live-damage"
-                                type="number"
-                                min="0.25"
-                                max="4"
-                                step="0.05"
-                                aria-label="Live damage multiplier"
-                        /></label>
-                        <div class="row">
-                            <button id="apply-live">Apply live</button
-                            ><button id="refresh-live" class="quiet">
-                                Reload
-                            </button>
+                        <p class="hint">Writes tuning.json with a concurrency check. A compatible running preview picks the change up without resetting the run; other projects need a rebuild.</p>
+                        <label>Player speed<output id="live-speed-value"></output>
+                            <input id="live-speed" type="range" min="3" max="14" step="0.1" aria-label="Live player speed" />
+                        </label>
+                        <label>Spawn interval<input id="live-spawn" type="number" min="0.3" max="3" step="0.1" aria-label="Live spawn interval" /></label>
+                        <label>Damage multiplier<input id="live-damage" type="number" min="0.25" max="4" step="0.05" aria-label="Live damage multiplier" /></label>
+                        <div class="row compact">
+                            <button id="apply-live">Apply live</button>
+                            <button id="refresh-live" class="quiet">Reload</button>
                         </div>
-                        <label class="check-label"
-                            ><input id="auto-live" type="checkbox" checked />
-                            Apply automatically</label
-                        >
-                        <p id="live-status" class="hint" role="status">
-                            Loading tuning
-                        </p>
+                        <label class="check-label"><input id="auto-live" type="checkbox" checked /> Apply automatically</label>
+                        <p id="live-status" class="hint" role="status">Loading tuning</p>
                     </section>
                     <details class="inspector-section" id="runtime-inspector">
                         <summary>Live properties</summary>
-                        <p class="hint">Edit exported script values and supported runtime properties without restarting.</p>
-                        <div class="row">
-                            <input id="runtime-path" value="." aria-label="Runtime node path" />
+                        <p class="hint">Edit exported script values and supported runtime properties on the running preview. Unsupported or changed entries are skipped, not guessed.</p>
+                        <div class="row compact">
+                            <input id="runtime-path" value="." aria-label="Runtime node path" spellcheck="false" />
                             <button id="inspect-runtime" class="quiet">Inspect live</button>
                         </div>
-                        <div id="runtime-properties"></div>
+                        <div id="runtime-properties" class="runtime-properties"></div>
                         <p id="runtime-status" class="hint" role="status">Run a preview to inspect its live nodes.</p>
                         <label class="check-label"><input id="preserve-state" type="checkbox" checked /> Preserve supported state on rebuild</label>
                         <label class="check-label"><input id="auto-rebuild" type="checkbox" checked /> Rebuild when source changes</label>
-                        <p id="reload-status" class="hint" role="status"></p>
                     </details>
                     <details class="inspector-section">
                         <summary>Advanced properties</summary>
-                        <textarea
-                            id="node-properties"
-                            rows="4"
-                            aria-label="Properties as JSON"
-                        >
-{}</textarea
-                        ><button id="apply-properties">Apply properties</button>
-                        <div class="row">
-                            <input
-                                id="node-name"
-                                value="NewNode"
-                                aria-label="New node name"
-                            /><select id="node-type" aria-label="New node type">
+                        <textarea id="node-properties" rows="4" aria-label="Properties as JSON" spellcheck="false">{}</textarea>
+                        <button id="apply-properties">Apply properties</button>
+                        <div class="row compact">
+                            <input id="node-name" value="NewNode" aria-label="New node name" spellcheck="false" />
+                            <select id="node-type" aria-label="New node type">
                                 <option>Node3D</option>
                                 <option>MeshInstance3D</option>
                                 <option>Camera3D</option>
@@ -547,49 +381,71 @@
                                 <option>Control</option>
                             </select>
                         </div>
-                        <button id="add-node">Add child</button
-                        ><button id="remove-node" class="danger quiet">
-                            Remove node
-                        </button>
+                        <div class="row compact">
+                            <button id="add-node">Add child</button>
+                            <button id="remove-node" class="danger quiet">Remove node</button>
+                        </div>
                     </details>
                 </aside>
             </div>
 
-            <details class="console" open>
-                <summary class="console-head">
-                    <span>Output</span>
-                    <div class="status-line" id="busy" data-active="false">
-                        <span class="status-text">Idle</span>
+            <section class="dock" id="dock" data-open="true" aria-label="Output and checks">
+                <div class="dock-bar">
+                    <div role="tablist" aria-label="Dock" class="dock-tabs">
+                        <button role="tab" id="dock-tab-output" data-dock="output" aria-selected="true" aria-controls="dock-output">Output</button>
+                        <button role="tab" id="dock-tab-checks" data-dock="checks" aria-selected="false" aria-controls="dock-checks" tabindex="-1">
+                            Checks <span id="checks-badge" class="badge" data-verdict="none">not run</span>
+                        </button>
                     </div>
-                </summary>
-                <div class="console-tools">
-                    <button id="clear" class="quiet">Clear output</button>
+                    <div class="dock-end">
+                        <button id="clear" class="quiet">Clear output</button>
+                        <button id="toggle-dock" class="quiet" aria-expanded="true" aria-controls="dock-body">Collapse</button>
+                    </div>
                 </div>
-                <ol id="log" class="log">
-                    <li class="log-empty">Ready. Output appears here.</li>
-                </ol>
-            </details>
+                <div id="dock-body" class="dock-body">
+                    <div id="dock-output" role="tabpanel" aria-labelledby="dock-tab-output" class="dock-pane">
+                        <ol id="log" class="log" tabindex="0" aria-label="Studio output">
+                            <li class="log-empty">Ready. Output appears here.</li>
+                        </ol>
+                    </div>
+                    <div id="dock-checks" role="tabpanel" aria-labelledby="dock-tab-checks" class="dock-pane" hidden>
+                        <div class="checks-bar">
+                            <button data-command="doctor">Check runtime</button>
+                            <button id="validate-project">Validate project</button>
+                            <span class="hint">Runtime checks read the toolchain. Validation reads the project files.</span>
+                        </div>
+                        <div class="checks-body">
+                            <div id="health" class="health">Checks have not run yet.</div>
+                            <pre id="validate-result" aria-live="polite"></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <footer class="statusbar" aria-label="Studio status">
+                <span id="connection" class="connection" data-state="connecting"><i aria-hidden="true"></i><span class="connection-text">Connecting</span></span>
+                <span id="busy" class="busy" data-active="false"><span class="status-text">Idle</span></span>
+                <span class="statusbar-end">
+                    <span class="mono" id="status-source" title="Project root"></span>
+                </span>
+            </footer>
         </div>
-        <dialog id="project-dialog">
+
+        <dialog id="project-dialog" aria-labelledby="project-dialog-title">
             <form id="project-form">
                 <h2 id="project-dialog-title">New project</h2>
-                <label
-                    >Folder<input
-                        id="project-folder"
-                        required
-                        placeholder="C:/Projects/MyGame" /></label
-                ><label id="project-name-label"
-                    >Name<input id="project-new-name" value="my-game" /></label
-                ><label id="project-template-label"
-                    >Template<select id="project-template">
+                <label>Folder<input id="project-folder" required placeholder="C:/Projects/MyGame" spellcheck="false" /></label>
+                <label id="project-name-label">Name<input id="project-new-name" value="my-game" spellcheck="false" /></label>
+                <label id="project-template-label">Template
+                    <select id="project-template">
                         <option value="3d">3D starter</option>
                         <option value="2d">2D starter</option>
-                    </select></label
-                >
+                    </select>
+                </label>
                 <p id="project-dialog-error" role="alert"></p>
-                <div class="row">
-                    <button type="button" id="cancel-project">Cancel</button
-                    ><button type="submit" class="primary">Open project</button>
+                <div class="row dialog-actions">
+                    <button type="button" id="cancel-project">Cancel</button>
+                    <button type="submit" class="primary">Open project</button>
                 </div>
             </form>
         </dialog>

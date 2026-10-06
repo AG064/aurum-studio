@@ -1,10 +1,13 @@
-# Aurum Studio 0.2 status
+# Aurum Studio status
+
+The published release is [0.3.0](RELEASES.md). The development tree adds shared operation-contract discovery, structured MCP results and Relay Yard: Night Shift, a complete small 3D action-extraction game with modeled assets, combat, audio, a Warden encounter and combat-state rebuilding. These additions are not a published 0.4 release. See [agent workflows](AGENT_WORKFLOWS.md).
 
 The supported workflow is Windows Studio plus local MCP and CLI access, using the bundled Godot 4.7 runtime. Studio owns the workflow; an open native editor is optional.
 
 ## Delivered
 
 - Browser interface with project creation/import/selection, files, scenes, agents, validation, development watching, and Windows packaging.
+- Development workbench with Scene/Source/Agents/Export tabs, a live inspector, source/draft status, Output/Checks dock, on-demand operation contracts and session execution receipts.
 - Shared Rust project operations for CLI, HTTP, and MCP.
 - Headless scene creation/editing/inspection through native resource APIs, with atomic commits, stale-write protection, and saved-file undo.
 - Live editor scene ownership and undo/redo, including save/reopen persistence.
@@ -38,7 +41,7 @@ Individual acceptance scripts:
 
 Verification receipts are generated beside each temporary run. Historical August Phase 0 and September prototype evidence remains historical; it does not replace these current gates.
 
-The [2026-10-01 integration verification](INTEGRATION_VERIFICATION.md) records the current local results, installed release fingerprint and remaining platform limits. It does not claim remote CI has run for unpushed changes.
+The [2026-10-01 integration verification](INTEGRATION_VERIFICATION.md) is historical local evidence. [Release delivery](RELEASES.md) describes the published 0.3.0 scope. Development verification receipts do not imply remote CI has run for unpushed changes.
 
 ## Boundaries
 

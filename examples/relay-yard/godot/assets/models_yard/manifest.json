@@ -1,0 +1,553 @@
+{
+	"assets": {
+		"antenna": {
+			"bytes": 86612,
+			"file": "antenna.glb",
+			"materials": [
+				"concrete",
+				"steel",
+				"enamel",
+				"graphite",
+				"glow_power"
+			],
+			"min": [
+				-1.809,
+				0.0,
+				-1.15
+			],
+			"runtime_width": 4.0,
+			"sha256": "4a1b37d8b6086b4037ce0a5d528eae29556894872a8b2cb12c4d1f2a7543c147",
+			"size": [
+				3.618,
+				6.48,
+				3.2
+			],
+			"triangles": 1204
+		},
+		"barrel": {
+			"bytes": 97960,
+			"file": "barrel.glb",
+			"materials": [
+				"graphite",
+				"slate",
+				"hazard"
+			],
+			"min": [
+				-1.0,
+				0.0,
+				-1.0
+			],
+			"runtime_width": 2.4,
+			"sha256": "7dc819761d206e746141f612dadd36d0d705c4632ad36429ec1cb3a1a39a399a",
+			"size": [
+				2.0,
+				1.17,
+				2.0
+			],
+			"triangles": 1648
+		},
+		"barrier": {
+			"bytes": 13220,
+			"file": "barrier.glb",
+			"materials": [
+				"concrete",
+				"hazard",
+				"graphite"
+			],
+			"min": [
+				-1.21,
+				0.0,
+				-0.31
+			],
+			"runtime_width": 2.45,
+			"sha256": "0ac6ebb3d8790ed09e802b76621b2eba904f2e1d3d065060929f029b48c27aba",
+			"size": [
+				2.42,
+				0.95,
+				0.62
+			],
+			"triangles": 76
+		},
+		"cargo": {
+			"bytes": 77520,
+			"file": "cargo.glb",
+			"materials": [
+				"graphite",
+				"oxide",
+				"enamel",
+				"steel",
+				"hazard"
+			],
+			"min": [
+				-3.05,
+				0.0,
+				-1.22
+			],
+			"runtime_width": 6.5,
+			"sha256": "875ca80689f1e2a9836cd445fdabd2a40c3e5b67b519024c43a051c1bf20a7e3",
+			"size": [
+				6.105,
+				2.5,
+				2.44
+			],
+			"triangles": 780
+		},
+		"core": {
+			"bytes": 45204,
+			"file": "core.glb",
+			"materials": [
+				"graphite",
+				"hazard",
+				"glow_power",
+				"steel"
+			],
+			"min": [
+				-0.33,
+				0.0,
+				-0.33
+			],
+			"runtime_width": 0.75,
+			"sha256": "c7db236bb04d44765266bd87105d02ee7a70b28e04dc98d330852370681e4c0c",
+			"size": [
+				0.66,
+				1.031,
+				0.66
+			],
+			"triangles": 752
+		},
+		"courier": {
+			"bytes": 133688,
+			"file": "courier.glb",
+			"materials": [
+				"graphite",
+				"enamel",
+				"cobalt",
+				"glass",
+				"glow_signal",
+				"steel"
+			],
+			"min": [
+				-0.94,
+				0.0,
+				-1.01
+			],
+			"runtime_width": 1.9,
+			"sha256": "723d3a8bc53483795e0a37b0f21e36ce3cae686bb4f57cc9e889a81ed94b0610",
+			"size": [
+				1.88,
+				0.84,
+				2.0
+			],
+			"triangles": 1896
+		},
+		"crate": {
+			"bytes": 80600,
+			"file": "crate.glb",
+			"materials": [
+				"oxide",
+				"graphite",
+				"enamel"
+			],
+			"min": [
+				-0.95,
+				0.0,
+				-0.95
+			],
+			"runtime_width": 2.0,
+			"sha256": "7552e740f35167522f5a84a42e0c7d2b3e2314d352faa7311e35536282ee24d0",
+			"size": [
+				1.915,
+				1.8,
+				1.915
+			],
+			"triangles": 772
+		},
+		"crate_tall": {
+			"bytes": 52752,
+			"file": "crate_tall.glb",
+			"materials": [
+				"graphite",
+				"steel",
+				"hazard"
+			],
+			"min": [
+				-0.491,
+				0.0,
+				-0.6
+			],
+			"runtime_width": 1.2,
+			"sha256": "2cf9a1f39127e0fc6d5f879323288a8238b8615fe3a3a449df3af59034952f58",
+			"size": [
+				0.982,
+				1.2,
+				1.2
+			],
+			"triangles": 1320
+		},
+		"drone": {
+			"alias_of": "sentinel",
+			"bytes": 94156,
+			"file": "sentinel.glb",
+			"materials": [
+				"steel",
+				"graphite",
+				"vermilion",
+				"glow_hostile",
+				"slate"
+			],
+			"min": [
+				-0.84,
+				0.0,
+				-0.515
+			],
+			"runtime_width": 1.7,
+			"sha256": "da2ce664e3765799a25a42117f3770e3f869b23c28f38f50c86181e05bae0339",
+			"size": [
+				1.68,
+				1.17,
+				1.015
+			],
+			"triangles": 828
+		},
+		"floor": {
+			"bytes": 27636,
+			"file": "floor.glb",
+			"materials": [
+				"graphite",
+				"steel",
+				"hazard"
+			],
+			"min": [
+				-1.9,
+				0.0,
+				-1.9
+			],
+			"runtime_width": 3.8,
+			"sha256": "40d928db0199610ec939844d9bfd7dcc395b2708679b7a7ecfe6602e09c46397",
+			"size": [
+				3.8,
+				0.2,
+				3.8
+			],
+			"triangles": 316
+		},
+		"generator": {
+			"bytes": 185472,
+			"file": "generator.glb",
+			"materials": [
+				"concrete",
+				"enamel",
+				"hazard",
+				"graphite",
+				"steel",
+				"glow_power",
+				"status_lamp",
+				"vermilion"
+			],
+			"min": [
+				-1.485,
+				0.0,
+				-1.432
+			],
+			"runtime_width": 3.4,
+			"sha256": "f5baf2dc9da687259c6a6d40ab57458305f220def119c328f3cfb3288425ace5",
+			"size": [
+				2.917,
+				1.58,
+				2.864
+			],
+			"triangles": 1976
+		},
+		"hangar": {
+			"bytes": 76528,
+			"file": "hangar.glb",
+			"materials": [
+				"slate",
+				"graphite",
+				"enamel",
+				"hazard",
+				"glow_power",
+				"concrete"
+			],
+			"min": [
+				-3.3,
+				0.0,
+				-2.55
+			],
+			"runtime_width": 8.0,
+			"sha256": "62bf8e52e5d2abe0e656da74d8a48ddd5cc1dc4dfbe67e5c1b67d55dcbaf529f",
+			"size": [
+				6.6,
+				3.28,
+				5.1
+			],
+			"triangles": 952
+		},
+		"lamp": {
+			"bytes": 23644,
+			"file": "lamp.glb",
+			"materials": [
+				"concrete",
+				"graphite",
+				"enamel",
+				"glow_power"
+			],
+			"min": [
+				-0.22,
+				0.0,
+				-0.22
+			],
+			"runtime_width": 1.56,
+			"sha256": "d667f286597b606153edbdd27d06260888cb8f19b07ae50230b7f7fc4ca87085",
+			"size": [
+				1.56,
+				3.493,
+				0.44
+			],
+			"triangles": 184
+		},
+		"pad": {
+			"bytes": 60108,
+			"file": "pad.glb",
+			"materials": [
+				"concrete",
+				"graphite",
+				"steel",
+				"hazard",
+				"enamel"
+			],
+			"min": [
+				-2.28,
+				0.0,
+				-2.28
+			],
+			"runtime_width": 4.7,
+			"sha256": "f521dc8da42d9e5d4a1267bf4022506e559fe7e1c719bb3c7697b50853038776",
+			"size": [
+				4.56,
+				0.23,
+				4.56
+			],
+			"triangles": 464
+		},
+		"pipe": {
+			"bytes": 77120,
+			"file": "pipe.glb",
+			"materials": [
+				"graphite",
+				"concrete",
+				"enamel",
+				"steel",
+				"cobalt",
+				"hazard"
+			],
+			"min": [
+				-1.7,
+				0.0,
+				-0.48
+			],
+			"runtime_width": 3.5,
+			"sha256": "57374d1e9d51d2952b004b94379919e0c84385cf73f13ed296e2d3fdea3d9e2a",
+			"size": [
+				3.4,
+				1.445,
+				0.96
+			],
+			"triangles": 952
+		},
+		"reactor": {
+			"bytes": 173792,
+			"file": "reactor.glb",
+			"materials": [
+				"graphite",
+				"concrete",
+				"enamel",
+				"hazard",
+				"steel",
+				"glow_power",
+				"cobalt",
+				"status_lamp",
+				"vermilion"
+			],
+			"min": [
+				-1.386,
+				0.0,
+				-1.6
+			],
+			"runtime_width": 3.4,
+			"sha256": "c957d793caa423e61748c6ccbae40a898bac105555677e26cc4615c6a2b4c6fe",
+			"size": [
+				2.771,
+				2.48,
+				3.2
+			],
+			"triangles": 2472
+		},
+		"sentinel": {
+			"bytes": 94156,
+			"file": "sentinel.glb",
+			"materials": [
+				"steel",
+				"graphite",
+				"vermilion",
+				"glow_hostile",
+				"slate"
+			],
+			"min": [
+				-0.84,
+				0.0,
+				-0.515
+			],
+			"runtime_width": 1.7,
+			"sha256": "da2ce664e3765799a25a42117f3770e3f869b23c28f38f50c86181e05bae0339",
+			"size": [
+				1.68,
+				1.17,
+				1.015
+			],
+			"triangles": 828
+		},
+		"skirmisher": {
+			"bytes": 24664,
+			"file": "skirmisher.glb",
+			"materials": [
+				"graphite",
+				"slate",
+				"vermilion",
+				"glow_hostile"
+			],
+			"min": [
+				-0.88,
+				0.0,
+				-0.95
+			],
+			"runtime_width": 1.7,
+			"sha256": "fac4ef68517cb4fcb5383ec9e66edbc2e6640c9a57bc7d2d8f8b05ac4181a6ec",
+			"size": [
+				1.76,
+				0.42,
+				1.57
+			],
+			"triangles": 280
+		},
+		"terminal": {
+			"bytes": 19280,
+			"file": "terminal.glb",
+			"materials": [
+				"graphite",
+				"enamel",
+				"glow_signal",
+				"glow_power",
+				"steel"
+			],
+			"min": [
+				-0.6,
+				0.0,
+				-0.42
+			],
+			"runtime_width": 1.7,
+			"sha256": "33ffc4820c0d15465163d942efdc848e88ef104a25a3db82aec2674d281e674e",
+			"size": [
+				1.2,
+				1.65,
+				0.92
+			],
+			"triangles": 120
+		},
+		"transmitter": {
+			"bytes": 113460,
+			"file": "transmitter.glb",
+			"materials": [
+				"graphite",
+				"enamel",
+				"steel",
+				"status_lamp",
+				"vermilion",
+				"glow_signal"
+			],
+			"min": [
+				-1.1,
+				0.0,
+				-1.1
+			],
+			"runtime_width": 3.4,
+			"sha256": "780b9e13cd4572aaa9c587e12dc895ad3211d47a5d6ff51aa09c41893eac4bf3",
+			"size": [
+				2.575,
+				3.135,
+				2.2
+			],
+			"triangles": 1468
+		},
+		"wall": {
+			"bytes": 28528,
+			"file": "wall.glb",
+			"materials": [
+				"concrete",
+				"graphite",
+				"steel",
+				"enamel"
+			],
+			"min": [
+				-1.0,
+				0.0,
+				-0.25
+			],
+			"runtime_width": 2.0,
+			"sha256": "d601f091f428c7eea018d03630df69381f0bc0627b88cdbbadd224e377f210c8",
+			"size": [
+				2.0,
+				1.7,
+				0.5
+			],
+			"triangles": 200
+		},
+		"warden": {
+			"bytes": 240900,
+			"file": "warden.glb",
+			"materials": [
+				"graphite",
+				"glow_hostile",
+				"slate",
+				"vermilion",
+				"steel"
+			],
+			"min": [
+				-1.312,
+				0.0,
+				-1.48
+			],
+			"runtime_width": 3.4,
+			"sha256": "d9ffa0a2a945e2e460cd98a50a067cc9374380d4753f0edffaafe2cd449d069f",
+			"size": [
+				2.624,
+				2.106,
+				2.52
+			],
+			"triangles": 2504
+		}
+	},
+	"forward": "-Z",
+	"generator": "res://tools/asset_forge.gd",
+	"materials": [
+		"enamel",
+		"cobalt",
+		"graphite",
+		"slate",
+		"steel",
+		"concrete",
+		"oxide",
+		"hazard",
+		"vermilion",
+		"glass",
+		"glow_power",
+		"glow_signal",
+		"glow_hostile",
+		"status_lamp"
+	],
+	"pivot": "ground-centre",
+	"style": "sodium-enamel",
+	"units": "metres",
+	"up": "+Y",
+	"version": 2
+}

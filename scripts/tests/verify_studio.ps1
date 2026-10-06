@@ -47,6 +47,8 @@ try {
     $editor=Join-Path $env:CARGO_TARGET_DIR 'debug/aurum_editor.dll'
     & pwsh -NoProfile -File (Join-Path $source 'scripts/tests/studio_project_acceptance.ps1') -AurumBinary $binary -GodotBinary $GodotBinary -Package
     if($LASTEXITCODE){throw 'Headless project acceptance failed'}
+    & pwsh -NoProfile -File (Join-Path $source 'examples/relay-yard/tools/verify.ps1') -AurumBinary $binary -GodotBinary $GodotBinary -Package
+    if($LASTEXITCODE){throw '3D reference workflow failed'}
     & pwsh -NoProfile -File (Join-Path $source 'scripts/tests/studio_editor_acceptance.ps1') -EditorDll $editor -GodotBinary $GodotBinary
     if($LASTEXITCODE){throw 'Live editor acceptance failed'}
     if($NativeReload){

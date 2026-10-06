@@ -10,7 +10,7 @@ pub fn timeout_seconds(input: &Value) -> Result<u64, String> {
         .map(|v| v.as_u64().ok_or("'timeout_seconds' must be an integer"))
         .transpose()?
         .unwrap_or(90);
-    if !(1..=600).contains(&seconds) {
+    if !(1..=crate::project_contract::MAX_TIMEOUT_SECONDS).contains(&seconds) {
         return Err("'timeout_seconds' must be between 1 and 600".into());
     }
     Ok(seconds)
@@ -44,7 +44,7 @@ pub fn run(
     let list = captures
         .as_array()
         .ok_or("'capture_frames' must be an array")?;
-    if list.len() > 32
+    if list.len() > crate::project_contract::MAX_CAPTURE_FRAMES
         || list
             .iter()
             .any(|v| v.as_u64().is_none_or(|f| f == 0 || f > frames))
@@ -275,7 +275,7 @@ fn read_json(path: &Path) -> Result<Option<Value>, String> {
 }
 fn validate_events(value: &Value, frames: u64) -> Result<(), String> {
     let events = value.as_array().ok_or("'events' must be an array")?;
-    if events.len() > 1024
+    if events.len() > crate::project_contract::MAX_EVENTS
         || serde_json::to_vec(value).map_err(|e| e.to_string())?.len() > 64 * 1024
     {
         return Err("Input timeline exceeds 1024 events or 64 KiB".into());

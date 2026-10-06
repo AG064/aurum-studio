@@ -6,7 +6,9 @@ Godot 4.7 handles rendering and resources underneath. Aurum owns the project wor
 
 [Download v0.3.0](https://github.com/AG064/aurum-studio/releases/tag/v0.3.0) · [Get started](#get-started-on-windows) · [Play the example](#a-game-you-can-run) · [Connect an agent](#headless-by-design) · [Documentation](#documentation)
 
-![Aurum Studio with Orbit Break running in the browser and the live inspector open](docs/media/studio.png)
+![Aurum Studio development workbench with a real browser game and the live inspector](docs/media/studio.png)
+
+The screenshot shows the development branch's redesigned workbench. The downloadable v0.3.0 package predates this interface; build the current source for the updated Studio and 3D example.
 
 ## What you can do
 
@@ -89,6 +91,8 @@ aurum dev C:/Projects/MyGame --play
 ## Headless by design
 
 The compact MCP profile exposes three tools: `aurum_project_query`, `aurum_project_action` and `aurum_mcp_status`. Agents discover the installed runtime's classes instead of depending only on remembered engine APIs.
+
+The development tree adds `op=describe` for on-demand operation schemas and structured MCP results. [Relay Yard: Night Shift](examples/relay-yard) is a small native/Web 3D action-extraction game with imported assets, combat, a Warden encounter, live values, combat-state checkpoints and standalone packaging. These additions are not part of the published 0.3.0 ZIP. See [agent workflows](docs/AGENT_WORKFLOWS.md).
 
 ```json
 {

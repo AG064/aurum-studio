@@ -53,6 +53,12 @@
     projectPath.title = root || '';
   }
 
+  function setStudio(version, root) {
+    const label = $('status-source');
+    label.textContent = version ? 'Studio ' + version : '';
+    label.title = root || '';
+  }
+
   function setBusy(text) {
     const active = Boolean(text);
     busy.dataset.active = String(active);
@@ -87,7 +93,7 @@
   }
 
   // One finding as the core reports it: what was checked, what was found, and
-  // what to do about it. Every value is set as text and never as markup —
+  // what to do about it. Every value is set as text and never as markup:
   // evidence is a path or a tool's own output, and none of it is ours to trust.
   function findingRow(finding) {
     const row = document.createElement('li');
@@ -141,6 +147,14 @@
     summary.textContent = event.summary;
 
     health.append(verdict, summary);
+
+    // The dock tab carries the verdict and the number of open findings, so a
+    // problem is visible while the output tab is showing.
+    const badge = $('checks-badge');
+    const reported = Array.isArray(event.findings) ? event.findings : [];
+    const open = reported.filter((finding) => finding.health !== 'ok').length;
+    badge.dataset.verdict = event.verdict;
+    badge.textContent = open ? open + ' open' : event.verdict;
 
     const findings = Array.isArray(event.findings) ? event.findings : [];
     if (!findings.length) return;
@@ -317,6 +331,7 @@
     .then((response) => response.json())
     .then((state) => {
       setProject(state.project, state.root);
+      setStudio(state.studio, state.root);
       say('Studio ' + state.studio + ' · ' + state.root, 'note');
     })
     .catch(() => {
