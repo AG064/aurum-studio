@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aurum-2d"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aurum-core",
  "godot",
@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aurum-3d"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aurum-core",
  "godot",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "aurum-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aurum-core",
  "aurum-mcp",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "aurum-content"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "aurum-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -50,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "aurum-editor"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "godot",
  "serde_json",
@@ -58,7 +58,7 @@ dependencies = [
 
 [[package]]
 name = "aurum-godot"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aurum-core",
  "aurum-space",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "aurum-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aurum-content",
  "aurum-core",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "aurum-space"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aurum-core",
  "serde",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "aurum-studio-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "aurum-studio-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aurum-studio-core",
  "serde",
@@ -110,14 +110,14 @@ dependencies = [
 
 [[package]]
 name = "aurum-text"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aurum-core",
 ]
 
 [[package]]
 name = "aurum-vn"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aurum-core",
  "serde",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "aurum-vr"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aurum-core",
 ]

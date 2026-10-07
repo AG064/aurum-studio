@@ -165,6 +165,13 @@ jobs:
         run: |
           npm ci
           npx playwright install chromium
+      - name: Keep native inspection caches in the isolated test directory
+        shell: pwsh
+        run: |
+          $testDirectory = "$env:RUNNER_TEMP/aurum-browser-tests"
+          New-Item -ItemType Directory -Path $testDirectory -Force | Out-Null
+          "TEMP=$testDirectory" >> $env:GITHUB_ENV
+          "TMP=$testDirectory" >> $env:GITHUB_ENV
       - name: Play and edit a disposable project
         working-directory: scripts/browser
         run: npm test -- ${{ matrix.suite }}.spec.js
@@ -176,6 +183,7 @@ jobs:
           path: |
             scripts/browser/test-results
             scripts/browser/playwright-report
+            ${{ runner.temp }}/aurum-browser-tests/aurum-inspection-*/stage-*/import*.log
           retention-days: 14
 
   build:

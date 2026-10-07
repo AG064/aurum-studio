@@ -2,7 +2,7 @@
 
 ## Everyday work
 
-These control names describe the workbench in current `main`, not the older v0.3.0 interface. [Installation and release choices](GETTING_STARTED.md).
+These control names describe the 0.4.0 workbench, not the older v0.3.0 interface. [Installation and release choices](GETTING_STARTED.md).
 
 1. Launch Aurum Studio. Its first launch creates a small welcome project if no project is selected.
 2. Create a 2D or 3D project, or import an existing project. Import adds `aurum.toml` only when it is missing.

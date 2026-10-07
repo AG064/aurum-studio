@@ -1,5 +1,5 @@
-//! Fair, bounded coordination for native Godot editor/cache-writer phases.
-//! Status/file APIs and ordinary runtime probes do not acquire this gate.
+//! Fair, bounded coordination for short-lived native Godot management workers.
+//! Status/file APIs and version probes do not acquire this gate.
 use std::collections::VecDeque;
 use std::io;
 use std::sync::{Condvar, Mutex, OnceLock};
@@ -50,7 +50,7 @@ impl Gate {
                 self.changed.notify_all();
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "Native editor phase queue exceeded its operation budget",
+                    "Native management worker queue exceeded its operation budget",
                 ));
             }
             state = self
@@ -62,18 +62,21 @@ impl Gate {
     }
 }
 
-fn editor_phase(command: &crate::Command) -> bool {
+fn management_phase(command: &crate::Command) -> bool {
     command
         .arguments()
         .iter()
         .take_while(|arg| arg.as_str() != "--")
-        .any(|arg| arg == "--editor" || arg.starts_with("--export-"))
+        .any(|arg| arg == "--editor" || arg == "--headless" || arg.starts_with("--export-"))
 }
 
-/// Serialize editor/import/export phases, not entire builds. Queue waiting is
+/// Serialize bounded native management phases, not entire builds or games.
+/// Headless setup/inspection workers also initialize Godot and must not race
+/// editor import startup. Status and file requests do not spawn these workers.
+/// Queue waiting is
 /// included in the caller's existing budget; no test or process retry is added.
 pub fn run(command: &crate::Command, budget: Duration) -> io::Result<crate::Outcome> {
-    if !editor_phase(command) {
+    if !management_phase(command) {
         return command.run(budget);
     }
     static GATE: OnceLock<Gate> = OnceLock::new();
@@ -83,12 +86,15 @@ pub fn run(command: &crate::Command, budget: Duration) -> io::Result<crate::Outc
     if remaining.is_zero() {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
-            "Native editor phase budget expired while queued",
+            "Native management worker budget expired while queued",
         ));
     }
     let diagnostic = std::env::var("AURUM_NATIVE_DIAGNOSTICS").as_deref() == Ok("1");
     if diagnostic {
-        command.clone().arg("--verbose").run(remaining)
+        command
+            .clone()
+            .arg_before_separator("--verbose")
+            .run(remaining)
     } else {
         command.run(remaining)
     }
@@ -110,20 +116,25 @@ mod tests {
     }
 
     #[test]
-    fn editor_phases_are_gated_but_status_runtime_probes_are_not() {
-        assert!(editor_phase(&crate::Command::new("engine").arg("--editor")));
-        assert!(editor_phase(
+    fn management_workers_are_gated_but_version_and_user_flags_are_not() {
+        assert!(management_phase(
+            &crate::Command::new("engine").arg("--editor")
+        ));
+        assert!(management_phase(
             &crate::Command::new("engine").arg("--export-release")
         ));
-        assert!(!editor_phase(&crate::Command::new("engine").args([
+        assert!(management_phase(&crate::Command::new("engine").args([
             "--headless",
             "--script",
             "inspect.gd"
         ])));
-        assert!(!editor_phase(&crate::Command::new("engine").args([
-            "--headless",
+        assert!(!management_phase(
+            &crate::Command::new("engine").arg("--version")
+        ));
+        assert!(!management_phase(&crate::Command::new("engine").args([
             "--",
-            "--editor"
+            "--editor",
+            "--headless"
         ])));
     }
 

@@ -4,16 +4,16 @@ A local game-development workspace for people and agents. Edit scenes and code, 
 
 Godot 4.7 handles rendering and resources underneath. Aurum owns the project workflow, the local interface, and the agent-facing operations. You do not need to keep a Godot editor open. Use GDScript for gameplay and Rust GDExtensions when native code is useful.
 
-[Download v0.3.0](https://github.com/AG064/aurum-studio/releases/tag/v0.3.0) · [Get started](#get-started-on-windows) · [Playable examples](#playable-examples) · [Connect an agent](#headless-by-design) · [Documentation](docs/README.md) · [CI results](https://github.com/AG064/aurum-studio/actions/workflows/ci.yml)
+[Release v0.4.0](https://github.com/AG064/aurum-studio/releases/tag/v0.4.0) · [Get started](#get-started-on-windows) · [Playable examples](#playable-examples) · [Connect an agent](#headless-by-design) · [Documentation](docs/README.md) · [CI results](https://github.com/AG064/aurum-studio/actions/workflows/ci.yml)
 
 ![Aurum Studio workbench with Relay Yard running in the browser, scene explorer, inspector and diagnostics](docs/media/studio.png)
 
-The screenshot is the implemented workbench running against the Rust backend, not a design mockup. It shows current `main`, which is newer than the downloadable release.
+The screenshot is the implemented workbench running against the Rust backend, captured during development of 0.4.0, not a design mockup.
 
 | Choose | What you get |
 | --- | --- |
-| [Published v0.3.0](docs/RELEASES.md) | Portable Windows Studio with its runtime, Web templates and Orbit Break. No compiler needed for script-only projects. |
-| [Build current main](#get-started-on-windows) | The redesigned workbench, operation contracts, structured MCP results and Relay Yard. Requires the source-build prerequisites below. |
+| [Versioned Windows package](docs/RELEASES.md) | Studio 0.4.0 with the redesigned workbench, runtime, Web templates, operation contracts and both games. No compiler needed for script-only projects. |
+| [Build current main](#get-started-on-windows) | The source workspace and development changes after the latest tag. Requires the source-build prerequisites below. |
 
 Pushing source does not update an installed application or the release ZIP. [Current capabilities and limits](docs/STUDIO_STATUS.md).
 
@@ -45,7 +45,7 @@ aurum studio ./examples/relay-yard
 aurum run ./examples/relay-yard
 ```
 
-The game has 129 native assertions, physics-driven campaign and failure tests, browser input/checkpoint tests and standalone package execution. [Controls, asset provenance and reproducible verification](examples/relay-yard/README.md). It is in `main`, not the v0.3.0 download.
+The game has 129 native assertions, physics-driven campaign and failure tests, browser input/checkpoint tests and standalone package execution. [Controls, asset provenance and reproducible verification](examples/relay-yard/README.md). It is included in 0.4.0 as source and standalone Windows/Web packages.
 
 **[Orbit Break](examples/orbit-break/README.md)** is a 2D orbital survival campaign across twelve encounters and three stations. Choose a flight frame, develop a weapon build and choose one of three modules between encounters. Local records, contacts and original music complete the campaign. It is included in the published release.
 
@@ -107,7 +107,7 @@ aurum dev C:/Projects/MyGame --play
 
 The compact MCP profile exposes three tools: `aurum_project_query`, `aurum_project_action` and `aurum_mcp_status`. Agents discover the installed runtime's classes instead of depending only on remembered engine APIs.
 
-Current `main` adds `op=describe` for on-demand operation schemas and structured MCP results. Discover the installed version's contracts before composing requests. See [agent workflows](docs/AGENT_WORKFLOWS.md).
+Version 0.4.0 adds `op=describe` for on-demand operation schemas and structured MCP results. Discover the installed version's contracts before composing requests. See [agent workflows](docs/AGENT_WORKFLOWS.md).
 
 ```json
 {

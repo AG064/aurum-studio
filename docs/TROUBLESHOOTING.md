@@ -1,8 +1,8 @@
 # Troubleshooting
 
 First identify the executable you are using: `aurum --version`, its absolute
-path, and the commit or release that supplied it. Current `main` and the
-v0.3.0 download have different interfaces and capabilities. Rebuilding source
+path, and the commit or release that supplied it. Version 0.4.0 and the
+older v0.3.0 download have different interfaces and capabilities. Rebuilding source
 does not replace an installed executable automatically.
 
 ## Run does not start a browser game

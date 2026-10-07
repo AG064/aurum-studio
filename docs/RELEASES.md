@@ -1,6 +1,26 @@
 # Release delivery
 
-The latest published package is v0.3.0. Current `main` contains a newer workbench and Relay Yard, but it is not a new downloadable release. Follow the [source quickstart](../README.md#get-started-on-windows) for those changes. An existing installation is not updated by pulling or pushing the repository.
+Release packages are separate from source commits. Check the [GitHub release page](https://github.com/AG064/aurum-studio/releases) for published downloads; `main` can contain later development changes. An existing installation is not updated by pulling or pushing the repository.
+
+## v0.4.0
+
+[Release page](https://github.com/AG064/aurum-studio/releases/tag/v0.4.0).
+
+- `Aurum-Studio-0.4.0-windows-x64.zip`: the redesigned Studio, CLI/MCP, Godot 4.7 runtime, ordinary and extension-enabled Web templates, operation discovery, both example source projects and local documentation.
+- `Orbit-Break-0.4.0-windows-x64.zip` and `Orbit-Break-0.4.0-web.zip`: the 2D campaign as standalone native and browser builds.
+- `Relay-Yard-0.4.0-windows-x64.zip` and `Relay-Yard-0.4.0-web.zip`: Night Shift's 3D mission as standalone native and browser builds.
+- `SHA256SUMS.txt` and `verification.json`: archive hashes, source commit, runtime/binary identity and actual acceptance scope.
+
+Extract the Studio ZIP into a new writable directory and open `Launch Aurum Studio.vbs`. To open the included 3D game directly in Studio, run from that folder:
+
+```powershell
+$env:AURUM_STUDIO_HOME = (Get-Location).Path
+.\bin\aurum.exe studio .\examples\relay-yard
+```
+
+Standalone Windows ZIPs include `Play Orbit Break.vbs` or `Play Relay Yard.vbs`. Keep each launcher beside its runtime and PCK. Web ZIPs need HTTP(S) hosting with the Wasm MIME type, not a `file://` launch. No Rust compiler is needed to play either script-based example.
+
+Use a fresh extraction for upgrades. Copy or import your project deliberately; do not replace a running installation or merge old session state into the archive. Extracting does not change global PATH, shortcuts or an existing installation. Rust projects still need the optional toolchain described below.
 
 ## v0.3.0
 

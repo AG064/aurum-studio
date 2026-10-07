@@ -5,7 +5,9 @@ param(
     [Parameter(Mandatory)][string]$TemplatesDirectory,
     [Parameter(Mandatory)][string]$OutputDirectory,
     [string]$WindowsGameDirectory,
-    [string]$WebGameDirectory
+    [string]$WebGameDirectory,
+    [string]$RelayWindowsGameDirectory,
+    [string]$RelayWebGameDirectory
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
@@ -21,11 +23,11 @@ if($LASTEXITCODE -or $text -notmatch '^aurum (\d+\.\d+\.\d+)$'){throw 'The relea
 $version=$Matches[1]
 $templates=@('web_nothreads_release.zip','web_nothreads_debug.zip','web_dlink_nothreads_release.zip','web_dlink_nothreads_debug.zip')
 foreach($name in $templates){if(-not (Test-Path -LiteralPath (Join-Path $TemplatesDirectory $name) -PathType Leaf)){throw "Missing matching template: $name"}}
-foreach($directory in @($WindowsGameDirectory,$WebGameDirectory)|Where-Object{$_}){
+foreach($directory in @($WindowsGameDirectory,$WebGameDirectory,$RelayWindowsGameDirectory,$RelayWebGameDirectory)|Where-Object{$_}){
     if(-not (Test-Path -LiteralPath $directory -PathType Container)){throw "Game package directory does not exist: $directory"}
 }
-if($WebGameDirectory){
-    $html=Get-Content -LiteralPath (Join-Path $WebGameDirectory 'index.html') -Raw
+foreach($webDirectory in @($WebGameDirectory,$RelayWebGameDirectory)|Where-Object{$_}){
+    $html=Get-Content -LiteralPath (Join-Path $webDirectory 'index.html') -Raw
     if($html.Contains('aurum-preview.js')){throw 'Publish a standalone game, not an authenticated managed preview'}
 }
 New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
@@ -52,7 +54,9 @@ Copy-SourceTree (Join-Path $repo 'examples/relay-yard') (Join-Path $studio 'exam
 Copy-SourceTree (Join-Path $repo 'docs') (Join-Path $studio 'docs')
 New-Item -ItemType Directory -Path (Join-Path $studio 'scripts') | Out-Null
 foreach($name in @('provision-godot.ps1','provision-web-toolchain.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $studio "scripts/$name")}
-Copy-Item -LiteralPath (Join-Path $repo 'README.md') -Destination (Join-Path $studio 'README.md')
+foreach($name in @('README.md','CONTRIBUTING.md','CHANGELOG.md','LICENSE','design-qa.md')){
+    Copy-Item -LiteralPath (Join-Path $repo $name) -Destination (Join-Path $studio $name)
+}
 $assets=[Collections.Generic.List[string]]::new()
 function Archive([string]$Directory,[string]$Name){
     $archive=Join-Path $OutputDirectory $Name
@@ -65,9 +69,27 @@ if($WindowsGameDirectory){
     $game=Join-Path $OutputDirectory 'Orbit Break'
     Copy-SourceTree ([IO.Path]::GetFullPath($WindowsGameDirectory)) $game
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release/Play Orbit Break.vbs') -Destination (Join-Path $game 'Play Orbit Break.vbs')
+    Copy-Item -LiteralPath (Join-Path $repo 'examples/orbit-break/godot/assets/fonts/OFL.txt') -Destination (Join-Path $game 'OFL.txt') -Force
     Archive $game "Orbit-Break-$version-windows-x64.zip"
 }
-if($WebGameDirectory){Archive ([IO.Path]::GetFullPath($WebGameDirectory)) "Orbit-Break-$version-web.zip"}
+function Archive-WebGame([string]$Source,[string]$Name,[string]$FontNotice,[string]$AssetNotice=''){
+    $stage=Join-Path $OutputDirectory "$Name Web"
+    Copy-SourceTree ([IO.Path]::GetFullPath($Source)) $stage
+    Copy-Item -LiteralPath (Join-Path $repo $FontNotice) -Destination (Join-Path $stage 'OFL.txt') -Force
+    if($AssetNotice){Copy-Item -LiteralPath (Join-Path $repo $AssetNotice) -Destination (Join-Path $stage 'LICENSE-assets.txt') -Force}
+    Archive $stage "$Name-$version-web.zip"
+}
+if($WebGameDirectory){Archive-WebGame $WebGameDirectory 'Orbit-Break' 'examples/orbit-break/godot/assets/fonts/OFL.txt'}
+if($RelayWindowsGameDirectory){
+    foreach($name in @('game.exe','game.pck','LICENSE-assets.txt','OFL.txt')){
+        if(-not (Test-Path -LiteralPath (Join-Path $RelayWindowsGameDirectory $name) -PathType Leaf)){throw "Relay Yard Windows package is missing $name"}
+    }
+    $game=Join-Path $OutputDirectory 'Relay Yard'
+    Copy-SourceTree ([IO.Path]::GetFullPath($RelayWindowsGameDirectory)) $game
+    Copy-Item -LiteralPath (Join-Path $repo 'examples/relay-yard/Play Relay Yard.vbs') -Destination (Join-Path $game 'Play Relay Yard.vbs') -Force
+    Archive $game "Relay-Yard-$version-windows-x64.zip"
+}
+if($RelayWebGameDirectory){Archive-WebGame $RelayWebGameDirectory 'Relay-Yard' 'examples/relay-yard/godot/assets/fonts/OFL.txt' 'examples/relay-yard/godot/LICENSE-assets.txt'}
 $sums=@($assets|ForEach-Object{ '{0}  {1}' -f (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant(),(Split-Path $_ -Leaf) })
 $sums|Out-File (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding utf8
 @{ok=$true;version=$version;directory=$OutputDirectory;assets=$assets;binary_sha256=(Get-FileHash -LiteralPath $Binary).Hash;runtime_sha256=(Get-FileHash -LiteralPath $GodotBinary).Hash;global_environment_changed=$false}|ConvertTo-Json -Depth 6

@@ -84,6 +84,18 @@ impl Command {
         self
     }
 
+    /// Add an engine option before its user-argument separator, if present.
+    /// Script argument count and order must remain unchanged by diagnostics.
+    pub fn arg_before_separator(mut self, value: impl Into<String>) -> Self {
+        let index = self
+            .args
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(self.args.len());
+        self.args.insert(index, value.into());
+        self
+    }
+
     pub fn args<I, S>(mut self, values: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -235,6 +247,39 @@ const CAPTURE_GRACE: Duration = Duration::from_secs(5);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_engine_flags_do_not_become_script_arguments() {
+        let command = Command::new("engine")
+            .args([
+                "--headless",
+                "--script",
+                "worker.gd",
+                "--",
+                "request.json",
+                "response.json",
+            ])
+            .arg_before_separator("--verbose");
+        assert_eq!(
+            command.arguments(),
+            &[
+                "--headless",
+                "--script",
+                "worker.gd",
+                "--verbose",
+                "--",
+                "request.json",
+                "response.json"
+            ]
+        );
+        assert_eq!(
+            Command::new("engine")
+                .arg("--editor")
+                .arg_before_separator("--verbose")
+                .arguments(),
+            &["--editor", "--verbose"]
+        );
+    }
 
     /// A program that exists on every Windows machine and can echo.
     #[cfg(windows)]

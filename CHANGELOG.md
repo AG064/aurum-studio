@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-07
+
 ### Added
 
 - Task-oriented documentation index, current workbench onboarding, release/source comparison and reproducible contributor guidance.
@@ -20,6 +22,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Night Shift's authored Sodium Enamel model kit, shared detail textures, industrial instrument cluster, dispatch terminal, in-world docking gauges and enemy intent markings, with reproducible Godot authoring source and asset hashes.
 
 ### Fixed
+
+- Short-lived headless management workers share the fair native startup queue with editor/import/export stages; status and file APIs remain independent and existing operation budgets still apply.
+- Diagnostic flags are inserted before the engine's user-argument separator so worker request/response arguments stay intact.
+- Browser CI uses a dedicated short temporary directory and retains private inspection import logs.
 
 - Relay Yard's browser freshness assertion now has a bounded 60-second budget for hosted software-rendering load, preserving the same required stale verdict and zero-retry policy.
 - Relay Yard captures the real game viewport without an iframe element-stability wait that stalled under software rendering.

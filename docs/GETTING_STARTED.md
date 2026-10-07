@@ -2,7 +2,7 @@
 
 Launch Aurum Studio from the Windows Start menu or run `aurum`. The installed application includes its rendering runtime.
 
-For installation prerequisites and a from-source setup, start with the [repository quickstart](../README.md#get-started-on-windows). The published v0.3.0 includes [Orbit Break](../examples/orbit-break/README.md); current `main` also includes [Relay Yard](../examples/relay-yard/README.md) and the redesigned workbench described here. See the [documentation index](README.md) for other paths.
+For installation prerequisites and a from-source setup, start with the [repository quickstart](../README.md#get-started-on-windows). Version 0.4.0 includes [Orbit Break](../examples/orbit-break/README.md), [Relay Yard](../examples/relay-yard/README.md) and the redesigned workbench described here. See the [documentation index](README.md) for other paths.
 
 ## Make a project
 

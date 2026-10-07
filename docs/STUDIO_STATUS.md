@@ -1,6 +1,6 @@
 # Aurum Studio status
 
-The published release is [0.3.0](RELEASES.md). The development tree adds shared operation-contract discovery, structured MCP results and Relay Yard: Night Shift, a complete small 3D action-extraction game with modeled assets, combat, audio, a Warden encounter and combat-state rebuilding. These additions are not a published 0.4 release. See [agent workflows](AGENT_WORKFLOWS.md).
+Version [0.4.0](RELEASES.md) includes the redesigned workbench, shared operation-contract discovery, structured MCP results and Relay Yard: Night Shift, a complete small 3D action-extraction game with modeled assets, combat, audio, a Warden encounter and combat-state rebuilding. See [agent workflows](AGENT_WORKFLOWS.md).
 
 The supported workflow is Windows Studio plus local MCP and CLI access, using the bundled Godot 4.7 runtime. Studio owns the workflow; an open native editor is optional.
 
@@ -43,7 +43,7 @@ Individual acceptance scripts:
 
 Verification receipts are generated beside each temporary run. Historical August Phase 0 and September prototype evidence remains historical; it does not replace these current gates.
 
-The [integration verification record](INTEGRATION_VERIFICATION.md) separates October 7 development results from historical October 1 evidence. [Release delivery](RELEASES.md) describes the published 0.3.0 scope. For hosted results, inspect [CI on the relevant commit](https://github.com/AG064/aurum-studio/actions/workflows/ci.yml); local receipts do not imply a green hosted run.
+The [integration verification record](INTEGRATION_VERIFICATION.md) separates October 7 development results from historical October 1 evidence. [Release delivery](RELEASES.md) distinguishes versioned package contents and limits. For hosted results, inspect [CI on the relevant commit](https://github.com/AG064/aurum-studio/actions/workflows/ci.yml); local receipts do not imply a green hosted run.
 
 ## Boundaries
 

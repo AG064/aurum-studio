@@ -1,6 +1,6 @@
 # Aurum Studio documentation
 
-This documentation follows current `main`. The [v0.3.0 download](RELEASES.md) predates the redesigned workbench, operation-contract discovery and Relay Yard. Start with [status and limits](STUDIO_STATUS.md) when deciding whether a target workflow is supported.
+This documentation covers Studio 0.4.0 and current `main`. The older v0.3.0 download predates the redesigned workbench, operation-contract discovery and Relay Yard. See [release delivery](RELEASES.md) for versioned packages, and [status and limits](STUDIO_STATUS.md) when deciding whether a target workflow is supported.
 
 ## Use Studio
 
