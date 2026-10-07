@@ -879,6 +879,53 @@ fn headless_operation(project: &Project, input: &Value) -> Result<Value, String>
 /// Import only when source changed, serialize native cache writers, and never edit scene data.
 /// Import script-only scene workers in immutable, revision-keyed snapshots.
 /// Never re-import a user's original cache to service a source inspection/edit.
+fn plain_text_inspection_tree(source: &Path) -> Result<bool, String> {
+    let mut pending = vec![source.to_path_buf()];
+    let mut count = 0;
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            count += 1;
+            if count > 5000 {
+                return Ok(false);
+            }
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            if kind.is_dir() {
+                if entry.file_name() == "addons" {
+                    return Ok(false);
+                }
+                pending.push(entry.path());
+            } else if kind.is_file() {
+                let path = entry.path();
+                let extension = path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("");
+                if !matches!(
+                    extension,
+                    "gd" | "tscn" | "tres" | "godot" | "cfg" | "json" | "txt" | "md"
+                ) {
+                    return Ok(false);
+                }
+                if matches!(extension, "gd" | "tscn" | "tres" | "godot" | "cfg") {
+                    if entry.metadata().map_err(|e| e.to_string())?.len() > 2 * 1024 * 1024 {
+                        return Ok(false);
+                    }
+                    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+                    // Global script names and UID-only resources need editor metadata.
+                    // Imported media, native extensions and add-ons take the full path.
+                    if text.contains("class_name") || text.contains("uid://") {
+                        return Ok(false);
+                    }
+                }
+            } else {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 fn private_inspection_source(project: &Project) -> Result<PathBuf, String> {
     let godot = godot_root(project)?;
     let engine = engine_binary(project)?;
@@ -886,7 +933,7 @@ fn private_inspection_source(project: &Project) -> Result<PathBuf, String> {
     let runtime_revision = crate::sha256_file(&engine).map_err(|e| e.to_string())?;
     let revision = crate::sha256_hex(
         format!(
-            "{}\n{source_revision}\n{runtime_revision}",
+            "inspection-v2\n{}\n{source_revision}\n{runtime_revision}",
             project.root.display()
         )
         .as_bytes(),
@@ -921,6 +968,19 @@ fn private_inspection_source(project: &Project) -> Result<PathBuf, String> {
     crate::snapshot::copy_excluding(godot, &source, &["addons/aurum_editor"])?;
     if crate::snapshot::fingerprint_all(godot)? != source_revision {
         return Err("Source changed while preparing scene inspection; reload after saving".into());
+    }
+    if plain_text_inspection_tree(&source)? {
+        // Raw text scenes/scripts are loaded by the real runtime worker below.
+        // Starting an editor merely to import a comment-only revision is unnecessary.
+        // Never mark a media/native/global-class tree ready through this path.
+        std::fs::create_dir_all(source.join(".godot")).map_err(|e| e.to_string())?;
+        files::write_atomic(
+            &ready,
+            &serde_json::to_vec(&json!({"stage":stage_name,"plain_text":true}))
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(source);
     }
     let state = stage.join("native-state");
     std::fs::create_dir_all(&state).map_err(|e| e.to_string())?;
@@ -1034,6 +1094,69 @@ fn ensure_imported(project: &Project) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn plain_text_scenes_do_not_require_editor_import() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-text-inspection-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for (name, text) in [
+            ("project.godot", "config_version=5"),
+            ("main.tscn", "[gd_scene format=3]"),
+            ("main.gd", "extends Node2D"),
+            ("config.json", "{}"),
+        ] {
+            std::fs::write(root.join(name), text).unwrap();
+        }
+        assert!(plain_text_inspection_tree(&root).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imported_media_and_native_extensions_never_take_text_fast_path() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-media-inspection-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for name in [
+            "model.glb",
+            "font.ttf",
+            "texture.png",
+            "module.gdextension",
+            "main.gd.uid",
+        ] {
+            let path = root.join(name);
+            std::fs::write(&path, b"fixture").unwrap();
+            assert!(!plain_text_inspection_tree(&root).unwrap(), "{name}");
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::create_dir(root.join("addons")).unwrap();
+        assert!(!plain_text_inspection_tree(&root).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn global_classes_and_uid_references_require_import_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-class-inspection-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for (name, text) in [
+            ("main.gd", "class_name Actor\nextends Node3D"),
+            ("scene.tscn", "[ext_resource path=\"uid://test\"]"),
+            ("project.godot", "autoload=\"uid://test\""),
+        ] {
+            let path = root.join(name);
+            std::fs::write(&path, text).unwrap();
+            assert!(!plain_text_inspection_tree(&root).unwrap(), "{name}");
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn only_completed_windows_import_shutdown_crashes_are_recoverable() {
         let complete = "[ DONE ] loading_editor_layout";
