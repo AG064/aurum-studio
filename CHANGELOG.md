@@ -31,6 +31,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 - Relay Yard's browser freshness assertion now has a bounded 60-second budget for hosted software-rendering load, preserving the same required stale verdict and zero-retry policy.
 - Relay Yard captures the real game viewport without an iframe element-stability wait that stalled under software rendering.
+- Browser capture briefly freezes rendering through the normal checkpoint interface and always resumes the original pause state, without extending capture budgets or injecting gameplay values.
 
 - MCP discovery now advertises rendered captures, Rust Web builds and all supported playtest parameters from the shared backend registry.
 - Night Shift now uses lane-marking instruments and dispatch-stamp menus, with readable compact alerts and keyboard-following menu scrolling.

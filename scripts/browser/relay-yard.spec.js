@@ -15,24 +15,34 @@ const errors = [];
 let controlClient;
 test.describe.configure({ mode: "serial", timeout: 360000 });
 const control = (path, body, options) => controlClient.request(path, body, options);
-// Viewport capture avoids an element screenshot's scroll/stability wait while
-// SwiftShader is rendering. It still captures the real game and workbench.
-const capture = path => page.screenshot({ path, timeout: 30000 });
-// Observe the game's normal checkpoint interface. This never injects gameplay state.
-const state = async () => {
+// Use only the game's normal runtime interface, never injected gameplay state.
+const runtime = async request => {
     const url = await page.locator("#preview-frame").getAttribute("src");
     const frame = page.frames().find(frame => frame.url() === url);
     if (!frame) throw new Error("Game frame is not loaded");
-    const result = await frame.evaluate(async () => {
+    const result = await frame.evaluate(async request => {
         if (typeof window.aurumRuntimeRequest !== "function") throw new Error("Runtime is not ready");
         window.aurumRuntimeResponse = "";
-        window.aurumRuntimeRequest(JSON.stringify({ op: "checkpoint" }));
+        window.aurumRuntimeRequest(JSON.stringify(request));
         const deadline = performance.now() + 2000;
         while (!window.aurumRuntimeResponse && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
         return JSON.parse(window.aurumRuntimeResponse);
-    });
+    }, request);
+    if (!result.ok) throw new Error(result.error || "Runtime request failed");
+    return result;
+};
+const state = async () => {
+    const result = await runtime({ op: "checkpoint" });
     if (!result.ok || !result.checkpoint?.custom) throw new Error(result.error || "Custom checkpoint missing");
     return result.checkpoint.custom;
+};
+// Freeze through the same interface used by rebuilds so software rendering
+// cannot starve browser capture. Always restore the original pause state.
+const capture = async path => {
+    const frozen = await runtime({ op: "checkpoint", freeze: true });
+    try { await page.screenshot({ path, timeout: 30000 }); }
+    finally { await runtime({ op: "resume", paused: frozen.checkpoint.paused }); }
+    expect((await state()).paused).toBe(frozen.checkpoint.custom.paused);
 };
 test.beforeAll(async ({ browser }) => {
     for (const key of ["AURUM_BINARY", "AURUM_GODOT", "AURUM_WEB_TEMPLATE"]) if (!process.env[key]) throw new Error(`Missing ${key}`);
