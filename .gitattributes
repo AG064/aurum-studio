@@ -1,4 +1,4 @@
-# Normalize line endings to LF on commit, native on checkout.
+# Use LF for text on commit and checkout, except Windows launch scripts below.
 * text=auto eol=lf
 
 # Rust files should always be LF
@@ -32,4 +32,10 @@ Cargo.lock text eol=lf
 *.dylib binary
 *.png binary
 *.jpg binary
+*.jpeg binary
+*.webp binary
 *.ico binary
+*.glb binary
+*.wav binary
+*.ttf binary
+*.zip binary

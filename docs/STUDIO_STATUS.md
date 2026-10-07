@@ -23,6 +23,7 @@ The supported workflow is Windows Studio plus local MCP and CLI access, using th
 - Shared headless and rendered playtests with input timelines, PNG captures, sampled state, configurable budgets and explicit termination diagnostics.
 - Explicit Rust Web side-module builds and private host-registry staging. See [target requirements](RUST_WEB.md).
 - The [Orbit Break campaign](../examples/orbit-break), with 85 gameplay/HUD checks, twelve encounters, three stations, three frames, seven patrol types, three phased bosses, five winning campaign scenarios and three-choice module stops.
+- [Relay Yard: Night Shift](../examples/relay-yard/README.md), with an authored 3D model kit, complete combat/extraction mission, 129 native assertions and physics-driven campaign/failure checks.
 
 ## Evidence
 
@@ -37,11 +38,12 @@ Individual acceptance scripts:
 - `studio_dev_acceptance.ps1`: source edits reach one running editor; a compiler failure preserves its working DLL and the watcher recovers.
 - `runtime_bridge_acceptance.ps1`: typed edits, secret/traversal refusal, batch prevalidation, int64/collection round trips and complete Orbit gameplay checkpoint reconstruction in private fixtures.
 - `examples/orbit-break/tools/verify.ps1`: isolated game validation, 85 gameplay/HUD checks, five winning weapon/frame scenarios, stationary mission failure and optional portable packaging. Supply `-GodotBinary` when a bundled runtime is not discoverable.
+- `examples/relay-yard/tools/verify.ps1`: isolated MCP authoring/persistence, source save/undo, 129 native assertions, combat campaign/failure, rendered inputs and optional extracted Windows package execution.
 - `scripts/browser`: real Chromium/Wasm play, keyboard controls, live-edit state preservation, save/undo, failed-build preservation, origin isolation, mobile-layout and standalone-export tests. See [browser setup](WEB_PREVIEW.md).
 
 Verification receipts are generated beside each temporary run. Historical August Phase 0 and September prototype evidence remains historical; it does not replace these current gates.
 
-The [2026-10-01 integration verification](INTEGRATION_VERIFICATION.md) is historical local evidence. [Release delivery](RELEASES.md) describes the published 0.3.0 scope. Development verification receipts do not imply remote CI has run for unpushed changes.
+The [integration verification record](INTEGRATION_VERIFICATION.md) separates October 7 development results from historical October 1 evidence. [Release delivery](RELEASES.md) describes the published 0.3.0 scope. For hosted results, inspect [CI on the relevant commit](https://github.com/AG064/aurum-studio/actions/workflows/ci.yml); local receipts do not imply a green hosted run.
 
 ## Boundaries
 

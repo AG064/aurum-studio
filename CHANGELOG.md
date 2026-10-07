@@ -8,6 +8,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Task-oriented documentation index, current workbench onboarding, release/source comparison and reproducible contributor guidance.
+- Dependency-free documentation link/image/heading checks in CI, with isolated checker regression tests and focused issue/PR templates.
+- Bounded headless browser-test requests with credential-free pending/completed timing diagnostics, body-read deadlines and graceful-shutdown budgets.
+
 - Shared, on-demand project-operation discovery through CLI, HTTP and MCP, with gameplay event examples and consistent frame/wall budgets.
 - A compact Studio workbench with accessible workspace tabs, responsive explorer/inspector drawers, source and draft indicators, operation contracts, bounded-test receipts and a dedicated diagnostics dock.
 - Structured MCP object results with compact JSON text and protocol-version-aware compatibility.
@@ -16,6 +20,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Night Shift's authored Sodium Enamel model kit, shared detail textures, industrial instrument cluster, dispatch terminal, in-world docking gauges and enemy intent markings, with reproducible Godot authoring source and asset hashes.
 
 ### Fixed
+
+- Relay Yard's browser freshness assertion now has a bounded 60-second budget for hosted software-rendering load, preserving the same required stale verdict and zero-retry policy.
+- Relay Yard captures the real game viewport without an iframe element-stability wait that stalled under software rendering.
 
 - MCP discovery now advertises rendered captures, Rust Web builds and all supported playtest parameters from the shared backend registry.
 - Night Shift now uses lane-marking instruments and dispatch-stamp menus, with readable compact alerts and keyboard-following menu scrolling.

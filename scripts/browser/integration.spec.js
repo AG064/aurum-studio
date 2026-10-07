@@ -6,16 +6,13 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { monitorHttp } from "./http-diagnostics.js";
 import { openWorkspace } from "./workspace-ready.js";
+import { createControlClient } from "./control-client.js";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 let work, project, child, output = "", origin, token, endpoint, page, context;
 let httpDiagnostics;
-const control = async (path, body) => {
-    const response = await fetch(origin + path, { method: body ? "POST" : "GET", headers: { "Content-Type": "application/json", "X-Aurum-Token": token }, ...(body ? { body: JSON.stringify(body) } : {}) });
-    const result = await response.json();
-    if (!response.ok || !result.ok) throw new Error(result.error || JSON.stringify(result));
-    return result;
-};
+let controlClient;
+const control = (path, body, options) => controlClient.request(path, body, options);
 const inspect = async () => {
     await page.locator("#inspect-runtime").click();
     await expect(page.locator("#runtime-status")).toContainText("editable values");
@@ -34,18 +31,20 @@ test.beforeAll(async ({ browser }) => {
     await expect.poll(() => output.match(/http:\/\/127\.0\.0\.1:\d+\/\?t=[a-zA-Z0-9_-]+/)?.[0], { timeout: 30000 }).toBeTruthy();
     endpoint = output.match(/http:\/\/127\.0\.0\.1:\d+\/\?t=[a-zA-Z0-9_-]+/)[0];
     origin = new URL(endpoint).origin; token = new URL(endpoint).searchParams.get("t");
+    controlClient = createControlClient(origin, token, { requireOk: true });
     context = await browser.newContext({ viewport: { width: 1488, height: 1056 } });
     page = await context.newPage();
     httpDiagnostics = monitorHttp(page);
 });
 test.afterAll(async ({}, info) => {
     if (context) await context.close();
-    if (origin && child?.exitCode === null) await control("/api/stop", {}).catch(() => {});
+    if (origin && child?.exitCode === null) await control("/api/stop", {}, { budgetMs: 5000 }).catch(() => {});
     if (child?.exitCode === null) await Promise.race([new Promise((resolve) => child.once("exit", resolve)), new Promise((resolve) => setTimeout(resolve, 5000))]);
     if (child?.exitCode === null) child.kill();
     await writeFile(info.outputPath("studio.log"), token ? output.replaceAll(token, "[redacted]") : output);
     await writeFile(info.outputPath("evidence.json"), JSON.stringify({work,project},null,2));
     if (httpDiagnostics) await writeFile(info.outputPath("http-diagnostics.json"), JSON.stringify(httpDiagnostics(), null, 2));
+    if (controlClient) await writeFile(info.outputPath("control-diagnostics.json"), JSON.stringify(controlClient.diagnostics(), null, 2));
     // Keep completed native-stage logs even if the browser fails while a new
     // export is pending. Only this disposable fixture's logs are collected.
     let logCount = 0;

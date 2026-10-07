@@ -2,6 +2,6 @@
   "name": "aurum-browser-acceptance",
   "private": true,
   "type": "module",
-  "scripts": {"pretest": "node --test --test-reporter=tap http-diagnostics.test.js", "test": "playwright test"},
+  "scripts": {"pretest": "node --test --test-reporter=tap http-diagnostics.test.js control-client.test.js", "test": "playwright test"},
   "devDependencies": {"@playwright/test": "1.63.0"}
 }

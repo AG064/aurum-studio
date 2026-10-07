@@ -19,6 +19,20 @@ permissions:
   contents: read
 
 jobs:
+  docs:
+    name: Documentation links and checker tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test the documentation checker in disposable fixtures
+        run: node --test scripts/tests/check-docs.test.mjs
+      - name: Check repository-local links, images and headings
+        run: node scripts/check-docs.mjs
+
   test:
     name: cargo test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

@@ -1,5 +1,7 @@
 # Release delivery
 
+The latest published package is v0.3.0. Current `main` contains a newer workbench and Relay Yard, but it is not a new downloadable release. Follow the [source quickstart](../README.md#get-started-on-windows) for those changes. An existing installation is not updated by pulling or pushing the repository.
+
 ## v0.3.0
 
 [Download the release](https://github.com/AG064/aurum-studio/releases/tag/v0.3.0).

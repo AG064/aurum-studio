@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a concrete user or agent workflow improvement.
+title: "[Feature] "
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow and current limitation
+      description: "Who needs this, what are they trying to do, and where does Aurum fall short?"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and acceptance criteria
+      description: "Include target platforms, agent interfaces, safety boundaries and how success could be verified."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and compatibility
+      description: "Existing workarounds, affected contracts, migration needs or restart requirements."

@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a reproducible Studio, agent, runtime or game failure.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: "Include a minimal reproduction. Redact session tokens, credentials and private paths. Do not attach an entire private project."
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version and environment
+      description: "Commit or release, OS, Godot runtime, browser if relevant, and script-only or Rust project."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: "Name the operation or control. For CI, link the run and failed job."
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected and actual outcome
+      description: "Include the first failing result and whether an existing preview or file was preserved."
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized diagnostics
+      description: "Relevant log excerpt, screenshot or minimal reproduction link. State which checks failed, passed or were not run."

@@ -4,11 +4,18 @@ A local game-development workspace for people and agents. Edit scenes and code, 
 
 Godot 4.7 handles rendering and resources underneath. Aurum owns the project workflow, the local interface, and the agent-facing operations. You do not need to keep a Godot editor open. Use GDScript for gameplay and Rust GDExtensions when native code is useful.
 
-[Download v0.3.0](https://github.com/AG064/aurum-studio/releases/tag/v0.3.0) · [Get started](#get-started-on-windows) · [Play the example](#a-game-you-can-run) · [Connect an agent](#headless-by-design) · [Documentation](#documentation)
+[Download v0.3.0](https://github.com/AG064/aurum-studio/releases/tag/v0.3.0) · [Get started](#get-started-on-windows) · [Playable examples](#playable-examples) · [Connect an agent](#headless-by-design) · [Documentation](docs/README.md) · [CI results](https://github.com/AG064/aurum-studio/actions/workflows/ci.yml)
 
-![Aurum Studio development workbench with a real browser game and the live inspector](docs/media/studio.png)
+![Aurum Studio workbench with Relay Yard running in the browser, scene explorer, inspector and diagnostics](docs/media/studio.png)
 
-The screenshot shows the development branch's redesigned workbench. The downloadable v0.3.0 package predates this interface; build the current source for the updated Studio and 3D example.
+The screenshot is the implemented workbench running against the Rust backend, not a design mockup. It shows current `main`, which is newer than the downloadable release.
+
+| Choose | What you get |
+| --- | --- |
+| [Published v0.3.0](docs/RELEASES.md) | Portable Windows Studio with its runtime, Web templates and Orbit Break. No compiler needed for script-only projects. |
+| [Build current main](#get-started-on-windows) | The redesigned workbench, operation contracts, structured MCP results and Relay Yard. Requires the source-build prerequisites below. |
+
+Pushing source does not update an installed application or the release ZIP. [Current capabilities and limits](docs/STUDIO_STATUS.md).
 
 ## What you can do
 
@@ -24,11 +31,23 @@ The screenshot shows the development branch's redesigned workbench. The download
 
 No model subscription, provider account or API key is built into Aurum. Bring your preferred MCP-compatible agent. Project operations run locally; HTTP control stays on loopback with a session token.
 
-## A game you can run
+## Playable examples
 
-**[Orbit Break](examples/orbit-break)** is an orbital survival campaign across twelve encounters and three stations. Choose Kestrel, Bastion or Relay, recover cargo, protect reactors, hold transmission windows and defeat three distinct bosses. Pulse fire, piercing Lance rounds and chain-lightning Arc support different builds. Between encounters, choose one of three modules. Flight records, discovered contacts, commendations and three original music arrangements are saved or bundled locally.
+**[Relay Yard: Night Shift](examples/relay-yard/README.md)** is a complete small 3D action-extraction mission. Pilot a hover courier through an industrial dock, restore three systems, fight escalating security craft and hold the extraction pad after the Warden encounter. Its authored model kit, materials, instrument HUD and dispatch terminal share one visual language.
 
-![Orbit Break in play: pilot integrity, wave progression, auto-fire and dash controls](docs/media/orbit-break-gameplay.png)
+![Relay Yard: Night Shift, the implemented 3D courier game](docs/media/relay-yard.png)
+
+Open the current source example in Studio, then select **Run**:
+
+```powershell
+aurum studio ./examples/relay-yard
+# Or launch the native game:
+aurum run ./examples/relay-yard
+```
+
+The game has 129 native assertions, physics-driven campaign and failure tests, browser input/checkpoint tests and standalone package execution. [Controls, asset provenance and reproducible verification](examples/relay-yard/README.md). It is in `main`, not the v0.3.0 download.
+
+**[Orbit Break](examples/orbit-break/README.md)** is a 2D orbital survival campaign across twelve encounters and three stations. Choose a flight frame, develop a weapon build and choose one of three modules between encounters. Local records, contacts and original music complete the campaign. It is included in the published release.
 
 The example has **85 gameplay and HUD checks**, five winning campaign scenarios covering every weapon and flight frame, and a stationary mission-failure check. Browser tests exercise actual export, keyboard play, three-choice upgrades, live tuning, save/undo and isolation. [Verification scope](docs/WEB_PREVIEW.md#verification) distinguishes current native evidence from earlier browser results and device testing.
 
@@ -40,21 +59,15 @@ aurum studio ./examples/orbit-break
 aurum run ./examples/orbit-break
 ```
 
-To test and produce a standalone Windows package, without running tests in the source tree:
-
-```powershell
-pwsh ./examples/orbit-break/tools/verify.ps1 -Package `
-  -OutputDirectory ./examples/orbit-break/dist/windows
-```
-
-Then open `examples/orbit-break/Play Orbit Break.vbs`. See the [example guide](examples/orbit-break/README.md) for controls and runtime configuration. Generated game binaries are not checked into Git.
+Both example verifiers run in disposable project copies and can produce standalone Windows packages. Follow each example's guide for the matching binary/runtime arguments and launcher. Generated binaries are not checked into Git.
 
 ### Browser play and live editing
 
 Provision the pinned web templates once. The script verifies the official archives before extraction:
 
 ```powershell
-pwsh ./scripts/provision-godot.ps1 -Destination A:/AurumStudio/runtime -Mode WebTemplates
+pwsh ./scripts/provision-godot.ps1 `
+  -Destination "$env:LOCALAPPDATA/AurumStudio/runtime" -Mode WebTemplates
 aurum studio ./examples/orbit-break
 ```
 
@@ -80,6 +93,8 @@ pwsh ./scripts/install.ps1 `
 
 Open **Aurum Studio** from Start. In a new terminal, `aurum` opens the same workspace. The installer preserves projects and state, backs up replaced binaries, and supports `-WhatIf`. Building the application needs Rust; using the script-only project starters does not.
 
+For browser previews from a source installation, provision Web templates with the command above, using the same installation directory. The source installer copies the runtime but does not provision Web templates for you.
+
 ```powershell
 aurum new C:/Projects/MyGame --template 3d
 aurum studio C:/Projects/MyGame
@@ -92,7 +107,7 @@ aurum dev C:/Projects/MyGame --play
 
 The compact MCP profile exposes three tools: `aurum_project_query`, `aurum_project_action` and `aurum_mcp_status`. Agents discover the installed runtime's classes instead of depending only on remembered engine APIs.
 
-The development tree adds `op=describe` for on-demand operation schemas and structured MCP results. [Relay Yard: Night Shift](examples/relay-yard) is a small native/Web 3D action-extraction game with imported assets, combat, a Warden encounter, live values, combat-state checkpoints and standalone packaging. These additions are not part of the published 0.3.0 ZIP. See [agent workflows](docs/AGENT_WORKFLOWS.md).
+Current `main` adds `op=describe` for on-demand operation schemas and structured MCP results. Discover the installed version's contracts before composing requests. See [agent workflows](docs/AGENT_WORKFLOWS.md).
 
 ```json
 {
@@ -143,7 +158,7 @@ Script and scene changes use validated, checkpoint-based preview rebuilding with
 
 ## Platform status
 
-Windows is the verified desktop and portable-game target. Orbit Break also runs in a Chromium WebAssembly preview and exports as a standalone web bundle. Rust previews use an explicit Emscripten side-module build and compatible extension templates. See [Rust Web requirements](docs/RUST_WEB.md). Presets can be configured for Windows, Linux, macOS, Web, Android and iOS; a preset is not a verified device build.
+Windows is the verified desktop and portable-game target. Both examples run in Chromium WebAssembly previews and export as standalone web bundles. Rust previews use an explicit Emscripten side-module build and compatible extension templates. See [Rust Web requirements](docs/RUST_WEB.md). Presets can be configured for Windows, Linux, macOS, Web, Android and iOS; a preset is not a verified device build.
 
 Mobile and headset delivery have not been device-tested. The Rust VR and text modules remain placeholders. Aurum uses the existing Godot backend rather than a maintained engine fork. [Current status and boundaries](docs/STUDIO_STATUS.md).
 
@@ -161,16 +176,8 @@ Add `-Offline` when Cargo dependencies are already cached. The gate covers stric
 
 ## Documentation
 
-- [Getting started](docs/GETTING_STARTED.md)
-- [Daily workflow and project operations](docs/WORKFLOW.md)
-- [Headless testing and platform exports](docs/AGENT_PLAYTESTS.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Verification record](docs/DELIVERY.md)
-- [Browser preview and acceptance tests](docs/WEB_PREVIEW.md)
-- [Design decisions](docs/DESIGN.md)
-- [Status and limitations](docs/STUDIO_STATUS.md)
-- [Engine modules](docs/MODULES.md)
+Start at the [documentation index](docs/README.md) for user, agent and contributor paths. For a first project, use [Getting started](docs/GETTING_STARTED.md); for automated authoring, use [Agent workflows](docs/AGENT_WORKFLOWS.md). [Status](docs/STUDIO_STATUS.md) separates implemented capabilities from pending platform work, and [verification](docs/INTEGRATION_VERIFICATION.md) separates current development checks from historical results.
 
 The engine workspace also includes ECS, state/events, 2D/3D helpers, space flight, visual-novel interpretation and procedural content libraries. The original PowerShell helpers remain available for existing automation.
 
-[MIT licensed](LICENSE). Portable game packages include the underlying runtime's license and third-party notices. Screenshots show the working application and included example; the banner is a repository-native SVG.
+[MIT licensed](LICENSE). Portable game packages include the runtime's license and third-party notices. [Screenshot and asset provenance](docs/media/README.md).

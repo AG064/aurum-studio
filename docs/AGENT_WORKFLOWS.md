@@ -1,5 +1,10 @@
 # Agent project contracts
 
+For a first connection, use the [compact MCP setup](WORKFLOW.md#mcp). Aurum
+supplies project tools, not a model provider or paid-agent account. The guides
+here describe current `main`; discover the installed executable's contracts
+rather than assuming it has every development feature.
+
 The compact MCP profile remains three tools. Query `describe` when a task needs more detail instead of loading every operation's instructions at startup:
 
 ```json
@@ -15,7 +20,42 @@ For protocol `2025-06-18`, successful object results include `structuredContent`
 
 Project execution errors retain the object shape with `ok:false` and an `error` string. The wire format follows the [MCP tool-result specification](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).
 
+Successful queries such as `status`, `read` and `describe` return their data
+directly and do not all include `ok:true`. Check the transport/CLI outcome and
+the operation's schema. A gameplay verdict has its own required boolean `ok`;
+do not infer a passed game test merely from a successful discovery response.
+
 An isolated comparison against the published 0.3.0 executable measured the compact Studio tool catalog at 5,231 UTF-8 JSON bytes before and 4,858 after, retaining three tools while adding the missing operations and fields. This is a 7.1% catalog-byte reduction, not a model-token benchmark. Test receipts retain binary hashes; repeat the comparison if the catalog changes.
+
+## A bounded authoring loop
+
+1. Query project status and describe only the operation needed next. Filter
+   class/property discovery instead of loading the full runtime catalog.
+2. Read the relevant source or scene and retain its returned hash. Inspect
+   existing nodes and resources before creating replacements.
+3. Save with that hash or use a transactional scene batch. If the hash is
+   stale, reread and reconcile; do not silently overwrite another writer.
+4. Validate, then run a bounded test scene with a fresh JSON verdict. Use
+   rendered inputs/captures when the outcome depends on actual presentation.
+5. Inspect the receipt and diagnostics. Missing verdicts, runtime errors and
+   exhausted budgets are failures, not permission to assume success.
+6. Export to a fresh destination and execute the resulting package or served
+   browser bundle. A successful build alone does not establish playability.
+
+Run mutation tests in a disposable project copy. Keep full logs in the run's
+evidence directory and return the relevant failure or receipt summary to the
+agent. This limits repeated context without hiding failures. API output and
+test budgets are bounded; large request bodies are better supplied as files.
+
+The same read-only discovery is available without MCP or a visible editor:
+
+```powershell
+aurum project C:/Projects/MyGame --request-json '{"op":"status"}'
+aurum project C:/Projects/MyGame --request-json '{"op":"describe","operation":"play"}'
+```
+
+See [playtest requests and verdicts](AGENT_PLAYTESTS.md) and
+[scene transactions](WORKFLOW.md#scene-transactions) for concrete contracts.
 
 ## A verified 3D workflow
 

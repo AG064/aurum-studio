@@ -1,4 +1,4 @@
-# Integration verification, 2026-10-01
+# Integration verification
 
 ## Development verification, 2026-10-07
 
@@ -9,6 +9,45 @@ The original browser selectors were updated for the new ARIA tabs and Source lab
 Strict Rust workspace tests passed 758 assertions across 28 result blocks. Formatting and all-feature/all-target Clippy passed. A build-supervisor test was corrected to wait for an in-flight result before interpreting quiet output as idle; its started/finished equality check remains unchanged.
 
 Relay Yard revision 2 independently passed 129 native assertions, native campaign/idle/input checks, three real browser workflow cases, standalone browser controls and an extracted Windows package campaign. These are local development results, not a published version bump or evidence that a new hosted CI run has passed.
+
+## Repository and CI-harness follow-up, 2026-10-07
+
+The repository pass corrected workbench onboarding, added task-oriented
+documentation and troubleshooting, clarified release versus source installation,
+and replaced the README workbench image with a real Relay Yard browser capture.
+No Rust, app-interface or game-runtime source changed in this pass.
+
+Eleven isolated documentation-checker tests and ten loopback HTTP/control tests
+passed. The local Markdown check covers files, images and headings; it does not
+fetch external URLs. The documented 3D creation, status and operation-discovery
+commands were executed in a disposable project, and the CI/issue-form YAML was
+parsed with duplicate-key checks.
+
+Three Relay Yard browser scenarios passed in one uninterrupted, zero-retry run:
+real keyboard/mouse controls, live tuning, paused combat reconstruction after
+source rebuilding and resize/resume. Actual viewport captures avoid a separate
+iframe-stability wait that stalled an earlier run. A newly added test helper's
+initial assumption that every query included `ok:true` was corrected against
+the real raw file/discovery contracts and covered by regression tests. Initial
+failures and traces were retained.
+
+All ten integration scenarios also passed in one uninterrupted local run with
+the bounded request helper: ordinary exports/notices, typed live edits, same-size
+source changes, automatic rebuilding, three external rebuilds with concurrent
+scene inspection, invalid-build retention, incompatible-checkpoint rollback and
+stopping during export. The two affected browser suites therefore passed 13
+scenarios locally. This is local software-rendered Chromium evidence, not a
+replacement for the next hosted CI verdict.
+
+The [first hosted run after the Studio redesign](https://github.com/AG064/aurum-studio/actions/runs/37549544738)
+passed ten jobs but failed Relay Yard's short freshness wait and the second
+repeated external-build integration scenario. The former recorded a 38-second
+HTTP response; its bounded wait is now 60 seconds. The latter timed out while
+awaiting headless scene inspection after native export stages had completed.
+New request deadlines and credential-free pending/completed diagnostics expose
+that phase; they are not proof that the observed hosted concurrency stall is
+fixed. Unrun serial successors are not counted as passes. Inspect the CI run
+on the relevant commit for the current hosted verdict.
 
 ## Historical October 1 verification
 

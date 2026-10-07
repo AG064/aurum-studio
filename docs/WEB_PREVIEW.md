@@ -7,10 +7,15 @@ Studio exports a private snapshot of a Godot project and serves it on a separate
 Use the full Godot 4.7 executable and its matching single-thread release web template. `scripts/provision-godot.ps1` verifies the official archive checksums and extracts only the required entries. The export-template download is about 1.28 GB; only the two small web ZIPs are extracted.
 
 ```powershell
-pwsh ./scripts/provision-godot.ps1 -Destination A:/AurumStudio/runtime -Mode WebTemplates
+pwsh ./scripts/provision-godot.ps1 `
+  -Destination "$env:LOCALAPPDATA/AurumStudio/runtime" -Mode WebTemplates
 ```
 
 For a development install, set `AURUM_GODOT` to the executable and `AURUM_WEB_TEMPLATE` to `web_nothreads_release.zip`. Otherwise Studio checks `templates/4.7.stable` beside its runtime and the normal Godot template directory. Errors name the missing prerequisite; they do not claim the game started.
+
+Use the same application directory you supplied to `install.ps1`. The command
+above matches the README's source-install example; it is not a fixed required
+drive or location. The portable release already includes these templates.
 
 ## Daily use
 
@@ -48,7 +53,15 @@ The response supplies the isolated preview URL and session. `force:true` rebuild
 
 GitHub CI includes Rust tests on three operating systems, 100 Linux lifecycle iterations without retries, actual Windows Godot/editor/package acceptance, and a Chromium browser job. The lifecycle stress caught a real Linux spawn race: `/proc` could briefly report the parent executable before the child completed `exec`. Ownership recording now waits for the launched image. A macOS run also exposed a scheduler-dependent artifact-stability test; that polling contract now has controlled-clock size-change, timestamp-change and settle-window tests, alongside real filesystem checks.
 
-The ten workbench browser scenarios launch Studio against disposable projects and isolated user data. They check actual Wasm delivery, keyboard movement/dash/pause, an unchanged run across live tuning, exactly three workshop choices and weapon selection, file save/undo, invalid-build recovery, cross-origin refusal, forged-message rejection, portrait layouts, standalone export and play, runtime notices, and an ordinary 2D starter without the example's bridge. Ten integration scenarios additionally cover project presets/notices, typed live edits, same-size source changes, automatic rebuilding, three individually bounded external API rebuilds, failed-build preservation, rejected-checkpoint rollback/resume and stopping during export. A separate Rust scenario requires an actual registered extension in the browser. Missing runtime/templates/SDKs fail setup instead of skipping. There are no test retries. Explicit screenshots, source-backed action traces, bounded HTTP diagnostics and native logs are retained as CI artifacts. Set `AURUM_CAPTURE_VIDEO=1` for an additional silent gameplay recording during the standalone-export test.
+The twelve workbench browser scenarios launch Studio against disposable projects and isolated user data. They check actual Wasm delivery, keyboard movement/dash/pause, an unchanged run across live tuning, exactly three workshop choices and weapon selection, file save/undo, invalid-build recovery, cross-origin refusal, forged-message rejection, portrait layouts, standalone export and play, runtime notices, ordinary 2D starters, real operation contracts and headless execution receipts. Ten integration scenarios additionally cover project presets/notices, typed live edits, same-size source changes, automatic rebuilding, three individually bounded external API rebuilds, failed-build preservation, rejected-checkpoint rollback/resume and stopping during export. Three Relay Yard scenarios cover actual 3D inputs, live tuning, paused combat reconstruction and resize handling. A separate Rust scenario requires an actual registered extension in the browser. Missing runtime/templates/SDKs fail setup instead of skipping. There are no test retries. Explicit screenshots, source-backed action traces, bounded HTTP diagnostics and native logs are retained as CI artifacts. Set `AURUM_CAPTURE_VIDEO=1` for an additional silent gameplay recording during the standalone-export test.
+
+Integration and Relay Yard also retain `control-diagnostics.json` for headless
+requests made outside the page. It records the operation, budget, elapsed time,
+response phase and result classification without credentials or source. A
+five-minute request deadline covers headers and JSON body reads; graceful
+shutdown has a separate five-second budget. Relay Yard freshness waits up to
+60 seconds because a hosted software-rendering run recorded a 38-second
+response. Gameplay assertions and the zero-retry policy remain unchanged.
 
 Run locally from a disposable repository copy:
 

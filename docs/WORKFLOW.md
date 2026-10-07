@@ -2,16 +2,18 @@
 
 ## Everyday work
 
+These control names describe the workbench in current `main`, not the older v0.3.0 interface. [Installation and release choices](GETTING_STARTED.md).
+
 1. Launch Aurum Studio. Its first launch creates a small welcome project if no project is selected.
 2. Create a 2D or 3D project, or import an existing project. Import adds `aurum.toml` only when it is missing.
 3. Open a scene in the Scene panel. Add nodes, change properties, attach scripts, and inspect the saved hierarchy.
-4. Use Files for code and resource text. Saves check the hash from the preceding read so concurrent edits are not silently overwritten.
-5. Select Develop to watch the project. Validate checks imports and script/resource loading. Game starts a managed preview.
-6. Use Export to produce a Windows package containing its own runtime.
+4. Use Source for code and resource text. Saves check the hash from the preceding read so concurrent edits are not silently overwritten.
+5. Select Run for the browser preview. Checks provides validation and bounded tests; Output retains diagnostics. Commands > Develop starts the native watcher, and Commands > Run native opens a game window.
+6. Use Export for a portable Windows package or standalone browser bundle. Other platform presets still need their matching templates and SDKs.
 
 Studio does not need an open Godot editor for these operations. The optional editor is available for native editor workflows.
 
-Unsaved file drafts are stored separately under `.aurum/drafts/` and restored when the file is reopened. View saved version lets you compare against disk without deleting the draft. Requests retain their project identity during a project switch. Studio refuses to close while an operation is active.
+Unsaved file drafts are stored separately under `.aurum/drafts/` and restored when the file is reopened. Saved version lets you compare against disk without deleting the draft. Requests retain their project identity during a project switch. Studio refuses to close while an operation is active.
 
 ## Headless CLI
 

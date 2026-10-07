@@ -6,22 +6,18 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { monitorHttp } from "./http-diagnostics.js";
 import { openWorkspace } from "./workspace-ready.js";
+import { createControlClient } from "./control-client.js";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 let work, project, child, context, page, endpoint, origin, token, diagnostics;
 let output = "";
 const errors = [];
+let controlClient;
 test.describe.configure({ mode: "serial", timeout: 360000 });
-const control = async (path, body) => {
-    const response = await fetch(origin + path, {
-        method: body ? "POST" : "GET",
-        headers: { "Content-Type": "application/json", "X-Aurum-Token": token },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-    });
-    const result = await response.json();
-    if (!response.ok || result.ok === false) throw new Error(result.error || JSON.stringify(result));
-    return result;
-};
+const control = (path, body, options) => controlClient.request(path, body, options);
+// Viewport capture avoids an element screenshot's scroll/stability wait while
+// SwiftShader is rendering. It still captures the real game and workbench.
+const capture = path => page.screenshot({ path, timeout: 30000 });
 // Observe the game's normal checkpoint interface. This never injects gameplay state.
 const state = async () => {
     const url = await page.locator("#preview-frame").getAttribute("src");
@@ -55,6 +51,7 @@ test.beforeAll(async ({ browser }) => {
     endpoint = output.match(/http:\/\/127\.0\.0\.1:\d+\/\?t=[a-zA-Z0-9_-]+/)[0];
     origin = new URL(endpoint).origin;
     token = new URL(endpoint).searchParams.get("t");
+    controlClient = createControlClient(origin, token);
     context = await browser.newContext({ viewport: { width: 1488, height: 1056 } });
     page = await context.newPage();
     diagnostics = monitorHttp(page);
@@ -65,12 +62,13 @@ test.beforeAll(async ({ browser }) => {
 });
 test.afterAll(async ({}, info) => {
     if (context) await context.close();
-    if (origin && child?.exitCode === null) await control("/api/stop", {}).catch(() => {});
+    if (origin && child?.exitCode === null) await control("/api/stop", {}, { budgetMs: 5000 }).catch(() => {});
     if (child?.exitCode === null) await Promise.race([new Promise(resolve => child.once("exit", resolve)), new Promise(resolve => setTimeout(resolve, 5000))]);
     if (child?.exitCode === null) child.kill();
     await writeFile(info.outputPath("studio.log"), token ? output.replaceAll(token, "[redacted]") : output);
     await writeFile(info.outputPath("evidence.json"), JSON.stringify({ work, project, errors }, null, 2));
     if (diagnostics) await writeFile(info.outputPath("http-diagnostics.json"), JSON.stringify(diagnostics(), null, 2));
+    if (controlClient) await writeFile(info.outputPath("control-diagnostics.json"), JSON.stringify(controlClient.diagnostics(), null, 2));
 });
 test("3D imported assets render and keyboard play reaches the real game", async ({}, info) => {
     await openWorkspace(page, endpoint);
@@ -99,10 +97,10 @@ test("3D imported assets render and keyboard play reaches the real game", async 
     await page.mouse.down();
     try { await expect.poll(async () => (await state()).player.shots_fired).toBeGreaterThan(2); }
     finally { await page.mouse.up(); }
-    await page.locator("#preview-frame").screenshot({ path: info.outputPath("relay-yard-active.png") });
+    await capture(info.outputPath("relay-yard-active.png"));
     await page.keyboard.press("Escape");
     await expect.poll(async () => (await state()).paused).toBe(true);
-    await page.locator("#preview-frame").screenshot({ path: info.outputPath("relay-yard-playing.png") });
+    await capture(info.outputPath("relay-yard-playing.png"));
     expect(errors).toEqual([]);
 });
 test("live tuning and source rebuilding preserve the combat mission", async ({}, info) => {
@@ -120,7 +118,10 @@ test("live tuning and source rebuilding preserve the combat mission", async ({},
     await writeFile(info.outputPath("checkpoint-before.json"), JSON.stringify(before, null, 2));
     const source = await control("/api/project", { project, op: "read", path: "godot/yard.gd" });
     await control("/api/project", { project, op: "write", path: "godot/yard.gd", text: source.text + "\n# 3D state-preserving source revision.\n", expected_sha256: source.sha256 });
-    await expect(page.locator("#preview-revision")).toHaveText("Source changed");
+    // Hosted SwiftShader runs recorded a 38-second freshness response under
+    // rendering load. Keep this eventual-status check bounded without changing
+    // the required stale verdict or retrying a failed gameplay scenario.
+    await expect(page.locator("#preview-revision")).toHaveText("Source changed", { timeout: 60000 });
     await page.locator("#run-web").click();
     await expect.poll(async () => {
         const text = await page.locator("#reload-status").textContent();
@@ -139,7 +140,7 @@ test("live tuning and source rebuilding preserve the combat mission", async ({},
     expect(after.position[0]).toBeCloseTo(before.position[0], 2);
     expect(after.position[2]).toBeCloseTo(before.position[2], 2);
     expect(after.elapsed).toBeGreaterThanOrEqual(before.elapsed);
-    await page.locator("#preview-frame").screenshot({ path: info.outputPath("relay-yard-restored.png") });
+    await capture(info.outputPath("relay-yard-restored.png"));
     expect(errors).toEqual([]);
 });
 
@@ -149,7 +150,7 @@ test("pause resumes cleanly and presentation survives resizing", async ({}, info
     await page.keyboard.press("Escape");
     await expect.poll(async () => (await state()).paused).toBe(false);
     await page.setViewportSize({ width: 1100, height: 800 });
-    await page.locator("#preview-frame").screenshot({ path: info.outputPath("relay-yard-compact.png") });
+    await capture(info.outputPath("relay-yard-compact.png"));
     const current = await state();
     expect(current.phase).toBe("play");
     expect(current.view.width).toBeGreaterThan(300);
