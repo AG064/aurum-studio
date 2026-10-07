@@ -927,10 +927,25 @@ fn plain_text_inspection_tree(source: &Path) -> Result<bool, String> {
 }
 
 fn private_inspection_source(project: &Project) -> Result<PathBuf, String> {
+    let diagnostic = std::env::var("AURUM_NATIVE_DIAGNOSTICS").as_deref() == Ok("1");
+    let started = std::time::Instant::now();
     let godot = godot_root(project)?;
     let engine = engine_binary(project)?;
     let source_revision = crate::snapshot::fingerprint_all(godot)?;
+    if diagnostic {
+        eprintln!(
+            "AURUM_INSPECTION_STAGE stage=source_fingerprint elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+    }
+    let identity_started = std::time::Instant::now();
     let runtime_revision = crate::sha256_file(&engine).map_err(|e| e.to_string())?;
+    if diagnostic {
+        eprintln!(
+            "AURUM_INSPECTION_STAGE stage=runtime_identity elapsed_ms={}",
+            identity_started.elapsed().as_millis()
+        );
+    }
     let revision = crate::sha256_hex(
         format!(
             "inspection-v2\n{}\n{source_revision}\n{runtime_revision}",
@@ -959,6 +974,12 @@ fn private_inspection_source(project: &Project) -> Result<PathBuf, String> {
     {
         let cached = files::confined(&cache_root, &format!("{relative}/{stage}/source"))?;
         if cached.join("project.godot").is_file() && cached.join(".godot").is_dir() {
+            if diagnostic {
+                eprintln!(
+                    "AURUM_INSPECTION_STAGE stage=cache_reused elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
+            }
             return Ok(cached);
         }
     }
@@ -980,6 +1001,12 @@ fn private_inspection_source(project: &Project) -> Result<PathBuf, String> {
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
+        if diagnostic {
+            eprintln!(
+                "AURUM_INSPECTION_STAGE stage=text_snapshot_ready elapsed_ms={}",
+                started.elapsed().as_millis()
+            );
+        }
         return Ok(source);
     }
     let state = stage.join("native-state");

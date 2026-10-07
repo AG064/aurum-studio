@@ -25,6 +25,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 - Short-lived headless management workers share the fair native startup queue with editor/import/export stages; status and file APIs remain independent and existing operation budgets still apply.
 - Plain-text scene inspection loads through the real headless runtime without unnecessary editor imports; media, native extensions, add-ons, global script classes and UID references retain the full import path.
+- Development builds optimize the Studio core's full-byte file hashing while retaining debug symbols and assertions; inspection diagnostics separately time source fingerprints, runtime identity and snapshot preparation.
 - Diagnostic flags are inserted before the engine's user-argument separator so worker request/response arguments stay intact.
 - Browser CI uses a dedicated short temporary directory and retains private inspection import logs.
 
