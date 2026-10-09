@@ -11,7 +11,7 @@ pub const MAX_EVENTS: usize = 1024;
 fn parameters() -> Value {
     json!({
         "op":{"type":"string"},
-        "operation":{"type":"string","enum":OPERATIONS,"description":"Operation to describe; omit for a compact catalog"},
+        "operation":{"type":"string","enum":OPERATIONS,"description":"Operation to describe, or diagnostic operation filter; omit for a compact catalog"},
         "path":{"type":"string","description":"Project-relative file path"},
         "scene":{"type":"string","description":"Scene path relative to the Godot project"},
         "text":{"type":"string","description":"UTF-8 text, at most 2 MiB"},
@@ -19,6 +19,14 @@ fn parameters() -> Value {
         "draft_id":{"type":"string"},"base_sha256":{"type":"string"},
         "root_type":{"type":"string"},"name":{"type":"string"},
         "class":{"type":"string"},"query":{"type":"string"},
+        "limit":{"type":"integer","minimum":1,"maximum":200,"default":50,"description":"Maximum local diagnostic records; reads scan at most 256 KiB"},
+        "failures_only":{"type":"boolean","default":false},
+        "changes":{"type":"array","minItems":1,"maxItems":64,"description":"Text change set for preflight or disposable candidate validation, never publication. At most 8 MiB aggregate text; transport body limits also apply.","items":{"type":"object","additionalProperties":false,"properties":{
+            "path":{"type":"string","minLength":1,"maxLength":4096},
+            "action":{"type":"string","enum":["create","replace","delete"]},
+            "expected_sha256":{"type":"string","description":"Empty for create/absent; preceding SHA-256 required for replace/delete"},
+            "text":{"type":"string","maxLength":2097152,"description":"UTF-8 bytes also limited to 2 MiB; required for create/replace, forbidden for delete"}
+        },"required":["path","action","expected_sha256"]}},
         "operations":{"type":"array","maxItems":200,"items":{"type":"object","properties":{
             "op":{"type":"string","enum":["create","instance","set","remove","reparent","attach_script"]},
             "node":{"type":"string"},"parent":{"type":"string"},"name":{"type":"string"},"type":{"type":"string"},
@@ -43,6 +51,8 @@ fn parameters() -> Value {
 fn fields(op: &str) -> &'static [&'static str] {
     match op {
         "describe" => &["operation"],
+        "logs" => &["limit", "operation", "failures_only"],
+        "changes_check" | "changes_validate" => &["changes"],
         "read" | "draft_read" => &["path"],
         "write" => &["path", "text", "expected_sha256"],
         "draft_save" => &["path", "text", "base_sha256", "draft_id"],
@@ -76,6 +86,7 @@ fn fields(op: &str) -> &'static [&'static str] {
 
 fn required(op: &str) -> &'static [&'static str] {
     match op {
+        "changes_check" | "changes_validate" => &["changes"],
         "read" | "draft_read" | "undo" => &["path"],
         "draft_clear" => &["path", "draft_id"],
         "write" => &["path", "text"],
@@ -123,6 +134,11 @@ pub fn describe(operation: Option<&str>) -> Result<Value, String> {
     let mut required_fields = vec!["op"];
     required_fields.extend_from_slice(required(op));
     let mut result = json!({"contract_version":1,"op":op,"read_only":is_read_only(op),"input_schema":{"type":"object","properties":properties,"required":required_fields}});
+    if op == "changes_validate" {
+        result["constraints"] = json!({"qualified_platforms":["Windows"],"script_projects_only":true,"source_bytes_max":crate::candidates::MAX_SOURCE_BYTES,
+            "applied":false,"gameplay_tested":false,"execution_sandboxed":false,"candidate_retained":false,
+            "receipt":"changes_last returns the last completed receipt, not live freshness"});
+    }
     if matches!(op, "play" | "capture") {
         result["event_types"] = json!({
             "action":{"required":["frame","action"],"optional":["type","pressed"],"example":{"frame":1,"type":"action","action":"move_forward","pressed":true}},

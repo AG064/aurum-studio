@@ -20,7 +20,7 @@ pub struct ServerConfig {
     /// This mirrors the toolkit's `GODOT_MCP_READ_ONLY` posture: one
     /// annotation-driven switch, not a second code path.
     pub read_only: bool,
-    /// Echo protocol traffic to stderr for debugging.
+    /// Write payload-free protocol summaries to stderr for debugging.
     pub trace: bool,
     /// Directory the live-editor bridge polls, from `--editor-bridge`.
     pub editor_bridge: Option<std::path::PathBuf>,
@@ -74,7 +74,7 @@ pub fn serve<R: BufRead, W: Write>(
             continue;
         }
         if config.trace {
-            eprintln!("[aurum-mcp] <- {}", truncate_for_log(&line));
+            eprintln!("[aurum-mcp] <- {}", trace_summary(&line));
         }
 
         let response = match parse_incoming(&line) {
@@ -93,7 +93,7 @@ pub fn serve<R: BufRead, W: Write>(
                 )
             });
             if config.trace {
-                eprintln!("[aurum-mcp] -> {}", truncate_for_log(&text));
+                eprintln!("[aurum-mcp] -> {}", trace_summary(&text));
             }
             writeln!(writer, "{text}")?;
             writer.flush()?;
@@ -102,16 +102,51 @@ pub fn serve<R: BufRead, W: Write>(
     Ok(())
 }
 
-fn truncate_for_log(text: &str) -> String {
-    const MAX: usize = 400;
-    if text.len() <= MAX {
-        return text.to_string();
+fn trace_summary(text: &str) -> String {
+    let parsed = serde_json::from_str::<Value>(text).ok();
+    let method = parsed.as_ref().and_then(|value| value["method"].as_str());
+    let kind = match method {
+        Some(
+            "initialize"
+            | "ping"
+            | "tools/list"
+            | "tools/call"
+            | "notifications/initialized"
+            | "notifications/cancelled",
+        ) => method.unwrap(),
+        Some(_) => "unknown_method",
+        None if parsed
+            .as_ref()
+            .is_some_and(|value| value.get("error").is_some()) =>
+        {
+            "error_response"
+        }
+        None if parsed.is_some() => "response",
+        None => "invalid_json",
+    };
+    format!("kind={kind} bytes={} payload=omitted", text.len())
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn protocol_trace_does_not_echo_payloads_ids_or_unknown_methods() {
+        for value in [
+            json!({"method":"tools/call","id":"secret-id","params":{"token":"secret-token","text":"private-source"}}),
+            json!({"result":{"error":"secret-error","text":"private-source"}}),
+            json!({"method":"secret-method"}),
+        ] {
+            let trace = trace_summary(&value.to_string());
+            assert!(!trace.contains("secret") && !trace.contains("private"));
+            assert!(trace.contains("payload=omitted"));
+        }
+        assert_eq!(
+            trace_summary("private-invalid-json"),
+            "kind=invalid_json bytes=20 payload=omitted"
+        );
     }
-    let mut cut = MAX;
-    while cut > 0 && !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    format!("{}… ({} bytes)", &text[..cut], text.len())
 }
 
 /// Dispatch one parsed message. Returns `None` for notifications, which must
@@ -134,7 +169,7 @@ fn handle(
             "notifications/initialized" | "notifications/cancelled" => {}
             _ => {
                 if config.trace {
-                    eprintln!("[aurum-mcp] ignoring notification: {method}");
+                    eprintln!("[aurum-mcp] ignoring unknown notification");
                 }
             }
         }

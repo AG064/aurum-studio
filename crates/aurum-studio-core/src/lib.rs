@@ -41,6 +41,10 @@
 
 pub mod build;
 pub mod build_queue;
+pub mod candidates;
+pub mod content_lock;
+pub mod diagnostic_relay;
+pub mod diagnostics;
 pub mod doctor;
 pub mod downloads;
 pub mod files;
@@ -59,6 +63,7 @@ pub mod project_ops;
 pub mod random;
 pub mod registry;
 pub mod reload;
+pub mod revisions;
 pub mod session;
 pub mod snapshot;
 pub mod supervise;

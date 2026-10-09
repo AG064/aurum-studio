@@ -12,6 +12,37 @@ fn ignored(name: &str) -> bool {
         )
 }
 
+/// Whether the path participates in the public source snapshot, not private state.
+pub fn includes(relative: &str) -> bool {
+    relative
+        .replace('\\', "/")
+        .split('/')
+        .all(|part| !ignored(part))
+}
+
+/// Bounded source inventory without reading file content.
+pub fn inventory(source: &Path) -> Result<Vec<(String, u64)>, String> {
+    let mut entries = Vec::new();
+    visit(
+        source,
+        source,
+        0,
+        false,
+        &mut 0,
+        &mut 0,
+        &mut |path, relative| {
+            entries.push((
+                relative.to_string(),
+                std::fs::metadata(path)
+                    .map_err(|error| error.to_string())?
+                    .len(),
+            ));
+            Ok(())
+        },
+    )?;
+    Ok(entries)
+}
+
 fn visit(
     root: &Path,
     directory: &Path,

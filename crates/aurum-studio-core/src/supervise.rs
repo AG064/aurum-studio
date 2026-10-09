@@ -132,26 +132,16 @@ impl Launched {
 
 /// Launch a process and record ownership of it.
 pub fn launch(request: &LaunchRequest, session: &Session) -> Result<Launched, LaunchError> {
-    let log_path = session.log_path();
-
-    // Child output goes to the session log rather than a pipe: a long-running
-    // editor would otherwise fill a pipe buffer and block, and the log is
-    // where a user looks anyway.
-    let stdout = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| LaunchError::Io(format!("could not open '{}': {e}", log_path.display())))?;
-    let stderr = stdout
-        .try_clone()
-        .map_err(|e| LaunchError::Io(format!("could not duplicate the log handle: {e}")))?;
+    let (stdout, stderr) = crate::diagnostic_relay::output(session).map_err(|error| {
+        LaunchError::Io(format!("could not start bounded diagnostic relay: {error}"))
+    })?;
 
     let mut command = std::process::Command::new(&request.executable);
     command
         .args(&request.arguments)
         .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
+        .stdout(stdout)
+        .stderr(stderr);
     if let Some(directory) = &request.working_directory {
         command.current_dir(directory);
     }
@@ -192,14 +182,12 @@ pub fn launch(request: &LaunchRequest, session: &Session) -> Result<Launched, La
         project: request.project.clone(),
         kind: request.kind,
     };
-    session
-        .log(&format!(
-            "launched {} pid {} ({})",
-            request.kind.label(),
-            pid,
-            request.describe()
-        ))
-        .map_err(|e| LaunchError::Io(e.to_string()))?;
+    crate::diagnostics::report(session.log(&format!(
+        "launched {} pid {} ({})",
+        request.kind.label(),
+        pid,
+        request.describe()
+    )));
     record
         .write(&session.ownership_directory())
         .map_err(|e| LaunchError::Io(format!("could not record ownership: {e}")))?;

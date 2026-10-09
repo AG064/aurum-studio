@@ -31,6 +31,9 @@ Each example documents controls, reproducible verification and asset notices. Th
 
 - [Contributing](../CONTRIBUTING.md): checks, useful bug reports and review expectations.
 - [Architecture](ARCHITECTURE.md): crates, shared project operations and runtime ownership.
+- [Roadmap](ROADMAP.md): planned milestones, priorities and executable acceptance gates.
+- [Project revisions](PROJECT_REVISIONS.md): next atomic-change implementation slices and recovery contract.
+- [Logging](LOGGING.md): local diagnostic budgets, privacy and retention boundaries.
 - [Engine modules](MODULES.md): library contracts and module boundaries.
 - [Design decisions](DESIGN.md): rationale for the workbench and example presentation.
 - [Changelog](../CHANGELOG.md): unreleased changes versus versioned releases.

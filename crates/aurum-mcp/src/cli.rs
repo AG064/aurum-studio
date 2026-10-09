@@ -32,7 +32,7 @@ OPTIONS:
                     cannot use. aurum_mcp_status is never withheld, because
                     a client that cannot ask what is missing cannot tell a
                     refusal from a typo.
-    --trace         Echo protocol traffic to stderr.
+    --trace         Payload-free protocol summaries to stderr.
     --editor-bridge <DIR>
                     Directory the Aurum Editor plugin polls, enabling the
                     aurum_editor_* tools. The plugin prints the path it uses.

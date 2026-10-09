@@ -67,6 +67,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     match args.first().map(String::as_str) {
+        Some(aurum_studio_core::diagnostic_relay::COMMAND) => {
+            ExitCode::from(aurum_studio_core::diagnostic_relay::run(&args[1..]))
+        }
         Some("mcp") => ExitCode::from(aurum_mcp::cli::run(&args[1..]) as u8),
         Some("project") => project_command::run(&args[1..]),
         Some("doctor") => commands::doctor(&args[1..]),

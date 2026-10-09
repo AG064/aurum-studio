@@ -7,6 +7,10 @@ use std::time::Duration;
 pub const OPERATIONS: &[&str] = &[
     "describe",
     "status",
+    "logs",
+    "changes_check",
+    "changes_validate",
+    "changes_last",
     "files",
     "read",
     "write",
@@ -36,6 +40,9 @@ pub fn is_read_only(op: &str) -> bool {
         op,
         "describe"
             | "status"
+            | "logs"
+            | "changes_check"
+            | "changes_last"
             | "files"
             | "read"
             | "draft_read"
@@ -52,7 +59,7 @@ fn field<'a>(input: &'a Value, key: &str) -> Result<&'a str, String> {
         .and_then(Value::as_str)
         .ok_or_else(|| format!("'{key}' must be a string"))
 }
-fn managed_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
+pub(crate) fn managed_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let path = files::confined(root, relative)?;
     let canonical_root = root
         .canonicalize()
@@ -81,11 +88,30 @@ pub fn execute(root: &Path, input: &Value, read_only: bool) -> Result<Value, Str
     if read_only && !is_read_only(op) {
         return Err(format!("'{op}' requires write permission"));
     }
-    let project = Project::open(root).map_err(|e| e.to_string())?;
+    // Discovery and polling remain write-free. Open the project before creating
+    // diagnostics, so an invalid project request cannot create arbitrary state.
+    let project = Project::open(root).map_err(|error| error.to_string())?;
+    let span = input
+        .get("op")
+        .and_then(Value::as_str)
+        .and_then(|op| crate::diagnostics::Operation::start(&project.root, op));
+    let result = execute_inner(project, input);
+    if let Some(span) = span {
+        span.finish(&result);
+    }
+    result
+}
+
+fn execute_inner(project: Project, input: &Value) -> Result<Value, String> {
+    let op = field(input, "op")?;
     let _lock = if !matches!(
         op,
         "describe"
             | "status"
+            | "logs"
+            | "changes_check"
+            | "changes_validate"
+            | "changes_last"
             | "files"
             | "read"
             | "write"
@@ -103,6 +129,10 @@ pub fn execute(root: &Path, input: &Value, read_only: bool) -> Result<Value, Str
         None
     };
     match op {
+        "logs" => crate::diagnostics::query(&project.root, input),
+        "changes_check" => crate::revisions::check(&project.root, input),
+        "changes_validate" => crate::candidates::validate(&project, input),
+        "changes_last" => crate::candidates::last(&project),
         "describe" => crate::project_contract::describe(match input.get("operation") {
             Some(value) => Some(value.as_str().ok_or("'operation' must be a string")?),
             None => None,
@@ -579,6 +609,7 @@ fn commit_file(
     bytes: &[u8],
     expected: Option<&str>,
 ) -> Result<(), String> {
+    let _content_lock = crate::content_lock::ContentLock::exclusive(root)?;
     let _file_lock = crate::BuildLock::try_acquire(path).map_err(|e| e.to_string())?;
     if let Some(expected) = expected {
         let actual = if path.is_file() {
@@ -638,9 +669,38 @@ pub fn import_shutdown_crash(code: Option<i32>, log: &str) -> bool {
 }
 
 fn engine_run(project: &Project, args: &[String], timeout: Duration) -> Result<Value, String> {
-    let command = crate::Command::new(engine_binary(project)?)
+    engine_run_with_context(project, args, timeout, None)
+}
+
+pub(crate) struct RuntimeContext {
+    pub engine: PathBuf,
+    pub userdata: PathBuf,
+}
+
+fn engine_run_with_context(
+    project: &Project,
+    args: &[String],
+    timeout: Duration,
+    context: Option<&RuntimeContext>,
+) -> Result<Value, String> {
+    let engine = match context {
+        Some(context) => context.engine.clone(),
+        None => engine_binary(project)?,
+    };
+    let mut command = crate::Command::new(engine)
         .args(args.iter().cloned())
         .directory(&project.root);
+    if let Some(context) = context {
+        for key in [
+            "APPDATA",
+            "LOCALAPPDATA",
+            "XDG_DATA_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+        ] {
+            command = command.env(key, context.userdata.to_string_lossy());
+        }
+    }
     let result = crate::native_runtime::run(&command, timeout).map_err(|e| e.to_string())?;
     let errors: Vec<_> = result
         .stdout
@@ -655,6 +715,13 @@ fn engine_run(project: &Project, args: &[String], timeout: Duration) -> Result<V
 }
 
 fn validate(project: &Project) -> Result<Value, String> {
+    validate_with_context(project, None)
+}
+
+pub(crate) fn validate_with_context(
+    project: &Project,
+    context: Option<&RuntimeContext>,
+) -> Result<Value, String> {
     let _cache_lock = crate::BuildLock::try_acquire(&godot_root(project)?.join(".godot"))
         .map_err(|e| e.to_string())?;
     let args = vec![
@@ -664,16 +731,18 @@ fn validate(project: &Project) -> Result<Value, String> {
         godot_root(project)?.display().to_string(),
         "--import".into(),
     ];
-    let first = engine_run(project, &args, Duration::from_secs(120))?;
+    let first = engine_run_with_context(project, &args, Duration::from_secs(120), context)?;
     // Godot 4.7 on Windows can fail during first-import shutdown. Retry only
     // that exact exit and only when there were no reported script/resource errors.
     if first["exit_code"].as_i64() == Some(-1073741819)
         && first["errors"].as_array().is_some_and(Vec::is_empty)
     {
-        let mut result = engine_run(project, &args, Duration::from_secs(120))?;
+        let mut result =
+            engine_run_with_context(project, &args, Duration::from_secs(120), context)?;
         result["first_import_shutdown_retry"] = json!(true);
         if result["ok"] == true {
-            let checked = headless_operation(project, &json!({"op":"validate"}))?;
+            let checked =
+                headless_operation_with_context(project, &json!({"op":"validate"}), context)?;
             result["resource_validation"] = checked.clone();
             result["ok"] = checked["ok"].clone();
         }
@@ -681,7 +750,7 @@ fn validate(project: &Project) -> Result<Value, String> {
     }
     let mut result = first;
     if result["ok"] == true {
-        let checked = headless_operation(project, &json!({"op":"validate"}))?;
+        let checked = headless_operation_with_context(project, &json!({"op":"validate"}), context)?;
         result["resource_validation"] = checked.clone();
         result["ok"] = checked["ok"].clone();
     }
@@ -728,6 +797,14 @@ pub fn build_project(project: &Project, release: bool) -> Result<Value, String> 
 }
 
 fn headless_operation(project: &Project, input: &Value) -> Result<Value, String> {
+    headless_operation_with_context(project, input, None)
+}
+
+fn headless_operation_with_context(
+    project: &Project,
+    input: &Value,
+    context: Option<&RuntimeContext>,
+) -> Result<Value, String> {
     let needs_import = matches!(
         input["op"].as_str(),
         Some("scene_inspect" | "scene_create" | "scene_edit" | "set_main_scene")
@@ -805,7 +882,7 @@ fn headless_operation(project: &Project, input: &Value) -> Result<Value, String>
         &serde_json::to_vec(&request).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    let execution = engine_run(
+    let execution = engine_run_with_context(
         project,
         &[
             "--headless".into(),
@@ -822,6 +899,7 @@ fn headless_operation(project: &Project, input: &Value) -> Result<Value, String>
             response_path.display().to_string(),
         ],
         Duration::from_secs(60),
+        context,
     )?;
     let mut response: Value = std::fs::read(&response_path)
         .ok()
@@ -1242,6 +1320,29 @@ mod tests {
         assert_eq!(read_play_report(&path).unwrap()["ok"], true);
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn snapshot_content_lease_blocks_commits_without_modifying_originals() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-content-commit-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = crate::project::clean_path(root.canonicalize().unwrap());
+        let path = root.join("main.gd");
+        commit_file(&root, &path, b"before", Some("")).unwrap();
+        let lease = crate::content_lock::ContentLock::shared(&root).unwrap();
+        assert!(
+            commit_file(&root, &path, b"after", Some(&crate::sha256_hex(b"before")))
+                .unwrap_err()
+                .contains("content is busy")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"before");
+        drop(lease);
+        commit_file(&root, &path, b"after", Some(&crate::sha256_hex(b"before"))).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"after");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn stale_writes_are_refused_and_undo_preserves_the_previous_file() {
         let root = std::env::temp_dir().join(format!("aurum-ops-{}", std::process::id()));

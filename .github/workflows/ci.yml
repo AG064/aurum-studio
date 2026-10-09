@@ -81,6 +81,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Provision checksum-pinned runtime
         shell: pwsh
         run: |
@@ -94,6 +97,10 @@ jobs:
           $env:TEMP="$env:RUNNER_TEMP/aurum-runtime-tests"
           $env:TMP=$env:TEMP
           New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
+          node ./scripts/tests/diagnostics-acceptance.mjs ./target/debug/aurum.exe
+          if($LASTEXITCODE){throw 'Diagnostics/preflight acceptance failed'}
+          node ./scripts/tests/candidates-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
+          if($LASTEXITCODE){throw 'Disposable candidate acceptance failed'}
           ./scripts/tests/studio_project_acceptance.ps1 -AurumBinary ./target/debug/aurum.exe -GodotBinary $env:AURUM_GODOT -Package
           if($LASTEXITCODE){throw 'Project acceptance failed'}
           ./scripts/tests/studio_editor_acceptance.ps1 -EditorDll ./target/debug/aurum_editor.dll -GodotBinary $env:AURUM_GODOT

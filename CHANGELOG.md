@@ -6,6 +6,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Public roadmap with sequenced iteration, asset, device, performance and isolated-execution gates.
+- Bounded structured project-operation journals shared by CLI, HTTP and MCP, with operation IDs, timing, failure categories and read-only `logs` discovery/query.
+- Rotating session logs, age/size retention, UTF-8-safe line limits and a detached Rust native-output relay with explicit flood/storage suppression.
+- Disposable compiled-interface diagnostics acceptance and process-lifetime regression checks.
+- Read-only multi-file change preflight with explicit hash/existence conditions, compact conflict reports and no publication or staging side effects.
+- Windows-qualified disposable candidate validation through real Godot imports/resource checks, with shared content leases, isolated standard userdata, source/proposal integrity checks, bounded last-receipt queries and normal-completion cleanup. This does not publish changes or validate native dependencies.
+
+### Fixed
+
+- MCP tracing no longer echoes request/response payloads, IDs or unknown method names.
+- Native child output no longer bypasses session-log rotation through an inherited file handle.
+- Detached descendants no longer inherit the launching Windows CLI's original standard handles and keep its caller's pipes open.
+
+These development changes are not included in the published 0.4.0 package.
+
 ## [0.4.0] - 2026-10-07
 
 ### Added

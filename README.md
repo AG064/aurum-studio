@@ -17,6 +17,10 @@ The screenshot is the implemented workbench running against the Rust backend, ca
 
 Pushing source does not update an installed application or the release ZIP. [Current capabilities and limits](docs/STUDIO_STATUS.md).
 
+Next development milestone: reliable iteration and agent autonomy. See the
+[planned roadmap](docs/ROADMAP.md) for atomic project revisions, native state
+handoff, efficient agent sessions and the later asset/device/security gates.
+
 ## What you can do
 
 | Workflow | Available today |

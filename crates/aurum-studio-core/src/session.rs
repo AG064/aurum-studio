@@ -78,11 +78,12 @@ impl Session {
         };
         session.write_metadata()?;
         session.write_token()?;
-        session.log(&format!(
+        crate::diagnostics::report(crate::diagnostics::retain_sessions(&root));
+        crate::diagnostics::report(session.log(&format!(
             "session {} started for {}",
             session.id,
             session.project.display()
-        ))?;
+        )));
         Ok(session)
     }
 
@@ -100,11 +101,12 @@ impl Session {
         };
         session.write_metadata()?;
         session.write_token()?;
-        session.log(&format!(
+        crate::diagnostics::report(crate::diagnostics::retain_sessions(root));
+        crate::diagnostics::report(session.log(&format!(
             "session {} started for {}",
             session.id,
             session.project.display()
-        ))?;
+        )));
         Ok(session)
     }
 
@@ -195,15 +197,11 @@ impl Session {
 
 /// Append a line to a file, creating it if needed.
 pub fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    writeln!(file, "{line}")
+    crate::diagnostics::append(
+        path,
+        &crate::diagnostics::text_line(line, &[]),
+        crate::diagnostics::Policy::default(),
+    )
 }
 
 /// Remove every secret from a line.
@@ -211,6 +209,38 @@ pub fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
 /// Short secrets are skipped: replacing a one-character string would mangle
 /// the line into uselessness while protecting nothing.
 pub fn redact(line: &str, secrets: &[&str]) -> String {
+    // Compiler/tool output is free-form. Omit credential-bearing lines rather
+    // than pretending to parse every possible quoted or encoded value safely.
+    let lower = line.to_ascii_lowercase();
+    if [
+        "authorization:",
+        "authorization=",
+        "bearer ",
+        "cookie:",
+        "cookie=",
+        "password=",
+        "password:",
+        "\"password\"",
+        "api_key=",
+        "api_key:",
+        "\"api_key\"",
+        "api-key=",
+        "token=",
+        "token:",
+        "\"token\"",
+        "secret=",
+        "secret:",
+        "?t=",
+        "&t=",
+        "x-aurum-token",
+        "sk-ant-",
+        "sk-proj-",
+    ]
+    .iter()
+    .any(|pattern| lower.contains(pattern))
+    {
+        return format!("{REDACTED} credential-bearing line omitted");
+    }
     let mut out = line.to_string();
     for secret in secrets {
         if secret.len() < 8 {

@@ -6,6 +6,9 @@ The supported workflow is Windows Studio plus local MCP and CLI access, using th
 
 ## Delivered
 
+For planned work and unreleased development milestones, see the [roadmap](ROADMAP.md)
+and [bounded logging contract](LOGGING.md). The list below describes the 0.4.0 baseline.
+
 - Browser interface with project creation/import/selection, files, scenes, agents, validation, development watching, and Windows packaging.
 - Development workbench with Scene/Source/Agents/Export tabs, a live inspector, source/draft status, Output/Checks dock, on-demand operation contracts and session execution receipts.
 - Shared Rust project operations for CLI, HTTP, and MCP.
