@@ -1,7 +1,7 @@
 # Atomic project revisions: implementation plan
 
 Status: read-only preflight and disposable candidate validation are implemented
-in local development. Publication, recovery and undo remain planned. There is no released
+in current source. Journaled publication, recovery and undo are under verification. There is no released
 multi-file transaction API yet; single-file guarded writes and scene transactions
 remain the released mutation contract.
 
@@ -115,6 +115,47 @@ The fixture and Studio state are disposable. Core regressions exercise source
 leases, crash release, failed validators, stale external edits, altered proposals,
 secret exclusions, bounded receipts and safe nested-link cleanup.
 
+## Journaled publication and revision undo
+
+`changes_apply` validates the private candidate first, then acquires the original
+project's exclusive content lease and rechecks both source and candidate hashes.
+Unrequested source changes are refused; supported generated UID sidecars are
+included in the revision and its undo records. This slice remains text-only and
+Windows-qualified through the actual validation runtime.
+
+Before any source replacement, original and proposed bytes are synced to private
+backups and a versioned journal/active pointer is atomically published. Each
+replacement checks its previous hash and verifies the resulting hash. Participating
+Aurum reads and writes refuse unresolved revisions instead of consuming mixed
+content. Status, contract discovery and diagnostic receipt queries remain available.
+Multiple filesystem renames are not globally atomic to external editors/readers.
+
+`changes_recover` restores interrupted publication when current files still
+match their recorded original or proposed hashes. Newer external edits are
+preserved and reported as recovery conflicts; new content writes remain blocked
+until the conflict is resolved. Recovery is accessible even if project configuration
+cannot be opened. Corrupt backups never silently become restored source.
+
+`changes_undo` takes `revision_id` and publishes a guarded reverse revision.
+It refuses changed target files and preserves unrelated/newer work. Undo has its
+own recovery journal rather than changing old history in place. `changes_forget`
+explicitly removes a completed revision's private history without changing source;
+that revision can no longer be undone afterward.
+
+The current bounds are 256 journal rows, 32 MiB combined original/proposed backup
+bytes per revision, 32 history directories and 128 MiB project history. Reaching
+history limits refuses a new publication and asks for explicit cleanup; it does
+not silently delete undo data. Journal and backup storage is separate from rotating
+diagnostics. Filesystem/power-loss guarantees depend on the storage platform;
+the journal uses synced file writes and directory sync on Unix.
+
+The real Godot acceptance now also publishes a linked create/replace/delete set,
+undoes the whole revision and forgets completed history while verifying original
+files. The updated run passed 37 checks. Core failures include real process exit
+after the first file, Windows sharing denial, corrupted recovery bytes and newer
+external content. Additional crash/temp-storage/worker gates remain before treating
+the entire roadmap as complete.
+
 ## Sequence
 
 1. **Preflight and conflict report.** Resolve every path and check all
@@ -161,9 +202,9 @@ secret exclusions, bounded receipts and safe nested-link cleanup.
 - [x] Content-lock coordination and disposable candidate construction, with
   external-edit and source-identity regression tests.
 - [x] Bounded candidate validation and compact validation receipts for the current Windows script/resource slice.
-- [ ] Durable journal, publication and interruption recovery. Inject failures
+- [x] Durable journal, publication and interruption recovery for the text revision slice. Inject failures
   at every file boundary and verify originals/newer edits survive.
-- [ ] Whole-revision undo with stale-hash refusal.
+- [x] Whole-revision undo with stale-hash refusal.
 - [x] Shared discovery and actual CLI/HTTP/MCP acceptance for preflight and candidate validation.
 - [ ] Shared discovery and integration acceptance for publication/recovery/undo.
 

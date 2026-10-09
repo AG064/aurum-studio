@@ -11,6 +11,10 @@ pub const OPERATIONS: &[&str] = &[
     "changes_check",
     "changes_validate",
     "changes_last",
+    "changes_apply",
+    "changes_recover",
+    "changes_undo",
+    "changes_forget",
     "files",
     "read",
     "write",
@@ -88,6 +92,31 @@ pub fn execute(root: &Path, input: &Value, read_only: bool) -> Result<Value, Str
     if read_only && !is_read_only(op) {
         return Err(format!("'{op}' requires write permission"));
     }
+    if op == "changes_recover" {
+        let span = crate::diagnostics::Operation::start(root, op);
+        let result = crate::transactions::recover_root(root);
+        if let Some(span) = span {
+            span.finish(&result);
+        }
+        return result;
+    }
+    let _content_read = if matches!(
+        op,
+        "read"
+            | "files"
+            | "presets"
+            | "changes_check"
+            | "scene_inspect"
+            | "classes"
+            | "class_info"
+            | "runtime_info"
+    ) {
+        let lease = crate::content_lock::ContentLock::shared(root)?;
+        crate::transactions::ensure_writable(root)?;
+        Some(lease)
+    } else {
+        None
+    };
     // Discovery and polling remain write-free. Open the project before creating
     // diagnostics, so an invalid project request cannot create arbitrary state.
     let project = Project::open(root).map_err(|error| error.to_string())?;
@@ -112,6 +141,11 @@ fn execute_inner(project: Project, input: &Value) -> Result<Value, String> {
             | "changes_check"
             | "changes_validate"
             | "changes_last"
+            | "changes_apply"
+            | "changes_recover"
+            | "changes_undo"
+            | "changes_forget"
+            | "presets"
             | "files"
             | "read"
             | "write"
@@ -133,6 +167,10 @@ fn execute_inner(project: Project, input: &Value) -> Result<Value, String> {
         "changes_check" => crate::revisions::check(&project.root, input),
         "changes_validate" => crate::candidates::validate(&project, input),
         "changes_last" => crate::candidates::last(&project),
+        "changes_apply" => crate::candidates::apply(&project, input),
+        "changes_recover" => crate::transactions::recover(&project),
+        "changes_undo" => crate::transactions::undo(&project, field(input, "revision_id")?),
+        "changes_forget" => crate::transactions::forget(&project, field(input, "revision_id")?),
         "describe" => crate::project_contract::describe(match input.get("operation") {
             Some(value) => Some(value.as_str().ok_or("'operation' must be a string")?),
             None => None,
@@ -610,6 +648,7 @@ fn commit_file(
     expected: Option<&str>,
 ) -> Result<(), String> {
     let _content_lock = crate::content_lock::ContentLock::exclusive(root)?;
+    crate::transactions::ensure_writable(root)?;
     let _file_lock = crate::BuildLock::try_acquire(path).map_err(|e| e.to_string())?;
     if let Some(expected) = expected {
         let actual = if path.is_file() {

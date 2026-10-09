@@ -47,8 +47,9 @@ CLI and MCP can query a bounded diagnostic tail.
 
 Status: in progress. Read-only `changes_check` and disposable `changes_validate`
 are implemented locally. The current Windows script/resource slice includes
-content leases and real Godot validation; native dependency staging, publication,
-interruption recovery and revision undo are still planned.
+content leases, real Godot validation and journaled text publication/recovery/undo
+under verification. Native dependency staging, crash cleanup and aggregate
+temporary-storage/worker gates remain pending.
 
 The next implementation slices and lock/recovery boundaries are specified in
 [project revisions](PROJECT_REVISIONS.md).

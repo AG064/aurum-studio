@@ -68,6 +68,7 @@ pub fn drain(mut reader: impl Read, session: &Session) {
     let mut emitted = 0;
     let mut suppressed = 0u64;
     let mut failed_until = None;
+    let mut io_spent = Duration::ZERO;
     let mut emit = |line: &[u8], oversized: bool| {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         let now = Instant::now();
@@ -80,6 +81,7 @@ pub fn drain(mut reader: impl Read, session: &Session) {
             }
             window = now;
             emitted = 0;
+            io_spent = Duration::ZERO;
         }
         if emitted >= LINES_PER_SECOND || failed_until.is_some_and(|until| now < until) {
             suppressed = suppressed.saturating_add(1);
@@ -92,7 +94,12 @@ pub fn drain(mut reader: impl Read, session: &Session) {
         } else {
             text.into_owned()
         };
+        let writing = Instant::now();
         let result = session.log(&text);
+        io_spent += writing.elapsed();
+        if io_spent >= Duration::from_millis(20) {
+            failed_until = Some(Instant::now() + Duration::from_secs(1));
+        }
         if result.is_err() {
             failed_until = Some(now + Duration::from_secs(1));
             suppressed = suppressed.saturating_add(1);

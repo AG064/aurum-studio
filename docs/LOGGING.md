@@ -48,7 +48,8 @@ CLI standard handles are made non-inheritable so descendants cannot keep a
 calling client's output pipes open. Explicit child output pipes still work.
 
 The helper accepts at most 200 child lines per second, summarizes suppression,
-and backs off storage writes for one second after an error while continuing to
+and backs off storage writes for one second after an error or after spending
+20 ms on logging I/O in a window, while continuing to
 drain. Lines without newlines remain memory-bounded. Windows CRLF is normalized.
 Session output redacts the session token and omits common credential-bearing
 lines. Free-form tool output is not a guarantee of removing every private value;

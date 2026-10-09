@@ -141,16 +141,50 @@ pub fn validate(project: &Project, input: &Value) -> Result<Value, String> {
     })
 }
 
+pub fn apply(project: &Project, input: &Value) -> Result<Value, String> {
+    if !cfg!(windows) {
+        return Err("candidate publication is currently Windows-qualified".into());
+    }
+    run_with(
+        project,
+        input,
+        |candidate, userdata| {
+            let engine = crate::project_ops::engine_binary(project)?
+                .canonicalize()
+                .map(crate::project::clean_path)
+                .map_err(|error| error.to_string())?;
+            crate::project_ops::validate_with_context(
+                candidate,
+                Some(&crate::project_ops::RuntimeContext {
+                    engine,
+                    userdata: userdata.to_path_buf(),
+                }),
+            )
+        },
+        true,
+    )
+}
+
 fn validate_with(
     project: &Project,
     input: &Value,
     validator: impl FnOnce(&Project, &Path) -> Result<Value, String>,
+) -> Result<Value, String> {
+    run_with(project, input, validator, false)
+}
+
+fn run_with(
+    project: &Project,
+    input: &Value,
+    validator: impl FnOnce(&Project, &Path) -> Result<Value, String>,
+    publish: bool,
 ) -> Result<Value, String> {
     let started = Instant::now();
     let evidence = receipt_path(project)?;
     let mut workspace = None;
     let prepared = (|| -> Result<_, String> {
         let _content = crate::content_lock::ContentLock::shared(&project.root)?;
+        crate::transactions::ensure_writable(&project.root)?;
         // Reopen under the snapshot lease instead of using a stale configuration.
         let source = Project::open(&project.root).map_err(|error| error.to_string())?;
         let checked = crate::revisions::check(&source.root, input)?;
@@ -261,6 +295,23 @@ fn validate_with(
         "duration_ms":started.elapsed().as_millis() as u64,"candidate_retained":false,
         "userdata_redirected":true,"execution_sandboxed":false,
         "scope":"script/resource validation of a disposable copy; no publication, native build or gameplay proof"});
+    if publish && receipt["ok"] == true {
+        let publication = match crate::transactions::publish_candidate(
+            project,
+            &candidate,
+            &source_sha,
+            &candidate_sha,
+            &checked,
+        ) {
+            Ok(publication) => publication,
+            Err(error) => json!({"ok":false,"applied":false,"error":receipt_line(&error)}),
+        };
+        receipt["ok"] = publication["ok"].clone();
+        receipt["applied"] = publication.get("applied").cloned().unwrap_or(json!(false));
+        receipt["publication"] = publication;
+        receipt["scope"] =
+            json!("validated journaled text publication; no native build or gameplay proof");
+    }
     match private.clean() {
         Ok(()) => receipt["cleanup_ok"] = json!(true),
         Err(error) => {

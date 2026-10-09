@@ -14,6 +14,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Disposable compiled-interface diagnostics acceptance and process-lifetime regression checks.
 - Read-only multi-file change preflight with explicit hash/existence conditions, compact conflict reports and no publication or staging side effects.
 - Windows-qualified disposable candidate validation through real Godot imports/resource checks, with shared content leases, isolated standard userdata, source/proposal integrity checks, bounded last-receipt queries and normal-completion cleanup. This does not publish changes or validate native dependencies.
+- Validated journaled text revision publication, conflict-preserving interrupted-publication recovery, whole-revision undo and explicit bounded-history cleanup. Native dependency staging and cross-device acceptance remain separate gates.
 
 ### Fixed
 

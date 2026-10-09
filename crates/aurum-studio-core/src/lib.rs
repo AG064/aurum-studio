@@ -71,6 +71,7 @@ pub mod supervisor;
 pub mod templates;
 pub mod toml;
 pub mod toolchain;
+pub mod transactions;
 pub mod watch;
 pub mod web_build;
 

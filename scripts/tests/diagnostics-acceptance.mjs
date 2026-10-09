@@ -77,7 +77,7 @@ fn main() {
     let trigger = std::path::Path::new(&project).join("continue-native");
     let started = std::time::Instant::now();
     while !trigger.exists() && started.elapsed().as_secs() < 30 { std::thread::sleep(std::time::Duration::from_millis(20)); }
-    for index in 0..60 { println!("relay-after-cli-exit-{index}"); std::thread::sleep(std::time::Duration::from_millis(50)); }
+    println!("relay-after-cli-exit-59");
     std::thread::sleep(std::time::Duration::from_secs(2));
 }
 `);

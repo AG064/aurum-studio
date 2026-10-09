@@ -21,6 +21,7 @@ fn parameters() -> Value {
         "class":{"type":"string"},"query":{"type":"string"},
         "limit":{"type":"integer","minimum":1,"maximum":200,"default":50,"description":"Maximum local diagnostic records; reads scan at most 256 KiB"},
         "failures_only":{"type":"boolean","default":false},
+        "revision_id":{"type":"string","pattern":"^[a-fA-F0-9]{32}$","description":"Committed revision identity for guarded whole-revision undo"},
         "changes":{"type":"array","minItems":1,"maxItems":64,"description":"Text change set for preflight or disposable candidate validation, never publication. At most 8 MiB aggregate text; transport body limits also apply.","items":{"type":"object","additionalProperties":false,"properties":{
             "path":{"type":"string","minLength":1,"maxLength":4096},
             "action":{"type":"string","enum":["create","replace","delete"]},
@@ -52,7 +53,8 @@ fn fields(op: &str) -> &'static [&'static str] {
     match op {
         "describe" => &["operation"],
         "logs" => &["limit", "operation", "failures_only"],
-        "changes_check" | "changes_validate" => &["changes"],
+        "changes_check" | "changes_validate" | "changes_apply" => &["changes"],
+        "changes_undo" | "changes_forget" => &["revision_id"],
         "read" | "draft_read" => &["path"],
         "write" => &["path", "text", "expected_sha256"],
         "draft_save" => &["path", "text", "base_sha256", "draft_id"],
@@ -86,7 +88,8 @@ fn fields(op: &str) -> &'static [&'static str] {
 
 fn required(op: &str) -> &'static [&'static str] {
     match op {
-        "changes_check" | "changes_validate" => &["changes"],
+        "changes_check" | "changes_validate" | "changes_apply" => &["changes"],
+        "changes_undo" | "changes_forget" => &["revision_id"],
         "read" | "draft_read" | "undo" => &["path"],
         "draft_clear" => &["path", "draft_id"],
         "write" => &["path", "text"],

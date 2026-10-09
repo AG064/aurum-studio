@@ -93,7 +93,16 @@ try {
     const receipt = await response.json();
     check(response.status === 200 && receipt.ok && receipt.validated,"actual HTTP candidate validation");
     await unchanged();
-    await writeFile(join(root,"verification.json"),JSON.stringify({checks,root,runtime,success:success.value,failure:failed.value,http:receipt},null,2));
+    const applied = cli({op:"changes_apply",changes});
+    check(applied.code === 0 && applied.value.ok && applied.value.applied,"validated revision published through CLI");
+    check(await readFile(join(project,"main.gd"),"utf8") === changes[1].text && (await readdir(project)).includes("helper.gd") && !(await readdir(project)).includes("obsolete.gd"),"linked changes published together");
+    const revision = applied.value.publication.revision_id;
+    const undone = cli({op:"changes_undo",revision_id:revision});
+    check(undone.code === 0 && undone.value.ok,"whole revision undo");
+    await unchanged();
+    const forget = cli({op:"changes_forget",revision_id:revision});
+    check(forget.code === 0 && forget.value.undo_available === false && forget.value.content_changed === false,"completed history cleanup does not change source");
+    await writeFile(join(root,"verification.json"),JSON.stringify({checks,root,runtime,success:success.value,failure:failed.value,http:receipt,applied:applied.value,undone:undone.value},null,2));
 } finally {
     if(address){const url=new URL(address.url);try{await fetch(`${url.origin}/api/stop`,{method:"POST",headers:{"X-Aurum-Token":url.searchParams.get("t")},signal:AbortSignal.timeout(5_000)});}catch{}}
     try{await bounded(serverDone,10_000,"Studio shutdown");}catch{server.kill();await bounded(serverDone,5_000,"Studio termination");}
