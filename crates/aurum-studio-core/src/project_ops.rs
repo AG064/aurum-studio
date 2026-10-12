@@ -730,6 +730,12 @@ fn engine_run_with_context(
         .args(args.iter().cloned())
         .directory(&project.root);
     if let Some(context) = context {
+        command = command.candidate_storage(
+            context
+                .userdata
+                .parent()
+                .ok_or("candidate userdata has no private workspace")?,
+        );
         for key in [
             "APPDATA",
             "LOCALAPPDATA",

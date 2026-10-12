@@ -1,4 +1,5 @@
 //! Disposable candidate construction and Godot validation, never publication.
+use crate::candidate_workspace::Workspace;
 use crate::{files, snapshot, Project};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -6,44 +7,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub const MAX_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RECEIPT_BYTES: usize = 64 * 1024;
-
-struct Workspace(PathBuf);
-impl Workspace {
-    fn create() -> Result<Self, String> {
-        let path =
-            std::env::temp_dir().join(format!("aurum-candidate-{}", crate::random::session_id()));
-        crate::diagnostics::checked_path(&path).map_err(|error| error.to_string())?;
-        std::fs::create_dir(&path).map_err(|error| error.to_string())?;
-        Ok(Self(crate::project::clean_path(
-            path.canonicalize().map_err(|error| error.to_string())?,
-        )))
-    }
-    fn clean(&self) -> Result<(), String> {
-        crate::diagnostics::checked_path(&self.0).map_err(|error| error.to_string())?;
-        let resolved =
-            crate::project::clean_path(self.0.canonicalize().map_err(|error| error.to_string())?);
-        if resolved != self.0
-            || !self
-                .0
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("aurum-candidate-"))
-        {
-            return Err("candidate cleanup refused an unexpected path".into());
-        }
-        // std removes directory links themselves, not their targets. The root
-        // itself must still be the exact directory this operation created.
-        std::fs::remove_dir_all(&self.0).map_err(|error| error.to_string())
-    }
-}
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        if self.0.exists() && self.clean().is_err() {
-            eprintln!(
-                "aurum candidates: private workspace cleanup failed; no source content was removed"
-            );
-        }
-    }
-}
 
 fn script_project(project: &Project, inventory: &[(String, u64)]) -> Result<(), String> {
     if project.config.rust_package.is_some()
@@ -206,9 +169,16 @@ fn run_with(
             }
         }
         let source_sha = snapshot::fingerprint_all(&source.root)?;
-        workspace = Some(Workspace::create()?);
+        #[cfg(not(test))]
+        {
+            workspace = Some(Workspace::create()?);
+        }
+        #[cfg(test)]
+        {
+            workspace = Some(Workspace::for_test_project(&project.root)?);
+        }
         let private = workspace.as_ref().ok_or("missing workspace")?;
-        let directory = private.0.join("source");
+        let directory = private.path.join("source");
         snapshot::copy(&source.root, &directory)?;
         if snapshot::fingerprint_all(&directory)? != source_sha
             || snapshot::fingerprint_all(&source.root)? != source_sha
@@ -255,23 +225,36 @@ fn run_with(
             )
         }
     };
-    let private = workspace.as_ref().ok_or("missing candidate workspace")?;
-    let userdata = private.0.join("userdata");
+    let private = workspace.as_mut().ok_or("missing candidate workspace")?;
+    let userdata = private.path.join("userdata");
     std::fs::create_dir(&userdata).map_err(|error| error.to_string())?;
     // The original content lease ended before invoking any compiler/runtime.
     let result = validator(&candidate, &userdata);
+    let storage = crate::candidate_workspace::usage(
+        &private.path,
+        crate::candidate_workspace::WORKSPACE_BYTES,
+    );
+    let storage_ok = storage.is_ok();
+    let result = result.and_then(|result| storage.map(|_| result));
     let validation = match result {
         Ok(result) => text_summary(&result),
         Err(error) => json!({"ok":false,"error":receipt_line(&error)}),
     };
     let source_current =
         snapshot::fingerprint_all(&project.root).is_ok_and(|hash| hash == source_sha);
-    let candidate_sha = snapshot::fingerprint_all(&candidate.root)?;
-    let mut intact = true;
+    let candidate_sha = if storage_ok {
+        Some(snapshot::fingerprint_all(&candidate.root)?)
+    } else {
+        None
+    };
+    let mut intact = storage_ok;
     for change in checked["changes"]
         .as_array()
         .ok_or("missing checked changes")?
     {
+        if !storage_ok {
+            break;
+        }
         let path = crate::project_ops::managed_path(
             &candidate.root,
             change["path"].as_str().ok_or("missing checked path")?,
@@ -290,17 +273,22 @@ fn run_with(
         "ok":validated && source_current && intact,"validated":validated,"applied":false,"gameplay_tested":false,
         "source_still_current":source_current,"requested_changes_intact":intact,
         "source_sha256":source_sha,"prepared_sha256":prepared_sha,"candidate_sha256":candidate_sha,
-        "validation_changed_snapshot":prepared_sha != candidate_sha,"validation":validation,
+        "validation_changed_snapshot":candidate_sha.as_ref().map(|hash| &prepared_sha != hash),"validation":validation,
         "files_changed":checked["changes"].as_array().map(Vec::len),"source_bytes":bytes,
         "duration_ms":started.elapsed().as_millis() as u64,"candidate_retained":false,
         "userdata_redirected":true,"execution_sandboxed":false,
+        "workspace_reserved_bytes":crate::candidate_workspace::WORKSPACE_BYTES,
+        "workspace_recovered":private.recovered,
+        "workspace_storage_ok":storage_ok,
         "scope":"script/resource validation of a disposable copy; no publication, native build or gameplay proof"});
     if publish && receipt["ok"] == true {
         let publication = match crate::transactions::publish_candidate(
             project,
             &candidate,
             &source_sha,
-            &candidate_sha,
+            candidate_sha
+                .as_deref()
+                .ok_or("candidate has no checked fingerprint")?,
             &checked,
         ) {
             Ok(publication) => publication,
@@ -319,7 +307,7 @@ fn run_with(
             receipt["candidate_retained"] = json!(true);
             receipt["ok"] = json!(false);
             receipt["cleanup_error"] = json!(crate::diagnostics::text_line(&error, &[]));
-            receipt["cleanup_path"] = json!(private.0);
+            receipt["cleanup_path"] = json!(private.path);
         }
     }
     receipt["evidence"] = json!(evidence);
@@ -469,20 +457,20 @@ mod tests {
 
     #[test]
     fn deleting_a_private_directory_never_follows_a_nested_link() {
-        let workspace = Workspace::create().unwrap();
+        let mut workspace = Workspace::create().unwrap();
         let outside =
             std::env::temp_dir().join(format!("aurum-outside-{}", crate::random::session_id()));
         std::fs::create_dir(&outside).unwrap();
         std::fs::write(outside.join("keep"), "untouched").unwrap();
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, workspace.0.join("link")).unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.path.join("link")).unwrap();
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             let status = std::process::Command::new("cmd")
                 .creation_flags(0x08000000)
                 .args(["/C", "mklink", "/J"])
-                .arg(workspace.0.join("link"))
+                .arg(workspace.path.join("link"))
                 .arg(&outside)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())

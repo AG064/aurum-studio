@@ -22,7 +22,7 @@ fn parameters() -> Value {
         "limit":{"type":"integer","minimum":1,"maximum":200,"default":50,"description":"Maximum local diagnostic records; reads scan at most 256 KiB"},
         "failures_only":{"type":"boolean","default":false},
         "revision_id":{"type":"string","pattern":"^[a-fA-F0-9]{32}$","description":"Committed revision identity for guarded whole-revision undo"},
-        "changes":{"type":"array","minItems":1,"maxItems":64,"description":"Text change set for preflight or disposable candidate validation, never publication. At most 8 MiB aggregate text; transport body limits also apply.","items":{"type":"object","additionalProperties":false,"properties":{
+        "changes":{"type":"array","minItems":1,"maxItems":64,"description":"Text change set for preflight, disposable validation or validated journaled publication. At most 8 MiB aggregate text; transport body limits also apply.","items":{"type":"object","additionalProperties":false,"properties":{
             "path":{"type":"string","minLength":1,"maxLength":4096},
             "action":{"type":"string","enum":["create","replace","delete"]},
             "expected_sha256":{"type":"string","description":"Empty for create/absent; preceding SHA-256 required for replace/delete"},
@@ -137,10 +137,19 @@ pub fn describe(operation: Option<&str>) -> Result<Value, String> {
     let mut required_fields = vec!["op"];
     required_fields.extend_from_slice(required(op));
     let mut result = json!({"contract_version":1,"op":op,"read_only":is_read_only(op),"input_schema":{"type":"object","properties":properties,"required":required_fields}});
-    if op == "changes_validate" {
+    if matches!(op, "changes_validate" | "changes_apply") {
         result["constraints"] = json!({"qualified_platforms":["Windows"],"script_projects_only":true,"source_bytes_max":crate::candidates::MAX_SOURCE_BYTES,
-            "applied":false,"gameplay_tested":false,"execution_sandboxed":false,"candidate_retained":false,
+            "gameplay_tested":false,"execution_sandboxed":false,
+            "workspace_reserved_bytes":crate::candidate_workspace::WORKSPACE_BYTES,"workspace_slots":crate::candidate_workspace::SLOTS,
+            "storage":"observed bytes and shared admission, not a hard filesystem quota",
+            "cleanup":"normal cleanup and recognized orphan reclamation; failures report retained state",
+            "worker_lifecycle":"Windows 10+ atomically assigned kill-on-host-exit job; no unowned fallback",
             "receipt":"changes_last returns the last completed receipt, not live freshness"});
+        if op == "changes_validate" {
+            result["constraints"]["applied"] = json!(false);
+        } else {
+            result["constraints"]["publication"] = json!("validated journaled text revision; stale sources and changed proposals are refused");
+        }
     }
     if matches!(op, "play" | "capture") {
         result["event_types"] = json!({
@@ -157,6 +166,22 @@ pub fn describe(operation: Option<&str>) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn candidate_discovery_distinguishes_publication_and_observed_storage() {
+        let validate = describe(Some("changes_validate")).unwrap();
+        let apply = describe(Some("changes_apply")).unwrap();
+        assert_eq!(validate["constraints"]["applied"], false);
+        assert!(apply["constraints"].get("applied").is_none());
+        assert!(apply["constraints"]["publication"].is_string());
+        for operation in [validate, apply] {
+            assert_eq!(operation["constraints"]["workspace_slots"], 2);
+            assert_eq!(
+                operation["constraints"]["workspace_reserved_bytes"],
+                1024u64 * 1024 * 1024
+            );
+            assert_eq!(operation["constraints"]["execution_sandboxed"], false);
+        }
+    }
     #[test]
     fn every_backend_operation_is_discoverable_in_exactly_one_profile() {
         for op in OPERATIONS {

@@ -24,8 +24,8 @@ diagnostic contracts. A version number is not a delivery guarantee.
 
 ### 1. Bounded diagnostics
 
-Status: implemented locally with Windows acceptance. Not published in 0.4.0;
-hosted cross-platform and release gates remain separate.
+Status: published on `main`, with Windows acceptance and passing hosted
+cross-platform CI. Not included in the 0.4.0 download.
 
 - Structured operation IDs, start/completion timestamps, duration, outcome and
   stable failure categories shared by CLI, HTTP and MCP.
@@ -46,10 +46,11 @@ CLI and MCP can query a bounded diagnostic tail.
 ### 2. Atomic project revisions and rollback
 
 Status: in progress. Read-only `changes_check` and disposable `changes_validate`
-are implemented locally. The current Windows script/resource slice includes
+are published on `main`. The current Windows script/resource slice includes
 content leases, real Godot validation and journaled text publication/recovery/undo
-under verification. Native dependency staging, crash cleanup and aggregate
-temporary-storage/worker gates remain pending.
+with passing hosted CI. Candidate crash cleanup, shared storage reservations
+and owned-worker lifetime controls are under verification. Native dependency
+staging remains pending.
 
 The next implementation slices and lock/recovery boundaries are specified in
 [project revisions](PROJECT_REVISIONS.md).

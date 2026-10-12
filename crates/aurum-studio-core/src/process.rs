@@ -67,6 +67,8 @@ pub struct Command {
     args: Vec<String>,
     directory: Option<PathBuf>,
     environment: Vec<(String, String)>,
+    owned_tree: bool,
+    storage_budget: Option<PathBuf>,
 }
 
 impl Command {
@@ -76,6 +78,8 @@ impl Command {
             args: Vec::new(),
             directory: None,
             environment: Vec::new(),
+            owned_tree: false,
+            storage_budget: None,
         }
     }
 
@@ -113,6 +117,17 @@ impl Command {
     pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.environment.push((key.into(), value.into()));
         self
+    }
+
+    /// Candidate workers must not outlive their host or leave descendants.
+    /// Currently qualified on Windows 10+ only. Ordinary games are unaffected.
+    pub(crate) fn owned_tree(mut self) -> Self {
+        self.owned_tree = true;
+        self
+    }
+    pub(crate) fn candidate_storage(mut self, workspace: &Path) -> Self {
+        self.storage_budget = Some(workspace.to_path_buf());
+        self.owned_tree()
     }
 
     pub fn program(&self) -> &Path {
@@ -154,9 +169,40 @@ impl Command {
             command.env(key, value);
         }
 
-        let mut child = command.spawn()?;
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+        let (mut child, stdout, stderr) = if self.owned_tree {
+            #[cfg(windows)]
+            {
+                let (worker, stdout, stderr) = crate::worker_windows::Worker::spawn(
+                    &self.program,
+                    &self.args,
+                    self.directory.as_deref(),
+                    &self.environment,
+                )?;
+                (
+                    Running::Owned(worker),
+                    Some(Box::new(stdout) as Box<dyn Read + Send>),
+                    Some(Box::new(stderr) as Box<dyn Read + Send>),
+                )
+            }
+            #[cfg(not(windows))]
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "owned candidate workers are Windows-qualified only",
+                ));
+            }
+        } else {
+            let mut child = command.spawn()?;
+            let stdout = child
+                .stdout
+                .take()
+                .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>);
+            let stderr = child
+                .stderr
+                .take()
+                .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>);
+            (Running::Standard(child), stdout, stderr)
+        };
 
         // Readers report over a channel rather than being joined. A killed
         // child can leave a grandchild holding the pipe open — `cargo` spawns
@@ -193,25 +239,42 @@ impl Command {
                 let _ = sender.send((is_stdout, buffer));
             })
         };
-        collect(stdout.map(|s| Box::new(s) as Box<dyn Read + Send>), true);
-        collect(stderr.map(|s| Box::new(s) as Box<dyn Read + Send>), false);
+        collect(stdout, true);
+        collect(stderr, false);
 
         let deadline = Instant::now() + timeout;
+        let mut storage_check = Instant::now();
         let mut timed_out = false;
         let status = loop {
             match child.try_wait()? {
                 Some(status) => break Some(status),
                 None => {
                     if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        child.stop()?;
                         timed_out = true;
                         break None;
+                    }
+                    if Instant::now() >= storage_check {
+                        if let Some(workspace) = &self.storage_budget {
+                            if let Err(error) = crate::candidate_workspace::usage(
+                                workspace,
+                                crate::candidate_workspace::WORKSPACE_BYTES,
+                            ) {
+                                child.stop()?;
+                                return Err(std::io::Error::other(error));
+                            }
+                        }
+                        storage_check = Instant::now() + Duration::from_secs(1);
                     }
                     std::thread::sleep(Duration::from_millis(15));
                 }
             }
         };
+        // A completed worker may have spawned descendants holding the output
+        // pipes. End the owned tree before waiting for readers to drain.
+        if self.owned_tree {
+            child.stop()?;
+        }
 
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -227,11 +290,37 @@ impl Command {
         }
 
         Ok(Outcome {
-            code: status.and_then(|s| s.code()),
+            code: status.flatten(),
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
             timed_out,
         })
+    }
+}
+
+enum Running {
+    Standard(std::process::Child),
+    #[cfg(windows)]
+    Owned(crate::worker_windows::Worker),
+}
+impl Running {
+    fn try_wait(&mut self) -> std::io::Result<Option<Option<i32>>> {
+        match self {
+            Self::Standard(child) => Ok(child.try_wait()?.map(|status| status.code())),
+            #[cfg(windows)]
+            Self::Owned(worker) => Ok(worker.try_wait()?.map(Some)),
+        }
+    }
+    fn stop(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Standard(child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Ok(())
+            }
+            #[cfg(windows)]
+            Self::Owned(worker) => worker.terminate(),
+        }
     }
 }
 

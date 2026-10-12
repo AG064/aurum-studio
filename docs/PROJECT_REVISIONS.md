@@ -1,9 +1,10 @@
 # Atomic project revisions: implementation plan
 
-Status: read-only preflight and disposable candidate validation are implemented
-in current source. Journaled publication, recovery and undo are under verification. There is no released
-multi-file transaction API yet; single-file guarded writes and scene transactions
-remain the released mutation contract.
+Status: preflight, disposable validation, journaled text publication, recovery
+and whole-revision undo are published on `main` and passed hosted CI. They are
+not in the 0.4.0 download. Candidate workspace recovery and worker lifecycle
+controls passed local Windows gates; hosted CI is the next gate. Native
+dependency staging remains planned.
 
 This follows the [bounded diagnostics milestone](LOGGING.md) and is tracked in
 the [roadmap](ROADMAP.md). The implementation belongs in the shared Rust core,
@@ -26,7 +27,8 @@ limits also apply; a backend budget does not bypass a transport limit.
 
 Discover `op=changes_check` through the installed executable's `describe`
 operation. This query is available through the read-only MCP project tool, CLI
-and HTTP. It creates no files, locks, journal or staging directory.
+and HTTP. It creates no project-side state, journal or staging directory. A
+temporary shared OS content lease coordinates it with participating writers.
 
 ```json
 {"op":"changes_check","changes":[{"path":"scripts/player.gd","action":"create","expected_sha256":"","text":"extends Node3D\n"}]}
@@ -91,21 +93,51 @@ limited to 64 KiB. `changes_last` reads it without starting a runtime or creatin
 state and explicitly labels it stored evidence, not a fresh source check.
 Detailed future transaction originals must not use this replaceable receipt.
 
-Abrupt host termination can leave a temporary workspace, and cleanup failures
-report the retained path. Crash cleanup, aggregate temporary-storage quotas and
-owned-worker recovery remain required before durable revision publication.
-The source-size limit is not a hard filesystem quota or protection against
-arbitrary project code writing data.
+### Candidate storage and worker lifecycle
 
-## Windows verification, 2026-10-09
+New candidates use a dedicated `aurum-candidates-v1` directory under the host's
+temporary directory. Admission reserves one of two 1 GiB slots across Aurum
+processes sharing that directory. A short allocation lock and per-workspace OS
+lease prevent cleanup of an active validation. Normal completion removes the
+copy. After a host crash, the next allocation reclaims recognized, unlocked
+copies before admitting new work. This does not clean old flat temporary copies.
+
+Cleanup requires a matching versioned marker, exact directory identity and
+released lease. Unrecognized, incomplete or corrupt state is preserved and
+blocks admission with an inspection path; cleanup does not guess ownership.
+Nested directory links are removed as links, not followed. Project revisions,
+recovery originals and unrelated temporary directories are outside this pool.
+
+Windows 10+ validation workers are assigned to a kill-on-close job at process
+creation using the documented [job-list creation attribute](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute).
+There is no spawn-then-attach race. Only the three explicit standard-stream pipe
+handles are inherited; the job handle stays with Aurum. Host exit, deadlines,
+observed storage violations and normal worker completion terminate the owned
+tree. Ordinary native games and editor sessions keep their existing lifecycle.
+Unsupported job setup fails closed without an unowned worker fallback.
+
+During execution, the runner observes candidate bytes approximately once per
+second, including hidden import caches and redirected userdata. It refuses
+over 1 GiB, links, special file kinds, more than 50,000 entries, depth over 32,
+or an inspection exceeding 250 ms. It repeats the check before acceptance.
+Reservations are an admission budget, not a hard filesystem quota. Writes can
+overshoot between observations, slow filesystem calls can exceed a checking
+budget, and trusted code can still write outside the copy. This is not a sandbox.
+
+Receipts report reserved bytes, recovered workspace count and the final storage
+check. Oversized candidates are not fingerprinted or published. Cleanup failures
+report the retained path; a later allocation retries only recognized copies.
+
+## Windows verification, 2026-10-12
 
 The real Godot acceptance fixture validated a linked create/replace/delete set
 through CLI, stdio MCP and authenticated HTTP. It rejected a deliberately broken
 script, retained its error receipt, verified that working files/import state and
 standard userdata remained unchanged, and checked private-copy cleanup.
-The run passed 29 checks; the positive CLI receipt validated three resources in
-about 8.1 seconds. This is import/resource validation, not gameplay or graphics
-acceptance.
+The current run passed 55 checks, including CLI/MCP/HTTP publication, whole-revision
+undo and a real Godot worker interrupted by host termination. The next validation
+reclaimed the abandoned private copy and passed. This is import/resource and
+lifecycle validation, not gameplay or graphics acceptance.
 
 ```powershell
 node scripts/tests/candidates-acceptance.mjs C:/Builds/aurum.exe C:/Aurum/runtime/Godot.exe
@@ -151,10 +183,10 @@ the journal uses synced file writes and directory sync on Unix.
 
 The real Godot acceptance now also publishes a linked create/replace/delete set,
 undoes the whole revision and forgets completed history while verifying original
-files. The updated run passed 37 checks. Core failures include real process exit
+files. Core failures include real process exit
 after the first file, Windows sharing denial, corrupted recovery bytes and newer
-external content. Additional crash/temp-storage/worker gates remain before treating
-the entire roadmap as complete.
+external content. Native dependency and state-preserving replacement gates
+remain before treating the entire roadmap as complete.
 
 ## Sequence
 
@@ -205,6 +237,8 @@ the entire roadmap as complete.
 - [x] Durable journal, publication and interruption recovery for the text revision slice. Inject failures
   at every file boundary and verify originals/newer edits survive.
 - [x] Whole-revision undo with stale-hash refusal.
+- [x] Crash-released candidate leases, aggregate admission limits, observed
+  storage budgets and owned-worker termination through real Godot acceptance.
 - [x] Shared discovery and actual CLI/HTTP/MCP acceptance for preflight and candidate validation.
 - [ ] Shared discovery and integration acceptance for publication/recovery/undo.
 

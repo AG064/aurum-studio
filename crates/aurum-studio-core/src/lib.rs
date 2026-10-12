@@ -41,6 +41,7 @@
 
 pub mod build;
 pub mod build_queue;
+mod candidate_workspace;
 pub mod candidates;
 pub mod content_lock;
 pub mod diagnostic_relay;
@@ -74,6 +75,8 @@ pub mod toolchain;
 pub mod transactions;
 pub mod watch;
 pub mod web_build;
+#[cfg(windows)]
+mod worker_windows;
 
 pub use build::{BuildError, BuildReport, BuildRequest, Profile};
 pub use build_queue::{BuildLock, BuildQueue, LockError, Submission};

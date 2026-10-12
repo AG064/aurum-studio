@@ -15,12 +15,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Read-only multi-file change preflight with explicit hash/existence conditions, compact conflict reports and no publication or staging side effects.
 - Windows-qualified disposable candidate validation through real Godot imports/resource checks, with shared content leases, isolated standard userdata, source/proposal integrity checks, bounded last-receipt queries and normal-completion cleanup. This does not publish changes or validate native dependencies.
 - Validated journaled text revision publication, conflict-preserving interrupted-publication recovery, whole-revision undo and explicit bounded-history cleanup. Native dependency staging and cross-device acceptance remain separate gates.
+- Crash-released candidate workspace leases, two shared 1 GiB storage reservations, recognized orphan cleanup and observed cache/userdata budgets. These are not hard filesystem quotas or security isolation.
 
 ### Fixed
 
 - MCP tracing no longer echoes request/response payloads, IDs or unknown method names.
 - Native child output no longer bypasses session-log rotation through an inherited file handle.
 - Detached descendants no longer inherit the launching Windows CLI's original standard handles and keep its caller's pipes open.
+- Candidate Godot workers and their descendants now terminate on host exit, deadlines, observed storage violations or normal worker completion through an atomically assigned Windows job. Ordinary native games keep their existing lifecycle.
 
 These development changes are not included in the published 0.4.0 package.
 
