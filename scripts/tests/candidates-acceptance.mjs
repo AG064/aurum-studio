@@ -47,6 +47,7 @@ const unchanged = async () => {
     check((await readdir(sharedData)).join(",") === "keep.txt" && await readFile(join(sharedData,"keep.txt"),"utf8") === "unchanged","standard userdata unchanged");
 };
 check(cli({op:"changes_validate",changes},true).code !== 0,"write permission required");
+check(cli({op:"changes_history"},true).value.retained_revisions === 0,"read-only empty revision history");
 check(!(await readdir(project)).includes(".aurum"),"permission refusal creates no state");
 const success = cli({op:"changes_validate",changes});
 check(success.code === 0 && success.value.ok && success.value.validated,"real Godot linked-file candidate passes");
@@ -76,6 +77,7 @@ for (const request of [
     {jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2025-06-18",clientInfo:{name:"candidate-fixture",version:"1"},capabilities:{}}},
     {jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"aurum_project_action",arguments:{op:"changes_validate",changes}}},
     {jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"aurum_project_action",arguments:{op:"changes_apply",changes}}},
+    {jsonrpc:"2.0",id:4,method:"tools/call",params:{name:"aurum_project_query",arguments:{op:"changes_history"}}},
 ]) mcp.stdin.write(`${JSON.stringify(request)}\n`);
 mcp.stdin.end();
 check(await bounded(mcpDone,180_000,"MCP candidate") === 0,"MCP process completed");
@@ -83,6 +85,7 @@ const responses = output.trim().split("\n").map(line=>JSON.parse(line));
 check(responses[1].result.structuredContent.ok && responses[1].result.structuredContent.validated,"actual MCP candidate validation");
 const mcpApplied = responses[2].result.structuredContent;
 check(mcpApplied.ok && mcpApplied.applied,"actual MCP journaled publication");
+check(responses[3].result.structuredContent.revisions.some(row=>row.revision_id === mcpApplied.publication.revision_id),"read-only MCP history discovers the published undo identity");
 check(cli({op:"changes_undo",revision_id:mcpApplied.publication.revision_id}).value.ok,"MCP publication can be undone through shared CLI backend");
 await unchanged();
 
@@ -105,6 +108,8 @@ try {
     };
     const httpApplied = await httpAction({op:"changes_apply",changes});
     check(httpApplied.status === 200 && httpApplied.value.ok && httpApplied.value.applied,"actual HTTP journaled publication");
+    const httpHistory = await httpAction({op:"changes_history",revision_id:httpApplied.value.publication.revision_id,limit:1});
+    check(httpHistory.status === 200 && httpHistory.value.revisions[0].files.length === 1 && httpHistory.value.revisions[0].files_truncated,"actual HTTP bounded history detail");
     const httpUndone = await httpAction({op:"changes_undo",revision_id:httpApplied.value.publication.revision_id});
     check(httpUndone.status === 200 && httpUndone.value.ok,"actual HTTP whole-revision undo");
     await unchanged();
@@ -112,11 +117,14 @@ try {
     check(applied.code === 0 && applied.value.ok && applied.value.applied,"validated revision published through CLI");
     check(await readFile(join(project,"main.gd"),"utf8") === changes[1].text && (await readdir(project)).includes("helper.gd") && !(await readdir(project)).includes("obsolete.gd"),"linked changes published together");
     const revision = applied.value.publication.revision_id;
+    const history = cli({op:"changes_history",revision_id:revision},true).value;
+    check(history.revisions[0].files.length >= 3 && !history.source_state_checked && !history.undo_preconditions_checked,"actual CLI history returns recorded hashes, not live undo proof");
     const undone = cli({op:"changes_undo",revision_id:revision});
     check(undone.code === 0 && undone.value.ok,"whole revision undo");
     await unchanged();
     const forget = cli({op:"changes_forget",revision_id:revision});
     check(forget.code === 0 && forget.value.undo_available === false && forget.value.content_changed === false,"completed history cleanup does not change source");
+    check(!cli({op:"changes_history"},true).value.revisions.some(row=>row.revision_id === revision),"forgotten revision no longer appears in history");
     await writeFile(join(root,"verification.json"),JSON.stringify({checks,root,runtime,success:success.value,failure:failed.value,http:receipt,mcpApplied,httpApplied,httpUndone,applied:applied.value,undone:undone.value},null,2));
 } finally {
     if(address){const url=new URL(address.url);try{await fetch(`${url.origin}/api/stop`,{method:"POST",headers:{"X-Aurum-Token":url.searchParams.get("t")},signal:AbortSignal.timeout(5_000)});}catch{}}

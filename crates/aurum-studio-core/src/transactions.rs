@@ -84,14 +84,19 @@ fn load(directory: &Path) -> Result<Journal, String> {
     crate::diagnostics::checked_path(directory).map_err(|error| error.to_string())?;
     let path = directory.join("journal.json");
     crate::diagnostics::checked_path(&path).map_err(|error| error.to_string())?;
-    if std::fs::metadata(&path)
+    let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > MAX_JOURNAL_BYTES {
+        return Err("revision journal exceeds its size or file-kind bound".into());
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
         .map_err(|error| error.to_string())?
-        .len()
-        > MAX_JOURNAL_BYTES
-    {
+        .take(MAX_JOURNAL_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_JOURNAL_BYTES {
         return Err("revision journal exceeds its size bound".into());
     }
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let journal: Journal = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     id(&journal.id)?;
     if journal.version != 1
@@ -109,6 +114,129 @@ fn load(directory: &Path) -> Result<Journal, String> {
         }
     }
     Ok(journal)
+}
+
+/// Historical metadata only. Never read recovery blobs or assert live hashes.
+pub fn history(root: &Path, input: &Value) -> Result<Value, String> {
+    let selected = input
+        .get("revision_id")
+        .map(|value| value.as_str().ok_or("revision_id must be a string"))
+        .transpose()?;
+    if let Some(selected) = selected {
+        id(selected)?;
+    }
+    let limit = input
+        .get("limit")
+        .map(|value| value.as_u64().ok_or("history limit must be an integer"))
+        .transpose()?
+        .unwrap_or(50);
+    if !(1..=200).contains(&limit) {
+        return Err("history limit must be between 1 and 200".into());
+    }
+    let _lease = crate::content_lock::ContentLock::shared(root)?;
+    let directory = state_root(root)?;
+    let pointer = active(root)?;
+    crate::diagnostics::checked_path(&pointer).map_err(|error| error.to_string())?;
+    let active_id = match std::fs::metadata(&pointer) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+        Ok(metadata) => {
+            if !metadata.is_file() || metadata.len() > 4096 {
+                return Err("active revision pointer exceeds supported bounds".into());
+            }
+            let mut bytes = Vec::new();
+            std::fs::File::open(pointer)
+                .map_err(|error| error.to_string())?
+                .take(4097)
+                .read_to_end(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            if bytes.len() > 4096 {
+                return Err("active revision pointer exceeds supported bounds".into());
+            }
+            let value: Value =
+                serde_json::from_slice(&bytes).map_err(|_| "invalid active revision pointer")?;
+            let value = value["revision_id"]
+                .as_str()
+                .ok_or("invalid active revision pointer")?;
+            id(value)?;
+            Some(value.to_string())
+        }
+    };
+    let mut paths = Vec::new();
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => Some(entries),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
+    if let Some(entries) = entries {
+        for (index, entry) in entries.enumerate() {
+            if index >= 256 {
+                return Err("revision history scan exceeds its entry bound".into());
+            }
+            let entry = entry.map_err(|error| error.to_string())?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if id(&name).is_err() {
+                continue;
+            }
+            crate::diagnostics::checked_path(&entry.path()).map_err(|error| error.to_string())?;
+            if !entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+            {
+                return Err("revision history contains an unexpected entry kind".into());
+            }
+            if paths.len() >= 32 {
+                return Err("revision history exceeds its 32-entry bound".into());
+            }
+            paths.push((name, entry.path()));
+        }
+    }
+    paths.sort_by(|left, right| left.0.cmp(&right.0));
+    let retained = paths.len();
+    let mut revisions = Vec::new();
+    for (name, path) in paths {
+        if selected.is_some_and(|selected| selected != name) {
+            continue;
+        }
+        let journal = load(&path)
+            .map_err(|_| format!("revision {name} has an invalid or unavailable journal"))?;
+        if journal.id != name {
+            return Err("revision directory and journal identity disagree".into());
+        }
+        let completed = journal.state == State::Committed || journal.state == State::RolledBack;
+        let mut summary = json!({"revision_id":name,"state":journal.state,"files_changed":journal.rows.len(),"undo_of":journal.undo_of,"completed":completed,
+            "undo_recorded":journal.state == State::Committed,"active":active_id.as_deref() == Some(&name)});
+        if selected.is_some() {
+            let mut rows = Vec::new();
+            let mut bytes = 0;
+            for row in &journal.rows {
+                // Historical target names obey the same confinement/secret rules.
+                crate::project_ops::managed_path(root, &row.path)?;
+                let value =
+                    json!({"path":row.path,"before_sha256":row.before,"after_sha256":row.after});
+                let encoded = serde_json::to_vec(&value)
+                    .map_err(|error| error.to_string())?
+                    .len();
+                if rows.len() >= limit as usize || bytes + encoded > 128 * 1024 {
+                    break;
+                }
+                bytes += encoded;
+                rows.push(value);
+            }
+            summary["files_truncated"] = json!(rows.len() < journal.rows.len());
+            summary["files"] = json!(rows);
+        }
+        revisions.push(summary);
+    }
+    if selected.is_some() && revisions.is_empty() {
+        return Err("revision is not present in retained history".into());
+    }
+    Ok(
+        json!({"ok":true,"revisions":revisions,"retained_revisions":retained,"active_revision":active_id,
+        "ordering":"revision ID, not chronology","scope":"retained journal metadata only, not all project changes",
+        "source_state_checked":false,"undo_preconditions_checked":false,"content_changed":false}),
+    )
 }
 fn read_text(path: &Path) -> Result<Option<Vec<u8>>, String> {
     match std::fs::symlink_metadata(path) {
@@ -580,6 +708,73 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0.root);
         }
+    }
+    #[test]
+    fn empty_history_is_read_only_and_does_not_require_valid_configuration() {
+        let fixture = Fixture::new();
+        std::fs::write(fixture.0.root.join("aurum.toml"), "invalid = [").unwrap();
+        let result =
+            crate::project_ops::execute(&fixture.0.root, &json!({"op":"changes_history"}), true)
+                .unwrap();
+        assert_eq!(result["retained_revisions"], 0);
+        assert!(!fixture.0.root.join(".aurum").exists());
+    }
+    #[test]
+    fn history_discovers_undo_ids_and_returns_bounded_hashes_without_source() {
+        let fixture = Fixture::new();
+        let result = publish_rows(
+            &fixture.0.root,
+            vec![
+                (
+                    "first.gd".into(),
+                    None,
+                    Some(b"history-source-sentinel".to_vec()),
+                ),
+                ("second.gd".into(), None, Some(b"second".to_vec())),
+            ],
+            None,
+            None,
+        )
+        .unwrap();
+        let revision = result["revision_id"].as_str().unwrap();
+        let catalog = history(&fixture.0.root, &json!({})).unwrap();
+        assert_eq!(catalog["revisions"][0]["revision_id"], revision);
+        assert!(catalog["revisions"][0].get("files").is_none());
+        let detail = history(&fixture.0.root, &json!({"revision_id":revision,"limit":1})).unwrap();
+        assert_eq!(detail["revisions"][0]["files"].as_array().unwrap().len(), 1);
+        assert_eq!(detail["revisions"][0]["files_truncated"], true);
+        assert!(!serde_json::to_string(&detail)
+            .unwrap()
+            .contains("history-source-sentinel"));
+        let reverse = undo(&fixture.0, revision).unwrap();
+        let catalog = history(&fixture.0.root, &json!({})).unwrap();
+        assert_eq!(catalog["retained_revisions"], 2);
+        assert!(catalog["revisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["revision_id"] == reverse["revision_id"] && row["undo_of"] == revision));
+        forget(&fixture.0, revision).unwrap();
+        assert_eq!(
+            history(&fixture.0.root, &json!({})).unwrap()["retained_revisions"],
+            1
+        );
+    }
+    #[test]
+    fn interrupted_history_stays_inspectable_without_claiming_live_undo_readiness() {
+        let fixture = crash_fixture();
+        let catalog = history(&fixture.0.root, &json!({})).unwrap();
+        assert!(catalog["active_revision"].is_string());
+        assert_eq!(catalog["revisions"][0]["active"], true);
+        assert_eq!(catalog["revisions"][0]["completed"], false);
+        assert_eq!(catalog["source_state_checked"], false);
+        assert_eq!(catalog["undo_preconditions_checked"], false);
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("first.gd")).unwrap(),
+            b"after"
+        );
+        assert!(history(&fixture.0.root, &json!({"limit":201})).is_err());
+        assert!(history(&fixture.0.root, &json!({"revision_id":"../escape"})).is_err());
     }
 
     #[test]

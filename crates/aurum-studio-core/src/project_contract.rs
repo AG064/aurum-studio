@@ -19,7 +19,7 @@ fn parameters() -> Value {
         "draft_id":{"type":"string"},"base_sha256":{"type":"string"},
         "root_type":{"type":"string"},"name":{"type":"string"},
         "class":{"type":"string"},"query":{"type":"string"},
-        "limit":{"type":"integer","minimum":1,"maximum":200,"default":50,"description":"Maximum local diagnostic records; reads scan at most 256 KiB"},
+        "limit":{"type":"integer","minimum":1,"maximum":200,"default":50,"description":"Maximum log records or revision detail rows; logs scan at most 256 KiB"},
         "failures_only":{"type":"boolean","default":false},
         "revision_id":{"type":"string","pattern":"^[a-fA-F0-9]{32}$","description":"Committed revision identity for guarded whole-revision undo"},
         "changes":{"type":"array","minItems":1,"maxItems":64,"description":"Text change set for preflight, disposable validation or validated journaled publication. At most 8 MiB aggregate text; transport body limits also apply.","items":{"type":"object","additionalProperties":false,"properties":{
@@ -55,6 +55,7 @@ fn fields(op: &str) -> &'static [&'static str] {
         "logs" => &["limit", "operation", "failures_only"],
         "changes_check" | "changes_validate" | "changes_apply" => &["changes"],
         "changes_undo" | "changes_forget" => &["revision_id"],
+        "changes_history" => &["revision_id", "limit"],
         "read" | "draft_read" => &["path"],
         "write" => &["path", "text", "expected_sha256"],
         "draft_save" => &["path", "text", "base_sha256", "draft_id"],
@@ -150,6 +151,12 @@ pub fn describe(operation: Option<&str>) -> Result<Value, String> {
         } else {
             result["constraints"]["publication"] = json!("validated journaled text revision; stale sources and changed proposals are refused");
         }
+    }
+    if op == "changes_history" {
+        result["constraints"] = json!({"revisions_max":32,"scan_entries_max":256,"detail_bytes_max":131072,
+            "details":"revision_id selects bounded path/hash records; omit for compact summaries",
+            "ordering":"revision ID, not chronology","live_source_checked":false,"undo_preconditions_checked":false,
+            "scope":"retained journaled revisions, not every project mutation"});
     }
     if matches!(op, "play" | "capture") {
         result["event_types"] = json!({

@@ -71,14 +71,17 @@
                     );
                     sent = payload.sha256;
                 }
-                if (window.aurumAppliedTuning === payload.sha256) {
-                    applied = payload.sha256;
-                    tell("aurum-preview-tuning", { sha256: applied });
-                }
                 if (window.aurumTuningError)
                     tell("aurum-preview-error", {
                         message: String(window.aurumTuningError).slice(0, 500),
                     });
+            }
+            // The game can acknowledge before Studio receives the save result.
+            // Replay the current acknowledgement, without reapplying tuning,
+            // so a consumer that did not yet know that hash can reconcile it.
+            if (payload.ok && payload.sha256 && window.aurumAppliedTuning === payload.sha256) {
+                applied = payload.sha256;
+                tell("aurum-preview-tuning", { sha256: applied });
             }
             if (
                 typeof window.aurumState === "string" &&

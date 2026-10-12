@@ -128,13 +128,13 @@ Receipts report reserved bytes, recovered workspace count and the final storage
 check. Oversized candidates are not fingerprinted or published. Cleanup failures
 report the retained path; a later allocation retries only recognized copies.
 
-## Windows verification, 2026-10-12
+## Windows verification, 2026-10-13
 
 The real Godot acceptance fixture validated a linked create/replace/delete set
 through CLI, stdio MCP and authenticated HTTP. It rejected a deliberately broken
 script, retained its error receipt, verified that working files/import state and
 standard userdata remained unchanged, and checked private-copy cleanup.
-The current run passed 55 checks, including CLI/MCP/HTTP publication, whole-revision
+The current run passed 60 checks, including CLI/MCP/HTTP publication, history discovery, whole-revision
 undo and a real Godot worker interrupted by host termination. The next validation
 reclaimed the abandoned private copy and passed. This is import/resource and
 lifecycle validation, not gameplay or graphics acceptance.
@@ -173,6 +173,18 @@ It refuses changed target files and preserves unrelated/newer work. Undo has its
 own recovery journal rather than changing old history in place. `changes_forget`
 explicitly removes a completed revision's private history without changing source;
 that revision can no longer be undone afterward.
+
+Use read-only `changes_history` to discover retained revision IDs and compact
+state/count/undo-link summaries. Pass `revision_id` for recorded target paths and
+before/after hashes. Details default to 50 rows, maximum 200 and 128 KiB encoded
+row data, with explicit truncation. The catalog is bounded to 32 revisions and
+256 directory entries. IDs are sorted lexicographically, not chronologically.
+
+This query reads no source or recovery blobs, creates no project-side state, and
+remains available with an invalid project configuration or unresolved revision.
+Recorded hashes and `undo_recorded` are historical metadata, not proof that undo
+still satisfies current file preconditions. Single-file saves and external edits
+are not a complete change stream. Corrupt or redirected history is refused.
 
 The current bounds are 256 journal rows, 32 MiB combined original/proposed backup
 bytes per revision, 32 history directories and 128 MiB project history. Reaching

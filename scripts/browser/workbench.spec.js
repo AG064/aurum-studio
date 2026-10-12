@@ -223,6 +223,17 @@ test("keyboard play and acknowledged live edits preserve the same run", async ({
     );
     await expect.poll(async () => (await state()).speed).toBe(9);
     await expect.poll(async () => (await state()).damage_multiplier).toBe(1.75);
+    // Replayed confirmations repair save/ack ordering without repeatedly
+    // announcing identical text through the accessible live region.
+    const statusMutations = await page.locator("#live-status").evaluate(async status => {
+        let changes = 0;
+        const observer = new MutationObserver(records => changes += records.length);
+        observer.observe(status, { childList: true, characterData: true, attributes: true });
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        observer.disconnect();
+        return changes;
+    });
+    expect(statusMutations).toBe(0);
     const after = await state();
     expect(after.time).toBe(before.time);
     expect(after.wave).toBe(before.wave);

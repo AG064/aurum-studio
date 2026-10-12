@@ -17,6 +17,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Validated journaled text revision publication, conflict-preserving interrupted-publication recovery, whole-revision undo and explicit bounded-history cleanup. Native dependency staging and cross-device acceptance remain separate gates.
 - Crash-released candidate workspace leases, two shared 1 GiB storage reservations, recognized orphan cleanup and observed cache/userdata budgets. These are not hard filesystem quotas or security isolation.
 - Opt-in authenticated native runtime transport with bounded framing/deadlines, process/reply identity checks and an expiring freeze lease. This is the checkpoint-channel foundation, not complete supervisor-managed replacement.
+- Read-only bounded revision history discovery and recorded path/hash inspection, including interrupted revisions and projects with invalid configuration. Historical metadata does not assert live undo readiness.
 
 ### Fixed
 
@@ -24,6 +25,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Native child output no longer bypasses session-log rotation through an inherited file handle.
 - Detached descendants no longer inherit the launching Windows CLI's original standard handles and keep its caller's pipes open.
 - Candidate Godot workers and their descendants now terminate on host exit, deadlines, observed storage violations or normal worker completion through an atomically assigned Windows job. Ordinary native games keep their existing lifecycle.
+- Browser tuning acknowledgements are replayed without duplicate application, so an early game acknowledgement cannot be lost behind its save response. Pending saves cannot be mislabeled applied, and identical status text does not repeatedly mutate the live region.
 
 These development changes are not included in the published 0.4.0 package.
 

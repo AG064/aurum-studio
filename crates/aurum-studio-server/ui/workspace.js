@@ -939,8 +939,11 @@
                 "The preview origin is separate from Studio's control API.";
         }
         function liveStatus(text, error = false) {
-            $("live-status").textContent = text;
-            $("live-status").dataset.state = error ? "error" : "ready";
+            const status = $("live-status"), state = error ? "error" : "ready";
+            // Replayed acknowledgements must not repeatedly mutate the live
+            // region or announce identical status text to assistive technology.
+            if (status.textContent !== text) status.textContent = text;
+            if (status.dataset.state !== state) status.dataset.state = state;
         }
         async function loadLiveTuning() {
             if (!liveFile) return;
@@ -1158,7 +1161,7 @@
                     JSON.stringify(snapshot);
             } else if (
                 data.type === "aurum-preview-tuning" &&
-                data.sha256 === liveHash
+                data.sha256 === liveHash && !liveBusy && !liveQueued && liveTimer === null
             ) {
                 liveStatus("Applied to the running game. Run state preserved.");
             } else if (data.type === "aurum-preview-error") {

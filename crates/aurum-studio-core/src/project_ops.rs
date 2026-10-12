@@ -11,6 +11,7 @@ pub const OPERATIONS: &[&str] = &[
     "changes_check",
     "changes_validate",
     "changes_last",
+    "changes_history",
     "changes_apply",
     "changes_recover",
     "changes_undo",
@@ -47,6 +48,7 @@ pub fn is_read_only(op: &str) -> bool {
             | "logs"
             | "changes_check"
             | "changes_last"
+            | "changes_history"
             | "files"
             | "read"
             | "draft_read"
@@ -91,6 +93,11 @@ pub fn execute(root: &Path, input: &Value, read_only: bool) -> Result<Value, Str
     }
     if read_only && !is_read_only(op) {
         return Err(format!("'{op}' requires write permission"));
+    }
+    // Metadata must remain inspectable when configuration or content recovery
+    // is blocked. This query creates no project state or diagnostic journal.
+    if op == "changes_history" {
+        return crate::transactions::history(root, input);
     }
     if op == "changes_recover" {
         let span = crate::diagnostics::Operation::start(root, op);
