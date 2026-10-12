@@ -49,7 +49,7 @@ Status: in progress. Read-only `changes_check` and disposable `changes_validate`
 are published on `main`. The current Windows script/resource slice includes
 content leases, real Godot validation and journaled text publication/recovery/undo
 with passing hosted CI. Candidate crash cleanup, shared storage reservations
-and owned-worker lifetime controls are under verification. Native dependency
+and owned-worker lifetime controls also passed all 13 hosted CI jobs. Native dependency
 staging remains pending.
 
 The next implementation slices and lock/recovery boundaries are specified in
@@ -70,7 +70,29 @@ filesystem renames are not globally atomic.
 
 ### 3. State-preserving native replacement
 
-Status: planned; browser checkpoint replacement already exists.
+Status: in progress; browser checkpoint replacement already exists. The native
+transport foundation passed local Godot 4.7 tests. Supervisor replacement,
+failure fallback and durable handoff recovery are not implemented yet.
+
+The opt-in private runtime bridge binds loopback on an ephemeral port and uses
+a per-launch token, versioned JSON framing, a 1 MiB request/reply bound, four
+connections, non-blocking chunks and finite connection deadlines. The Rust
+client verifies game process identity before and after each call, rejects
+foreign reply IDs/PIDs and future versions, and uses a total transport deadline.
+Tokens never enter readiness files or transport error text. Ordinary game and
+Web launches do not open this channel.
+
+Native freeze requests have a finite lease, defaulting to 30 seconds. If the
+controller disappears, the runtime restores its previous pause/render state.
+Successful resume or restore clears the lease. This avoids leaving a game
+permanently frozen while the replacement controller is still under development.
+
+A real two-process 3D fixture transferred position, inventory, enemy identities,
+cooldowns and mission progress through custom checkpoint hooks. It rejected bad
+authentication, oversized framing and a future checkpoint without changing the
+accepted state, and verified automatic unfreezing. This is transport/checkpoint
+evidence, not a completed native launch/replacement agent operation or game
+quality acceptance. The Godot-equipped CI gate runs the same fixture explicitly.
 
 - Extend versioned capture/restore hooks to supervised native games.
 - Prepare a replacement privately, validate state compatibility, then hand

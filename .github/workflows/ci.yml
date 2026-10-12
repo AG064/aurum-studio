@@ -107,6 +107,8 @@ jobs:
           if($LASTEXITCODE){throw 'Editor acceptance failed'}
           ./scripts/tests/runtime_bridge_acceptance.ps1 -GodotBinary $env:AURUM_GODOT
           if($LASTEXITCODE){throw 'Runtime checkpoint acceptance failed'}
+          cargo test -p aurum-studio-core --locked runtime_channel::tests::actual_godot_native_channel -- --ignored --exact --nocapture
+          if($LASTEXITCODE){throw 'Native runtime channel acceptance failed'}
           ./examples/orbit-break/tools/verify.ps1 -AurumBinary ./target/debug/aurum.exe -GodotBinary $env:AURUM_GODOT -Package
           if($LASTEXITCODE){throw 'Game acceptance failed'}
           ./examples/relay-yard/tools/verify.ps1 -AurumBinary ./target/debug/aurum.exe -GodotBinary $env:AURUM_GODOT -Package

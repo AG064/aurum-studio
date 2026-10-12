@@ -1,5 +1,5 @@
 extends Node
-## Generated into private snapshots only. No filesystem or arbitrary method API.
+## Generated into private snapshots only. No request filesystem or arbitrary method API.
 const MAX_NODES = 1024
 const MAX_ITEMS = 2048
 const MAX_BYTES = 1048576
@@ -11,6 +11,15 @@ var _baseline: Dictionary = {}
 var _baseline_scene_id = 0
 var _render_suspended = false
 var _render_before_freeze = true
+var _native_server: TCPServer
+var _native_token = ""
+var _native_attempted = false
+var _native_peers: Array = []
+var _native_freeze_recovery: Dictionary = {}
+var _native_freeze_ms = 30000
+const NATIVE_CHUNK = 16384
+const NATIVE_PEERS = 4
+const NATIVE_DEADLINE_MS = 5000
 
 func _suspend_rendering():
 	if not _render_suspended:
@@ -25,9 +34,135 @@ func _resume_rendering():
 
 func _exit_tree():
 	_resume_rendering()
+	for peer in _native_peers:
+		peer.stream.disconnect_from_host()
+	if _native_server != null:
+		_native_server.stop()
 
 func _process(_delta):
 	_ensure_baseline()
+	_native_start_if_ready()
+	_native_tick()
+
+func _hex(text: String, count: int) -> bool:
+	if text.length() != count: return false
+	for character in text:
+		if not character in "0123456789abcdef": return false
+	return true
+
+func _native_start_if_ready():
+	if _native_attempted or OS.has_feature("web"): return
+	var scene = get_tree().current_scene
+	if scene == null or not scene.is_node_ready(): return
+	_native_attempted = true
+	var token = OS.get_environment("AURUM_NATIVE_TOKEN")
+	var ready_path = OS.get_environment("AURUM_NATIVE_READY")
+	if token.is_empty() and ready_path.is_empty(): return
+	if not _hex(token, 64) or not ready_path.is_absolute_path():
+		push_error("Invalid private native channel configuration")
+		return
+	var server = TCPServer.new()
+	if server.listen(0, "127.0.0.1") != OK:
+		push_error("Could not bind private native runtime channel")
+		return
+	# This is a launch-configured readiness file, never a request-supplied path.
+	# It contains no token. The host must retain the private launch's ownership.
+	var output = FileAccess.open(ready_path + ".tmp", FileAccess.WRITE)
+	if output == null:
+		server.stop()
+		push_error("Could not write native runtime readiness")
+		return
+	output.store_string(JSON.stringify({"version": 1, "pid": OS.get_process_id(), "port": server.get_local_port(), "scene": scene.scene_file_path}))
+	output.close()
+	if DirAccess.rename_absolute(ready_path + ".tmp", ready_path) != OK:
+		server.stop()
+		push_error("Could not publish native runtime readiness")
+		return
+	_native_server = server
+	_native_token = token
+	var freeze_ms = OS.get_environment("AURUM_NATIVE_FREEZE_MS")
+	if freeze_ms.is_valid_int():
+		_native_freeze_ms = clampi(freeze_ms.to_int(), 1000, 30000)
+
+func _native_tick():
+	if _native_server == null: return
+	if not _native_freeze_recovery.is_empty() and Time.get_ticks_msec() > _native_freeze_recovery.deadline:
+		get_tree().paused = _native_freeze_recovery.paused
+		_resume_rendering()
+		_native_freeze_recovery.clear()
+	# One accept per frame, four peers, bounded non-blocking reads/writes. A slow
+	# or unauthenticated client cannot allocate an unbounded queue or block a frame.
+	if _native_server.is_connection_available():
+		var stream = _native_server.take_connection()
+		if stream != null:
+			if _native_peers.size() >= NATIVE_PEERS or stream.get_connected_host() != "127.0.0.1":
+				stream.disconnect_from_host()
+			else:
+				stream.set_no_delay(true)
+				_native_peers.append({"stream": stream, "deadline": Time.get_ticks_msec() + NATIVE_DEADLINE_MS, "buffer": PackedByteArray(), "expected": -1, "output": PackedByteArray(), "sent": 0})
+	for index in range(_native_peers.size() - 1, -1, -1):
+		var peer = _native_peers[index]
+		if not _native_peer(peer):
+			peer.stream.disconnect_from_host()
+			_native_peers.remove_at(index)
+
+func _native_peer(peer: Dictionary) -> bool:
+	var stream: StreamPeerTCP = peer.stream
+	stream.poll()
+	if Time.get_ticks_msec() > peer.deadline or stream.get_status() != StreamPeerTCP.STATUS_CONNECTED: return false
+	if not peer.output.is_empty():
+		var sent = stream.put_partial_data(peer.output.slice(peer.sent, mini(peer.sent + NATIVE_CHUNK, peer.output.size())))
+		if sent[0] != OK: return false
+		peer.sent += int(sent[1])
+		return peer.sent < peer.output.size()
+	var needed = 4 - peer.buffer.size() if peer.expected == -1 else peer.expected - peer.buffer.size()
+	var count = mini(NATIVE_CHUNK, mini(stream.get_available_bytes(), needed))
+	if count > 0:
+		var received = stream.get_partial_data(count)
+		if received[0] != OK: return false
+		peer.buffer.append_array(received[1])
+	if peer.expected == -1 and peer.buffer.size() == 4:
+		peer.expected = int(peer.buffer.decode_u32(0))
+		peer.buffer.clear()
+		if peer.expected < 1 or peer.expected > MAX_BYTES: return false
+		return true
+	if peer.expected == -1 or peer.buffer.size() != peer.expected: return true
+	var text = peer.buffer.get_string_from_utf8()
+	if text.to_utf8_buffer() != peer.buffer: return false
+	var input = JSON.parse_string(text)
+	peer.buffer.clear()
+	if not input is Dictionary or input.size() != 4 or input.get("version") != 1 or not input.get("id") is String or not _hex(input.id, 32): return false
+	var result = {"ok": false, "error": "Native runtime authentication refused"}
+	if input.get("token") is String and input.token == _native_token and input.get("request") is Dictionary:
+		result = _native_request(input.request)
+	var body = JSON.stringify({"version": 1, "id": input.id, "pid": OS.get_process_id(), "result": result}).to_utf8_buffer()
+	if body.size() > MAX_BYTES:
+		body = JSON.stringify({"version": 1, "id": input.id, "pid": OS.get_process_id(), "result": {"ok": false, "error": "Native reply exceeds 1 MiB"}}).to_utf8_buffer()
+	var header = PackedByteArray()
+	header.resize(4)
+	header.encode_u32(0, body.size())
+	peer.output = header
+	peer.output.append_array(body)
+	return true
+
+func _native_request(input: Dictionary) -> Dictionary:
+	var operation = str(input.get("op", ""))
+	if operation == "checkpoint" and input.has("freeze") and not input.freeze is bool:
+		return {"ok": false, "error": "Native freeze must be a boolean"}
+	if operation == "resume" and input.has("paused") and not input.paused is bool:
+		return {"ok": false, "error": "Native paused state must be a boolean"}
+	var result = request(input)
+	if result.get("ok", false):
+		if operation == "checkpoint" and input.get("freeze", false):
+			# A vanished controller must not leave the original game frozen forever.
+			# Renewals retain the original pre-freeze pause/render state.
+			if _native_freeze_recovery.is_empty():
+				_native_freeze_recovery["paused"] = result.checkpoint.paused
+			_native_freeze_recovery["deadline"] = Time.get_ticks_msec() + _native_freeze_ms
+			result["freeze_lease_ms"] = _native_freeze_ms
+		elif operation in ["resume", "restore"]:
+			_native_freeze_recovery.clear()
+	return result
 
 func _ensure_baseline():
 	var scene = get_tree().current_scene

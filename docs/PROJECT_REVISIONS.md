@@ -3,7 +3,7 @@
 Status: preflight, disposable validation, journaled text publication, recovery
 and whole-revision undo are published on `main` and passed hosted CI. They are
 not in the 0.4.0 download. Candidate workspace recovery and worker lifecycle
-controls passed local Windows gates; hosted CI is the next gate. Native
+controls passed local Windows gates and all 13 hosted CI jobs. Native
 dependency staging remains planned.
 
 This follows the [bounded diagnostics milestone](LOGGING.md) and is tracked in

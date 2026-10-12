@@ -65,6 +65,7 @@ pub mod random;
 pub mod registry;
 pub mod reload;
 pub mod revisions;
+pub mod runtime_channel;
 pub mod session;
 pub mod snapshot;
 pub mod supervise;

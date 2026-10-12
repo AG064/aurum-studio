@@ -16,6 +16,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Windows-qualified disposable candidate validation through real Godot imports/resource checks, with shared content leases, isolated standard userdata, source/proposal integrity checks, bounded last-receipt queries and normal-completion cleanup. This does not publish changes or validate native dependencies.
 - Validated journaled text revision publication, conflict-preserving interrupted-publication recovery, whole-revision undo and explicit bounded-history cleanup. Native dependency staging and cross-device acceptance remain separate gates.
 - Crash-released candidate workspace leases, two shared 1 GiB storage reservations, recognized orphan cleanup and observed cache/userdata budgets. These are not hard filesystem quotas or security isolation.
+- Opt-in authenticated native runtime transport with bounded framing/deadlines, process/reply identity checks and an expiring freeze lease. This is the checkpoint-channel foundation, not complete supervisor-managed replacement.
 
 ### Fixed
 
