@@ -63,7 +63,13 @@ fn current(directory: &Path) -> Result<Option<String>, String> {
     }
     Ok(Some(value.id))
 }
-fn root_lock(directory: &Path) -> Result<File, String> {
+struct Lease(File);
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+fn root_lock(directory: &Path) -> Result<Lease, String> {
     crate::diagnostics::checked_path(directory).map_err(|error| error.to_string())?;
     std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     let path = directory.join("store.lock");
@@ -77,7 +83,7 @@ fn root_lock(directory: &Path) -> Result<File, String> {
         .map_err(|error| error.to_string())?;
     file.try_lock()
         .map_err(|_| "native userdata store is busy; retry after its current operation")?;
-    Ok(file)
+    Ok(Lease(file))
 }
 fn data_path(directory: &Path, id: &str) -> Result<PathBuf, String> {
     if !valid_id(id) {
@@ -233,7 +239,7 @@ pub(crate) struct UserdataRun {
     pub(crate) path: PathBuf,
     parent: Option<String>,
     seed: Option<(PathBuf, String)>,
-    _lease: File,
+    _lease: Lease,
 }
 #[cfg(any(windows, test))]
 impl UserdataRun {
@@ -316,6 +322,7 @@ impl UserdataRun {
             .open(directory.join("run.lock"))
             .map_err(|error| error.to_string())?;
         lease.try_lock().map_err(|error| error.to_string())?;
+        let lease = Lease(lease);
         let path = directory.join("data");
         std::fs::create_dir(&path).map_err(|error| error.to_string())?;
         let seed = seed_path
@@ -386,6 +393,7 @@ pub(crate) fn observed_ok(path: &Path) -> Result<(), String> {
         Err(error) => return Err(error.to_string()),
         Ok(()) => {}
     }
+    let _lock = Lease(lock);
     let mut total = 0u64;
     for (index, entry) in std::fs::read_dir(store.join("runs"))
         .map_err(|error| error.to_string())?
@@ -454,6 +462,7 @@ pub fn forget(root: &Path, id: &str) -> Result<Value, String> {
     lease
         .try_lock()
         .map_err(|_| "native userdata generation is still owned by a live operation")?;
+    let _lease = Lease(lease);
     if clean_path(
         directory
             .canonicalize()
@@ -485,6 +494,26 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn store_and_run_leases_release_retained_descriptors() {
+        let fixture = Fixture::new();
+        let store = base(&fixture.0).unwrap();
+        let lease = root_lock(&store).unwrap();
+        let retained_store = lease.0.try_clone().unwrap();
+        drop(lease);
+        drop(root_lock(&store).unwrap());
+        let first = UserdataRun::stage(&fixture.0, None).unwrap();
+        first.publish().unwrap();
+        let first_id = first.id.clone();
+        let retained_run = first._lease.0.try_clone().unwrap();
+        drop(first);
+        let next = UserdataRun::stage(&fixture.0, None).unwrap();
+        next.publish().unwrap();
+        assert!(forget(&fixture.0, &first_id).is_ok());
+        drop(retained_run);
+        drop(retained_store);
+    }
+
     #[test]
     fn generations_persist_across_stop_and_seed_the_next_run() {
         let fixture = Fixture::new();

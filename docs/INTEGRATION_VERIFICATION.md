@@ -75,6 +75,17 @@ navigation and assertions for the new context schema. Its earlier isolated run
 had depended on navigation performed by previous gameplay cases, not a product
 failure. The next hosted run must qualify these follow-ups.
 
+The [next hosted run](https://github.com/AG064/aurum-studio/actions/runs/38332097138)
+passed Linux but exposed the same immediate reacquisition failure in a macOS
+saved-data store test. An audit found the remaining raw scoped leases in
+saved-data and diagnostic storage. They now explicitly release on normal and
+error paths, including shared monitoring and cleanup. New regressions retain
+duplicate descriptors across owner shutdown while checking successful
+reacquisition. Current/active save generations remain protected. The combined
+local suite passed 666 focused Rust/doc tests and strict Clippy. Compiled
+logging (25), native-session (22) and host-recovery (11) checks also passed after
+this change. Hosted confirmation remains a separate gate.
+
 ## Development verification, 2026-10-07
 
 The redesigned Studio was checked against a freshly compiled Rust backend, not only Claude's stand-in server. Across the bounded browser runs, 12 distinct scenarios passed: isolated export, actual keyboard play/live edits, workshop behavior, responsive/fullscreen handling, source save/undo and failed-build preservation, hostile-origin/message refusal, keyboard Source navigation, standalone export, ordinary 2D projects, actual operation-contract rendering and headless execution receipts with malformed-input refusal.

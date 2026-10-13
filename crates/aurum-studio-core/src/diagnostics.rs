@@ -75,7 +75,13 @@ pub(crate) fn checked_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn lock(path: &Path, create: bool) -> io::Result<File> {
+struct FileLease(File);
+impl Drop for FileLease {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+fn lock(path: &Path, create: bool) -> io::Result<FileLease> {
     let mut name = path
         .file_name()
         .ok_or_else(|| invalid("log has no filename"))?
@@ -92,7 +98,7 @@ fn lock(path: &Path, create: bool) -> io::Result<File> {
     let started = Instant::now();
     loop {
         match file.try_lock() {
-            Ok(()) => return Ok(file),
+            Ok(()) => return Ok(FileLease(file)),
             Err(std::fs::TryLockError::WouldBlock) if started.elapsed() < LOCK_WAIT => {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -484,6 +490,21 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn log_lease_releases_retained_descriptors() {
+        let fixture = Fixture::new();
+        std::fs::write(fixture.log(), "initial\n").unwrap();
+        let lease = lock(&fixture.log(), true).unwrap();
+        let retained = lease.0.try_clone().unwrap();
+        drop(lease);
+        append(&fixture.log(), "next", Policy::default()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(fixture.log()).unwrap(),
+            "initial\nnext\n"
+        );
+        drop(retained);
     }
 
     #[test]
