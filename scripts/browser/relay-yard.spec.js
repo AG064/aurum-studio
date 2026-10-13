@@ -9,7 +9,7 @@ import { openWorkspace } from "./workspace-ready.js";
 import { createControlClient } from "./control-client.js";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-let work, project, child, context, page, endpoint, origin, token, diagnostics;
+let work, project, child, context, page, endpoint, origin, token, diagnostics, gameFrame;
 let output = "";
 const errors = [];
 let controlClient;
@@ -17,10 +17,14 @@ test.describe.configure({ mode: "serial", timeout: 360000 });
 const control = (path, body, options) => controlClient.request(path, body, options);
 // Use only the game's normal runtime interface, never injected gameplay state.
 const runtime = async request => {
-    const url = await page.locator("#preview-frame").getAttribute("src");
-    const frame = page.frames().find(frame => frame.url() === url);
-    if (!frame) throw new Error("Game frame is not loaded");
-    const result = await frame.evaluate(async request => {
+    // Reuse the exact preview frame so each gameplay sample needs one browser call.
+    if (!gameFrame || gameFrame.isDetached()) {
+        const element = await page.locator("#preview-frame").elementHandle();
+        try { gameFrame = await element?.contentFrame(); }
+        finally { await element?.dispose(); }
+        if (!gameFrame) throw new Error("Game frame is not loaded");
+    }
+    const result = await gameFrame.evaluate(async request => {
         if (typeof window.aurumRuntimeRequest !== "function") throw new Error("Runtime is not ready");
         window.aurumRuntimeResponse = "";
         window.aurumRuntimeRequest(JSON.stringify(request));
@@ -70,6 +74,18 @@ test.beforeAll(async ({ browser }) => {
         if (message.type() === "error" && /SCRIPT ERROR|Parse Error|TypeError|RuntimeError/.test(message.text())) errors.push(message.text());
     });
 });
+test.afterEach(async ({}, info) => {
+    if (info.status === info.expectedStatus || !page || page.isClosed()) return;
+    let deadlineTimer;
+    try {
+        await Promise.race([
+            capture(info.outputPath("relay-yard-failure.png")),
+            new Promise((_, reject) => { deadlineTimer = setTimeout(() => reject(new Error("Failure capture exceeded 30 seconds")), 30000); }),
+        ]);
+    } catch (error) {
+        await writeFile(info.outputPath("failure-capture.json"), JSON.stringify({ error: error.message }, null, 2));
+    } finally { clearTimeout(deadlineTimer); }
+});
 test.afterAll(async ({}, info) => {
     if (context) await context.close();
     if (origin && child?.exitCode === null) await control("/api/stop", {}, { budgetMs: 5000 }).catch(() => {});
@@ -86,6 +102,7 @@ test("3D imported assets render and keyboard play reaches the real game", async 
     await page.locator("#run-web").click();
     await expect(page.locator("#preview-state")).toHaveText("Preview ready", { timeout: 180000 });
     await expect.poll(async () => (await state()).version, { timeout: 30000 }).toBe(3);
+    await capture(info.outputPath("relay-yard-menu.png"));
     const canvas = page.frameLocator("#preview-frame").locator("canvas");
     await canvas.click({ position: { x: 20, y: 20 } });
     await page.keyboard.press("Enter");
@@ -139,6 +156,7 @@ test("live tuning and source rebuilding preserve the combat mission", async ({},
         return text;
     }, { timeout: 180000 }).toBe("Rebuilt and restored the checkpoint.");
     expect(await page.locator("#preview-frame").getAttribute("src")).not.toBe(oldUrl);
+    gameFrame = null;
     const after = await state();
     expect(after.carried).toBe(before.carried);
     expect(after.powered).toEqual(before.powered);
