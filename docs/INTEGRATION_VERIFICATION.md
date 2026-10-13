@@ -33,6 +33,15 @@ entry-count limits; the 250 ms, 50,000-entry, depth, byte and link guards remain
 unchanged. The complete fresh-root Rust run passed all 38 checks. Hosted CI
 must still be checked for the exact published commit.
 
+The [first continuation CI run](https://github.com/AG064/aurum-studio/actions/runs/38394938164)
+passed actual native preparation, retirement, sessions and routing, then failed
+offline Rust fixture metadata because its fresh Windows cache lacked the pinned
+Linux-only `libc` dependency. Runtime CI now provisions all locked dependencies
+with `cargo fetch --locked` and verifies the lockfile hash before offline
+acceptance. An empty ephemeral Cargo cache passed that fetch and the same
+offline fixture metadata with gdext `107a87e3` and `libc 0.2.189`; the repository
+lockfile remained unchanged. Production private compilation stays frozen/offline.
+
 ```powershell
 node scripts/tests/native-rust-acceptance.mjs C:/Builds/aurum.exe C:/Aurum/runtime/Godot.exe
 ```

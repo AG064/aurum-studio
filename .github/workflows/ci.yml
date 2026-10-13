@@ -89,6 +89,14 @@ jobs:
         run: |
           ./scripts/provision-godot.ps1 -Destination "$env:RUNNER_TEMP/godot" -Mode Runtime
           "AURUM_GODOT=$env:RUNNER_TEMP/godot/Godot_v4.7-stable_win64.exe" >> $env:GITHUB_ENV
+      - name: Provision locked dependencies for offline native fixtures
+        shell: pwsh
+        run: |
+          $fixtureDependencyLock = (Get-FileHash -LiteralPath Cargo.lock -Algorithm SHA256).Hash
+          # Metadata includes every target, including gdext's Linux-only libc.
+          cargo fetch --locked
+          if($LASTEXITCODE){throw 'Pinned native fixture dependency provisioning failed'}
+          if((Get-FileHash -LiteralPath Cargo.lock -Algorithm SHA256).Hash -ne $fixtureDependencyLock){throw 'Dependency provisioning changed the pinned lockfile'}
       - name: Build test tools
         run: cargo build -p aurum-cli -p aurum-editor --locked
       - name: Exercise actual project, editor and game workflows
