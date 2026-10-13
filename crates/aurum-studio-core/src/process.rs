@@ -68,7 +68,8 @@ pub struct Command {
     directory: Option<PathBuf>,
     environment: Vec<(String, String)>,
     owned_tree: bool,
-    storage_budget: Option<PathBuf>,
+    storage_budget: Vec<PathBuf>,
+    storage_budget_overflow: bool,
 }
 
 impl Command {
@@ -79,7 +80,8 @@ impl Command {
             directory: None,
             environment: Vec::new(),
             owned_tree: false,
-            storage_budget: None,
+            storage_budget: Vec::new(),
+            storage_budget_overflow: false,
         }
     }
 
@@ -126,7 +128,18 @@ impl Command {
         self
     }
     pub(crate) fn candidate_storage(mut self, workspace: &Path) -> Self {
-        self.storage_budget = Some(workspace.to_path_buf());
+        let key = storage_root_key(workspace);
+        if !self
+            .storage_budget
+            .iter()
+            .any(|root| storage_root_key(root) == key)
+        {
+            if self.storage_budget.len() == 2 {
+                self.storage_budget_overflow = true;
+            } else {
+                self.storage_budget.push(workspace.to_path_buf());
+            }
+        }
         self.owned_tree()
     }
 
@@ -151,7 +164,30 @@ impl Command {
     /// child exits deadlocks as soon as a build produces more than a pipe
     /// buffer, which a real Cargo invocation always does.
     pub fn run(&self, timeout: Duration) -> std::io::Result<Outcome> {
-        let deadline = Instant::now() + timeout;
+        if self.storage_budget_overflow {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "owned commands support at most two distinct storage roots",
+            ));
+        }
+        let operation = crate::operation_context::OperationContext::current();
+        if let Some(context) = &operation {
+            context.check()?;
+        }
+        let deadline = operation
+            .as_ref()
+            .map_or(Instant::now() + timeout, |context| {
+                context.deadline().min(Instant::now() + timeout)
+            });
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "command deadline expired before spawn",
+            ));
+        }
+        // These bounded commands are transient. Accepted gameplay is launched
+        // separately and is never placed in an operation's cancellation scope.
+        let owned_tree = self.owned_tree || operation.is_some();
         let mut command = StdCommand::new(&self.program);
         #[cfg(windows)]
         {
@@ -170,11 +206,40 @@ impl Command {
             command.env(key, value);
         }
 
-        let (mut child, stdout, stderr) = if self.owned_tree {
+        let (mut child, stdout, stderr) = if owned_tree {
             #[cfg(windows)]
             {
-                let (worker, stdout, stderr) = crate::worker_windows::Worker::spawn(
-                    &self.program,
+                let program = if self.program.is_absolute() {
+                    self.program.clone()
+                } else if operation.is_some() {
+                    self.program
+                        .to_str()
+                        .and_then(crate::toolchain::find_on_path)
+                        .ok_or_else(|| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::NotFound,
+                                "background tool executable was not found",
+                            )
+                        })?
+                } else {
+                    self.program.clone()
+                };
+                let program = if operation.is_some() {
+                    std::path::absolute(program).map(crate::project::clean_path)?
+                } else {
+                    program
+                };
+                let application = if operation.is_some() {
+                    program.canonicalize().map(crate::project::clean_path)?
+                } else {
+                    program.clone()
+                };
+                check_before_spawn(operation.as_ref(), deadline)?;
+                // Proxies such as rustup select Cargo from argv[0]. Resolve the
+                // application for launch while preserving the invoked name.
+                let (worker, stdout, stderr) = crate::worker_windows::Worker::spawn_with_argv0(
+                    &application,
+                    &program,
                     &self.args,
                     self.directory.as_deref(),
                     &self.environment,
@@ -193,6 +258,7 @@ impl Command {
                 ));
             }
         } else {
+            check_before_spawn(operation.as_ref(), deadline)?;
             let mut child = command.spawn()?;
             let stdout = child
                 .stdout
@@ -246,38 +312,51 @@ impl Command {
         let mut storage_check = Instant::now();
         let mut timed_out = false;
         let status = loop {
+            if let Some(context) = &operation {
+                if let Err(error) = context.check() {
+                    stop_scoped(&mut child, operation.as_ref())?;
+                    return Err(error);
+                }
+            }
             if Instant::now() >= deadline {
-                child.stop()?;
+                stop_scoped(&mut child, operation.as_ref())?;
                 timed_out = true;
                 break None;
             }
-            match child.try_wait()? {
+            let waited = match child.try_wait() {
+                Ok(waited) => waited,
+                Err(error) => {
+                    stop_scoped(&mut child, operation.as_ref())?;
+                    return Err(error);
+                }
+            };
+            match waited {
                 Some(status) => break Some(status),
                 None => {
                     if Instant::now() >= deadline {
-                        child.stop()?;
+                        stop_scoped(&mut child, operation.as_ref())?;
                         timed_out = true;
                         break None;
                     }
                     if Instant::now() >= storage_check {
-                        if let Some(workspace) = &self.storage_budget {
-                            if let Err(error) = crate::candidate_workspace::usage_with_budget(
-                                workspace,
-                                crate::candidate_workspace::WORKSPACE_BYTES,
-                                deadline.saturating_duration_since(Instant::now()),
-                            ) {
-                                child.stop()?;
-                                if Instant::now() >= deadline
-                                    && error.contains("elapsed inspection budget")
-                                {
-                                    timed_out = true;
-                                    break None;
-                                }
-                                return Err(std::io::Error::other(error));
+                        if let Err(error) = inspect_storage(
+                            &self.storage_budget,
+                            crate::candidate_workspace::WORKSPACE_BYTES,
+                            deadline,
+                            operation.as_ref(),
+                        ) {
+                            stop_scoped(&mut child, operation.as_ref())?;
+                            if Instant::now() >= deadline
+                                && (error.kind() == std::io::ErrorKind::TimedOut
+                                    || error.to_string().contains("elapsed inspection budget"))
+                            {
+                                timed_out = true;
+                                break None;
                             }
+                            return Err(error);
                         }
                         if Instant::now() >= deadline {
-                            child.stop()?;
+                            stop_scoped(&mut child, operation.as_ref())?;
                             timed_out = true;
                             break None;
                         }
@@ -292,15 +371,18 @@ impl Command {
         };
         // A completed worker may have spawned descendants holding the output
         // pipes. End the owned tree before waiting for readers to drain.
-        if self.owned_tree {
-            child.stop()?;
+        if owned_tree {
+            stop_scoped(&mut child, operation.as_ref())?;
         }
 
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let mut received = 0;
         while received < 2 {
-            match receiver.recv_timeout(CAPTURE_GRACE) {
+            let grace = operation.as_ref().map_or(CAPTURE_GRACE, |context| {
+                CAPTURE_GRACE.min(context.deadline().saturating_duration_since(Instant::now()))
+            });
+            match receiver.recv_timeout(grace) {
                 Ok((true, bytes)) => stdout = bytes,
                 Ok((false, bytes)) => stderr = bytes,
                 // Output is lost rather than the deadline being broken.
@@ -322,6 +404,74 @@ enum Running {
     Standard(std::process::Child),
     #[cfg(windows)]
     Owned(crate::worker_windows::Worker),
+}
+fn storage_root_key(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    // Do not resolve links while deduplicating: every distinct root still
+    // goes through the scanner's reparse-point and filesystem checks.
+    if cfg!(windows) && absolute.to_str().is_some() {
+        PathBuf::from(
+            crate::project::clean_path(absolute)
+                .to_string_lossy()
+                .to_lowercase(),
+        )
+    } else {
+        absolute
+    }
+}
+fn inspect_storage(
+    roots: &[PathBuf],
+    limit: u64,
+    deadline: Instant,
+    context: Option<&crate::operation_context::OperationContext>,
+) -> std::io::Result<()> {
+    let mut used = 0;
+    for root in roots {
+        if let Some(context) = context {
+            context.check()?;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let bytes = crate::candidate_workspace::usage_with_budget(root, limit - used, remaining)
+            .map_err(std::io::Error::other)?;
+        used += bytes;
+    }
+    if let Some(context) = context {
+        context.check()?;
+    }
+    if Instant::now() >= deadline {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "command deadline expired during storage inspection",
+        ));
+    }
+    Ok(())
+}
+fn check_before_spawn(
+    context: Option<&crate::operation_context::OperationContext>,
+    deadline: Instant,
+) -> std::io::Result<()> {
+    if let Some(context) = context {
+        context.check()?;
+    }
+    if Instant::now() >= deadline {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "command deadline expired before spawn",
+        ));
+    }
+    Ok(())
+}
+fn stop_scoped(
+    child: &mut Running,
+    context: Option<&crate::operation_context::OperationContext>,
+) -> std::io::Result<()> {
+    let result = child.stop();
+    if result.is_err() {
+        if let Some(context) = context {
+            context.mark_termination_unconfirmed();
+        }
+    }
+    result
 }
 impl Running {
     fn try_wait(&mut self) -> std::io::Result<Option<Option<i32>>> {
@@ -356,6 +506,296 @@ const CAPTURE_GRACE: Duration = Duration::from_secs(5);
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn storage_fixture() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-process-storage-test-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        root
+    }
+    #[test]
+    fn duplicate_storage_roots_keep_two_slots_and_excess_is_refused_before_spawn() {
+        let root = storage_fixture();
+        let first = root.join("first");
+        let second = root.join("second");
+        let command = Command::new("definitely-not-a-real-program-xyz")
+            .candidate_storage(&first)
+            .candidate_storage(&first.join("."))
+            .candidate_storage(&second)
+            .candidate_storage(&second);
+        assert_eq!(command.storage_budget.len(), 2);
+        assert!(!command.storage_budget_overflow);
+        #[cfg(windows)]
+        let command =
+            command.candidate_storage(&PathBuf::from(first.to_string_lossy().to_uppercase()));
+        assert!(!command.storage_budget_overflow);
+        let error = command
+            .candidate_storage(&root.join("third"))
+            .run(Duration::from_secs(1))
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("two distinct storage roots"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn storage_roots_share_one_byte_limit_and_expired_deadline() {
+        let root = storage_fixture();
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        std::fs::write(first.join("bytes"), [0u8; 50]).unwrap();
+        std::fs::write(second.join("bytes"), [0u8; 50]).unwrap();
+        let roots = [first, second];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        inspect_storage(&roots[..1], 99, deadline, None).unwrap();
+        inspect_storage(&roots[1..], 99, deadline, None).unwrap();
+        assert!(inspect_storage(&roots, 99, deadline, None)
+            .unwrap_err()
+            .to_string()
+            .contains("observed-byte budget"));
+        inspect_storage(&roots, 100, deadline, None).unwrap();
+        assert!(inspect_storage(&roots, 100, Instant::now(), None)
+            .unwrap_err()
+            .to_string()
+            .contains("elapsed inspection budget"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn an_invalid_secondary_storage_root_is_never_skipped() {
+        let root = storage_fixture();
+        let first = root.join("first");
+        let second = root.join("regular-file");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::write(&second, "not a directory").unwrap();
+        assert!(inspect_storage(
+            &[first, second],
+            100,
+            Instant::now() + Duration::from_secs(5),
+            None,
+        )
+        .is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(windows)]
+    fn outside_secondary_storage_stops_only_the_owned_tree(link: bool) {
+        use std::os::windows::process::CommandExt;
+        const HELPER: &str = "worker_windows::tests::worker_tree_helper";
+        struct Unrelated(std::process::Child);
+        impl Drop for Unrelated {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let root = storage_fixture();
+        let first = root.join("first");
+        let second = root.join("second");
+        let unrelated_path = root.join("unrelated");
+        let outside = root.join("outside");
+        for path in [&first, &second, &unrelated_path, &outside] {
+            std::fs::create_dir(path).unwrap();
+        }
+        std::fs::write(outside.join("keep"), "untouched").unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let unrelated = Unrelated(
+            StdCommand::new(&executable)
+                .args(["--exact", HELPER, "--nocapture"])
+                .env("AURUM_WORKER_FIXTURE", &unrelated_path)
+                .env("AURUM_WORKER_ROLE", "leaf")
+                .creation_flags(0x08000000)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let unrelated_identity = crate::ownership::inspect(unrelated.0.id()).unwrap();
+        let command = Command::new(executable)
+            .args(["--exact", HELPER, "--nocapture"])
+            .env("AURUM_WORKER_FIXTURE", first.to_string_lossy())
+            .env("AURUM_WORKER_ROLE", "root")
+            .candidate_storage(&first)
+            .candidate_storage(&second);
+        let running = std::thread::spawn(move || command.run(Duration::from_secs(10)));
+        let started = Instant::now();
+        while !first.join("ready").exists() || !unrelated_path.join("leaf.ready").exists() {
+            assert!(
+                !running.is_finished(),
+                "owned worker exited before readiness"
+            );
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let owners: Vec<_> = ["root.pid", "leaf.pid"]
+            .into_iter()
+            .map(|filename| {
+                let pid = std::fs::read_to_string(first.join(filename))
+                    .unwrap()
+                    .parse::<u32>()
+                    .unwrap();
+                let live = crate::ownership::inspect(pid).unwrap();
+                crate::ownership::OwnershipRecord {
+                    session: crate::random::session_id(),
+                    executable: live.executable,
+                    pid,
+                    started: live.started.unwrap(),
+                    project: first.clone(),
+                    kind: crate::ownership::ProcessKind::Worker,
+                }
+            })
+            .collect();
+        let redirected = second.join("redirected");
+        if link {
+            let created = StdCommand::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(&redirected)
+                .arg(&outside)
+                .creation_flags(0x08000000)
+                .output()
+                .unwrap();
+            assert!(created.status.success(), "{created:?}");
+        } else {
+            use std::os::windows::io::AsRawHandle;
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn DeviceIoControl(
+                    handle: *mut std::ffi::c_void,
+                    code: u32,
+                    input: *mut std::ffi::c_void,
+                    input_bytes: u32,
+                    output: *mut std::ffi::c_void,
+                    output_bytes: u32,
+                    returned_bytes: *mut u32,
+                    overlapped: *mut std::ffi::c_void,
+                ) -> i32;
+            }
+            let file = std::fs::File::create(second.join("too-large")).unwrap();
+            let mut returned = 0;
+            // A sparse length proves the byte guard without allocating 1 GiB.
+            assert_ne!(
+                unsafe {
+                    DeviceIoControl(
+                        file.as_raw_handle(),
+                        0x900c4, // FSCTL_SET_SPARSE
+                        std::ptr::null_mut(),
+                        0,
+                        std::ptr::null_mut(),
+                        0,
+                        &mut returned,
+                        std::ptr::null_mut(),
+                    )
+                },
+                0,
+                "{}",
+                std::io::Error::last_os_error()
+            );
+            file.set_len(crate::candidate_workspace::WORKSPACE_BYTES + 1)
+                .unwrap();
+        }
+        let error = running.join().unwrap().unwrap_err();
+        let expected = if link { "link" } else { "observed-byte budget" };
+        assert!(error.to_string().contains(expected), "{error}");
+        for owner in owners {
+            assert!(crate::ownership::recorded_process_gone(&owner));
+        }
+        assert_eq!(
+            crate::ownership::inspect(unrelated.0.id()),
+            Some(unrelated_identity)
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.join("keep")).unwrap(),
+            "untouched"
+        );
+        if link {
+            std::fs::remove_dir(redirected).unwrap();
+        }
+        drop(unrelated);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn oversize_secondary_storage_stops_owned_descendants_and_preserves_unrelated_process() {
+        outside_secondary_storage_stops_only_the_owned_tree(false);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn linked_secondary_storage_stops_owned_descendants_and_preserves_unrelated_process() {
+        outside_secondary_storage_stops_only_the_owned_tree(true);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn background_cargo_metadata_preserves_the_invoked_proxy_name() {
+        let path = std::env::temp_dir().join(format!(
+            "aurum-cargo-proxy-test-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir_all(path.join("src")).unwrap();
+        std::fs::write(
+            path.join("Cargo.toml"),
+            "[package]\nname=\"cargo-proxy-witness\"\nversion=\"0.1.0\"\nedition=\"2021\"\n[lib]\ncrate-type=[\"cdylib\"]\n",
+        )
+        .unwrap();
+        std::fs::write(path.join("src/lib.rs"), "pub fn witness() {}\n").unwrap();
+        let lock = "version=4\n\n[[package]]\nname=\"cargo-proxy-witness\"\nversion=\"0.1.0\"\n";
+        std::fs::write(path.join("Cargo.lock"), lock).unwrap();
+        let cargo = crate::toolchain::find_on_path("cargo").expect("Cargo must be installed");
+        let context = crate::operation_context::OperationContext::new(
+            Instant::now() + Duration::from_secs(10),
+        );
+        let outcome = context
+            .scope(|| {
+                Command::new(cargo)
+                    .args([
+                        "metadata",
+                        "--format-version",
+                        "1",
+                        "--no-deps",
+                        "--locked",
+                        "--offline",
+                    ])
+                    .directory(&path)
+                    .env("CARGO_TARGET_DIR", path.join("target").to_string_lossy())
+                    .run(Duration::from_secs(10))
+            })
+            .unwrap()
+            .unwrap();
+        assert!(outcome.success(), "{outcome:?}");
+        let metadata: serde_json::Value = serde_json::from_str(&outcome.stdout).unwrap();
+        assert_eq!(metadata["packages"][0]["name"], "cargo-proxy-witness");
+        assert_eq!(
+            std::fs::read_to_string(path.join("Cargo.lock")).unwrap(),
+            lock
+        );
+        assert!(crate::operation_context::OperationContext::current().is_none());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn expired_commands_do_not_spawn_or_leave_a_scoped_context() {
+        let context = crate::operation_context::OperationContext::new(
+            Instant::now() + Duration::from_secs(5),
+        );
+        let error = context
+            .scope(|| Command::new("definitely-not-a-real-program-xyz").run(Duration::ZERO))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(crate::operation_context::OperationContext::current().is_none());
+    }
+    #[cfg(not(windows))]
+    #[test]
+    fn background_tree_ownership_is_refused_on_unqualified_platforms() {
+        let context = crate::operation_context::OperationContext::new(
+            Instant::now() + Duration::from_secs(5),
+        );
+        let error = context
+            .scope(|| echo_command("fixture").run(Duration::from_secs(1)))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert!(crate::operation_context::OperationContext::current().is_none());
+    }
 
     #[test]
     fn diagnostic_engine_flags_do_not_become_script_arguments() {

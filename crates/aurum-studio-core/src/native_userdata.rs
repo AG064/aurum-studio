@@ -447,6 +447,13 @@ pub fn list(root: &Path) -> Result<Value, String> {
     )
 }
 pub fn forget(root: &Path, id: &str) -> Result<Value, String> {
+    let context = crate::operation_context::OperationContext::current();
+    if let Some(context) = &context {
+        context.check().map_err(|error| error.to_string())?;
+    }
+    if !valid_id(id) {
+        return Err("native userdata ID must be 32 lowercase hexadecimal characters".into());
+    }
     let store = base(root)?;
     let _store = root_lock(&store)?;
     if current(&store)?.as_deref() == Some(id) {
@@ -471,7 +478,29 @@ pub fn forget(root: &Path, id: &str) -> Result<Value, String> {
     {
         return Err("native userdata cleanup refused a redirected directory".into());
     }
+    if let Some(context) = &context {
+        context.check().map_err(|error| error.to_string())?;
+        context.phase(crate::operation_context::Phase::Cleanup);
+    }
+    let guard = context
+        .as_ref()
+        .map(|context| context.commit_barrier())
+        .transpose()
+        .map_err(|error| error.to_string())?;
     std::fs::remove_dir_all(directory).map_err(|error| error.to_string())?;
+    match std::fs::symlink_metadata(directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(guard) = guard {
+                guard.finish();
+            }
+        }
+        _ => {
+            if let Some(context) = context {
+                context.mark_recovery_required();
+            }
+            return Err("native userdata deletion could not be confirmed".into());
+        }
+    }
     Ok(json!({"ok":true,"forgotten":id,"recoverable":false,"source_changed":false}))
 }
 
@@ -541,6 +570,31 @@ mod tests {
                 .len(),
             1
         );
+    }
+    #[test]
+    fn generation_forget_commits_only_after_validated_and_confirmed_deletion() {
+        let fixture = Fixture::new();
+        let old = UserdataRun::stage(&fixture.0, None).unwrap();
+        old.publish().unwrap();
+        let old_id = old.id.clone();
+        let old_directory = old.path.parent().unwrap().to_path_buf();
+        drop(old);
+        let current = UserdataRun::stage(&fixture.0, None).unwrap();
+        current.publish().unwrap();
+        let context = crate::operation_context::OperationContext::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+        );
+        context
+            .scope(|| {
+                assert!(forget(&fixture.0, &current.id).is_err());
+                assert!(!context.committed());
+                assert!(context.commit_status_verified());
+                assert_eq!(forget(&fixture.0, &old_id).unwrap()["forgotten"], old_id);
+            })
+            .unwrap();
+        assert!(context.committed());
+        assert!(!old_directory.exists());
+        assert_eq!(list(&fixture.0).unwrap()["current"], current.id);
     }
     #[test]
     fn abandoned_staging_never_overwrites_the_current_generation() {

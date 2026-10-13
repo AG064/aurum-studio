@@ -1,4 +1,5 @@
 //! Private native dependency preparation. Compiler descendants belong to the host.
+use crate::operation_context::{OperationContext, Phase};
 use crate::{files, snapshot, Command, Project};
 use serde_json::{json, Value};
 use std::io::Read;
@@ -7,6 +8,24 @@ use std::time::Duration;
 
 const PLAN_BYTES: u64 = 256 * 1024;
 pub const COMPILER_SECONDS: u64 = 120;
+fn operation_check() -> Result<(), String> {
+    if let Some(context) = OperationContext::current() {
+        context.check().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+fn operation_phase(phase: Phase) -> Result<(), String> {
+    operation_check()?;
+    if let Some(context) = OperationContext::current() {
+        context.phase(phase);
+    }
+    Ok(())
+}
+fn operation_budget(local: Duration) -> Result<Duration, String> {
+    OperationContext::current().map_or(Ok(local), |context| {
+        context.budget(local).map_err(|error| error.to_string())
+    })
+}
 
 fn bounded_json(path: &Path) -> Result<Value, String> {
     crate::diagnostics::checked_path(path).map_err(|error| error.to_string())?;
@@ -157,6 +176,7 @@ pub(crate) fn prepare(
     engine: &Path,
     userdata: &Path,
 ) -> Result<Value, String> {
+    operation_phase(Phase::Dependencies)?;
     if project.config.validation_command.is_some() {
         return Err(
             "private native dependencies require copied source without custom validators".into(),
@@ -172,6 +192,7 @@ pub(crate) fn prepare(
         .iter()
         .filter(|(path, _)| path.to_ascii_lowercase().ends_with(".gdextension"))
     {
+        operation_check()?;
         if *bytes > 65536 || manifests.len() >= 16 {
             return Err("native manifests exceed the 16-file/64-KiB bounds".into());
         }
@@ -218,8 +239,9 @@ pub(crate) fn prepare(
     ] {
         command = command.env(key, clean(userdata));
     }
-    let result = crate::native_runtime::run(&command, Duration::from_secs(30))
+    let result = crate::native_runtime::run(&command, operation_budget(Duration::from_secs(30))?)
         .map_err(|error| error.to_string())?;
+    operation_check()?;
     let mut plan = bounded_json(&output).map_err(|_| {
         format!(
             "native dependency probe failed: {}",
@@ -287,7 +309,7 @@ pub(crate) fn prepare(
         let version = Command::new(rustc)
             .args(["-vV"])
             .candidate_storage(workspace)
-            .run(Duration::from_secs(10))
+            .run(operation_budget(Duration::from_secs(10))?)
             .map_err(|error| error.to_string())?;
         let host = version
             .stdout
@@ -321,8 +343,9 @@ pub(crate) fn prepare(
                 "--filter-platform",
                 host,
             ])
-            .run(Duration::from_secs(30))
+            .run(operation_budget(Duration::from_secs(30))?)
             .map_err(|error| error.to_string())?;
+        operation_check()?;
         if !metadata.success() {
             return Err(format!(
                 "private Cargo metadata failed; dependencies must be available offline: {}",
@@ -353,6 +376,7 @@ pub(crate) fn prepare(
                     .into(),
             );
         }
+        operation_phase(Phase::Compiling)?;
         let build = base
             .args(["build", "--manifest-path"])
             .arg(clean(&workspace_root.join("Cargo.toml")))
@@ -378,8 +402,9 @@ pub(crate) fn prepare(
                 "--color",
                 "never",
             ])
-            .run(Duration::from_secs(COMPILER_SECONDS))
+            .run(operation_budget(Duration::from_secs(COMPILER_SECONDS))?)
             .map_err(|error| error.to_string())?;
+        operation_check()?;
         if !build.success() {
             return Err(format!(
                 "private Rust compilation failed; previous game retained: {}",
@@ -394,6 +419,7 @@ pub(crate) fn prepare(
             );
         }
         let artifact = artifact(&build.stdout, &package_id, &target_name, &target)?;
+        operation_phase(Phase::Staging)?;
         let sha = crate::sha256_file(&artifact).map_err(|error| error.to_string())?;
         let mut binary = Vec::new();
         std::fs::File::open(&artifact)
@@ -409,7 +435,9 @@ pub(crate) fn prepare(
                 "native compiler artifact changed while staging; activation refused".into(),
             );
         }
+        operation_check()?;
         files::write_atomic(&destination, &binary).map_err(|error| error.to_string())?;
+        operation_check()?;
         compiled = Some(
             json!({"package":package,"target":target_name,"sha256":sha,"library":destination,"lock_sha256":lock_sha,"offline":true}),
         );
@@ -418,6 +446,7 @@ pub(crate) fn prepare(
         .as_array_mut()
         .ok_or("missing native plan")?
     {
+        operation_check()?;
         let library = confined_absolute(
             &project.root,
             Path::new(row["library"].as_str().ok_or("missing native library")?),
@@ -431,6 +460,7 @@ pub(crate) fn prepare(
             .as_array()
             .ok_or("missing native dependencies")?
         {
+            operation_check()?;
             let path = path.as_str().ok_or("invalid native dependency")?;
             let target = confined_absolute(&project.root, Path::new(path))?;
             if !target.is_file() {
@@ -448,10 +478,12 @@ pub(crate) fn prepare(
     }
     plan["compiled"] = compiled.unwrap_or(Value::Null);
     plan["native"] = json!(true);
+    operation_check()?;
     Ok(plan)
 }
 
 pub(crate) fn verify(expected: &Value, actual: &Value) -> Result<(), String> {
+    operation_phase(Phase::Dependencies)?;
     if actual["ok"] != true {
         return Err("running native dependency inspection failed".into());
     }
@@ -462,6 +494,7 @@ pub(crate) fn verify(expected: &Value, actual: &Value) -> Result<(), String> {
         .as_array()
         .ok_or("invalid prepared native dependencies")?
     {
+        operation_check()?;
         let live = observed
             .iter()
             .find(|live| live["manifest"] == row["manifest"])
@@ -482,6 +515,32 @@ pub(crate) fn verify(expected: &Value, actual: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancelled_dependency_preparation_never_creates_a_probe_or_runs_an_engine() {
+        let fixture = Fixture::new();
+        std::fs::write(
+            fixture.0.join("aurum.toml"),
+            "schema_version=1\nname=\"cancelled\"\nmodules=[]\n",
+        )
+        .unwrap();
+        let project = Project::open(&fixture.0).unwrap();
+        let workspace = fixture.0.join("private");
+        let context = OperationContext::new(std::time::Instant::now() + Duration::from_secs(5));
+        context
+            .scope(|| {
+                context.request_cancel().unwrap();
+                let error = prepare(
+                    &project,
+                    &workspace,
+                    Path::new("absent-engine.exe"),
+                    &workspace.join("data"),
+                )
+                .unwrap_err();
+                assert!(error.contains("cancellation"), "{error}");
+            })
+            .unwrap();
+        assert!(!workspace.exists());
+    }
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {

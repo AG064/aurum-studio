@@ -1,9 +1,9 @@
 // Actual Godot validation of disposable candidates through CLI, MCP and HTTP.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, writeFile, readFile, readdir, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, readFile, readdir, stat, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, relative } from "node:path";
 import { createHash } from "node:crypto";
 
 const [binary, godot] = process.argv.slice(2);
@@ -160,7 +160,9 @@ try {
     while(alive(probe.pid) && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,25));
     check(!alive(probe.pid),"actual Godot worker cannot survive host crash");
     const abandoned = dirname(probe.userdata);
-    check(abandoned.startsWith(join(temporary,"aurum-candidates-v1")),"crashed candidate belongs to the private fixture pool");
+    const pool = await realpath(join(temporary,"aurum-candidates-v1"));
+    const candidate = await realpath(abandoned);
+    check(/^candidate-[a-f0-9]{32}$/.test(relative(pool,candidate)),"crashed candidate belongs directly to the canonical private fixture pool");
     check((await stat(abandoned)).isDirectory(),"host crash leaves a recognized candidate for recovery");
     const recovery = cli({op:"changes_validate",changes});
     check(recovery.value.ok && recovery.value.workspace_recovered === 1,"next validation reclaims the abandoned copy and runs successfully");

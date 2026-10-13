@@ -19,9 +19,16 @@ source. Native candidates compile before validation; their generated DLLs are
 verified but excluded from source journals and undo, preserving working
 libraries and accepted gameplay. Contained relative Cargo workspace hints add
 a nested-layout integration gate for member libraries and local dependencies.
+Development source also adds shared background jobs with capability-scoped
+ownership, bounded queues/results, progress, deadlines, cancellation and
+interrupted-summary reconnect. The latest Windows qualification binary passed
+158 expanded job/Godot/package checks and 31 portable real Cargo
+cancellation/deadline/privacy checks, alongside 746 focused Rust/doc tests and
+strict Clippy. Package confinement/recovery/PCK and aggregate staging-storage
+checks plus bounded standalone packaged execution passed.
 External workspace/dependency staging outside the imported root, shared
-compilation caching, background jobs, in-flight cancellation and device/release
-qualification remain open gates.
+compilation caching, runtime/dependency context, agent benchmarks and
+device/release qualification remain open gates.
 
 - Browser interface with project creation/import/selection, files, scenes, agents, validation, development watching, and Windows packaging.
 - Development workbench with Scene/Source/Agents/Export tabs, a live inspector, source/draft status, Output/Checks dock, on-demand operation contracts and session execution receipts.

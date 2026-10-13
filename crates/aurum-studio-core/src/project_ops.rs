@@ -11,6 +11,13 @@ pub const OPERATIONS: &[&str] = &[
     "context_snapshot",
     "context_delta",
     "context_forget",
+    "job_submit",
+    "job_status",
+    "job_result",
+    "job_list",
+    "job_cancel",
+    "job_forget",
+    "job_reconnect",
     "changes_check",
     "changes_validate",
     "changes_last",
@@ -62,6 +69,9 @@ pub fn is_read_only(op: &str) -> bool {
             | "status"
             | "logs"
             | "context_delta"
+            | "job_status"
+            | "job_result"
+            | "job_list"
             | "changes_check"
             | "changes_last"
             | "changes_history"
@@ -116,6 +126,25 @@ pub fn execute_in_runtime(
 ) -> Result<Value, String> {
     execute_context(root, input, read_only, Some(runtime))
 }
+pub fn execute_in_service(
+    root: &Path,
+    input: &Value,
+    read_only: bool,
+    runtime: std::sync::Arc<crate::native_operations::NativeRuntime>,
+) -> Result<Value, String> {
+    if input["op"]
+        .as_str()
+        .is_some_and(crate::project_jobs::supported)
+    {
+        return crate::project_jobs::execute(root, input, read_only, runtime);
+    }
+    let context = crate::operation_context::OperationContext::current();
+    if let Some(context) = &context {
+        context.check().map_err(|error| error.to_string())?;
+    }
+    // Each mutation owns its barrier after permission and operation prechecks.
+    execute_context(root, input, read_only, Some(&runtime))
+}
 fn execute_context(
     root: &Path,
     input: &Value,
@@ -128,6 +157,10 @@ fn execute_context(
     }
     if read_only && !is_read_only(op) {
         return Err(format!("'{op}' requires write permission"));
+    }
+    if crate::project_jobs::supported(op) {
+        crate::project_jobs::preflight(input, read_only)?;
+        return crate::native_host::route(root, input);
     }
     if op == "context_delta" {
         return crate::agent_context::delta(root, input);
@@ -302,8 +335,8 @@ fn execute_inner(project: Project, input: &Value) -> Result<Value, String> {
         "undo" => {
             let path = managed_path(&project.root, field(input, "path")?)?;
             let backup = backup_path(&project.root, &path)?;
-            let bytes = std::fs::read(&backup)
-                .map_err(|_| "no previous version was recorded for this file")?;
+            let bytes = bounded_source_bytes(&backup)
+                .map_err(|error| format!("previous file version is unavailable: {error}"))?;
             commit_file(
                 &project.root,
                 &path,
@@ -344,6 +377,9 @@ fn execute_inner(project: Project, input: &Value) -> Result<Value, String> {
             let output = managed_path(&project.root, field(input, "output")?)?;
             if output.exists() {
                 return Err("export destination already exists; choose a new output path".into());
+            }
+            if crate::operation_context::OperationContext::current().is_some() {
+                return export_job(&project, input, preset, &output);
             }
             if let Some(parent) = output.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -440,7 +476,167 @@ fn read_play_report(path: &Path) -> Result<Value, String> {
 pub const EXPORT_PLATFORMS: &[&str] =
     &["Windows Desktop", "Linux", "macOS", "Web", "Android", "iOS"];
 
+struct PublicationStage(PathBuf, bool);
+impl Drop for PublicationStage {
+    fn drop(&mut self) {
+        if self.1 {
+            return;
+        }
+        if let Some(context) = crate::operation_context::OperationContext::current() {
+            if context.termination_unconfirmed() || context.recovery_required() {
+                context.mark_recovery_required();
+                return;
+            }
+        }
+        if crate::diagnostics::checked_path(&self.0).is_ok()
+            && self
+                .0
+                .canonicalize()
+                .map(crate::project::clean_path)
+                .is_ok_and(|path| path == self.0)
+        {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
+// Jobs export a complete fresh directory so executable, pack and platform
+// sidecars have one publication point. Existing-directory synchronous exports
+// retain their established behavior.
+fn export_job(
+    project: &Project,
+    input: &Value,
+    preset: &str,
+    output: &Path,
+) -> Result<Value, String> {
+    let destination = output.parent().ok_or("export output has no directory")?;
+    if destination.exists() {
+        return Err(
+            "background export requires a new output directory for atomic sidecar publication"
+                .into(),
+        );
+    }
+    let filename = output.file_name().ok_or("export output has no filename")?;
+    let stage = files::confined(
+        &project.root,
+        &format!(".aurum/exports/{}", crate::random::session_id()),
+    )?;
+    std::fs::create_dir_all(stage.parent().ok_or("export stage has no parent")?)
+        .map_err(|error| error.to_string())?;
+    std::fs::create_dir(&stage).map_err(|error| error.to_string())?;
+    let _stage = PublicationStage(stage.clone(), false);
+    let source = stage.join("source");
+    let context = crate::operation_context::OperationContext::current()
+        .ok_or("export job context is unavailable")?;
+    context.phase(crate::operation_context::Phase::Staging);
+    {
+        let _content = crate::content_lock::ContentLock::shared(&project.root)?;
+        crate::transactions::ensure_writable(&project.root)?;
+        if crate::snapshot::inventory(&project.root)?
+            .iter()
+            .map(|(_, bytes)| bytes)
+            .sum::<u64>()
+            > crate::candidates::MAX_SOURCE_BYTES
+        {
+            return Err("export source exceeds the private snapshot budget".into());
+        }
+        let fingerprint = crate::snapshot::fingerprint_all(&project.root)?;
+        crate::snapshot::copy(&project.root, &source)?;
+        if crate::snapshot::fingerprint_all(&source)? != fingerprint
+            || crate::snapshot::fingerprint_all(&project.root)? != fingerprint
+        {
+            return Err("source changed while preparing export; working files preserved".into());
+        }
+    }
+    let private = Project::open(&source).map_err(|error| error.to_string())?;
+    let artifacts = stage.join("output");
+    let userdata = stage.join("userdata");
+    std::fs::create_dir(&artifacts).map_err(|error| error.to_string())?;
+    std::fs::create_dir(&userdata).map_err(|error| error.to_string())?;
+    let runtime = RuntimeContext {
+        engine: engine_binary(project)?,
+        userdata,
+    };
+    context.phase(crate::operation_context::Phase::Compiling);
+    let flag = if input.get("pack").and_then(Value::as_bool).unwrap_or(false) {
+        "--export-pack"
+    } else if input.get("debug").and_then(Value::as_bool).unwrap_or(false) {
+        "--export-debug"
+    } else {
+        "--export-release"
+    };
+    let mut result = engine_run_with_context(
+        &private,
+        &[
+            "--headless".into(),
+            "--path".into(),
+            godot_root(&private)?.display().to_string(),
+            flag.into(),
+            preset.into(),
+            artifacts.join(filename).display().to_string(),
+        ],
+        Duration::from_secs(600),
+        Some(&runtime),
+    )?;
+    if result["ok"] != true {
+        return Ok(result);
+    }
+    if !artifacts.join(filename).is_file() {
+        return Err("export reported success without the requested artifact".into());
+    }
+    crate::candidate_workspace::usage_with_budget(
+        &artifacts,
+        1024 * 1024 * 1024,
+        context
+            .budget(Duration::from_secs(2))
+            .map_err(|error| error.to_string())?,
+    )?;
+    let _content = crate::content_lock::ContentLock::exclusive(&project.root)?;
+    crate::transactions::ensure_writable(&project.root)?;
+    let relative = destination
+        .strip_prefix(&project.root)
+        .map_err(|error| error.to_string())?
+        .to_str()
+        .ok_or("export paths must be UTF-8")?;
+    if files::confined(&project.root, relative)? != destination || destination.exists() {
+        return Err(
+            "export directory changed during preparation; existing output preserved".into(),
+        );
+    }
+    std::fs::create_dir_all(
+        destination
+            .parent()
+            .ok_or("export directory has no parent")?,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut guard = publication_barrier()?;
+    if let Err(error) = std::fs::rename(&artifacts, destination) {
+        if artifacts.is_dir() && !destination.exists() {
+            if let Some(guard) = guard.take() {
+                guard.rollback_complete();
+            }
+        } else {
+            context.mark_recovery_required();
+        }
+        return Err(error.to_string());
+    }
+    if let Some(guard) = guard {
+        guard.finish();
+    }
+    result["output"] = json!(output);
+    result["directory"] = json!(destination);
+    result["atomic_directory_publication"] = json!(true);
+    Ok(result)
+}
+
 fn ensure_export_preset(project: &Project, platform: &str) -> Result<String, String> {
+    ensure_export_preset_with_policy(project, platform, true)
+}
+fn ensure_export_preset_with_policy(
+    project: &Project,
+    platform: &str,
+    publish: bool,
+) -> Result<String, String> {
     if !EXPORT_PLATFORMS.contains(&platform) {
         return Err(format!(
             "unsupported export platform '{platform}'; expected one of {}",
@@ -499,7 +695,13 @@ fn ensure_export_preset(project: &Project, platform: &str) -> Result<String, Str
     } else {
         String::new()
     };
-    commit_file(&project.root, &path, text.as_bytes(), Some(&expected))?;
+    commit_file_with_policy(
+        &project.root,
+        &path,
+        text.as_bytes(),
+        Some(&expected),
+        publish,
+    )?;
     Ok(preset)
 }
 
@@ -517,10 +719,15 @@ fn package_windows(project: &Project, input: &Value) -> Result<Value, String> {
     if output.exists() {
         return Err("package destination already exists; choose a new directory".into());
     }
-    if project.config.rust_package.is_some() {
+    let private_job = crate::operation_context::OperationContext::current().is_some();
+    if !private_job && project.config.rust_package.is_some() {
         build_project(project, true)?;
     }
-    let preset = ensure_export_preset(project, "Windows Desktop")?;
+    let preset = if private_job {
+        None
+    } else {
+        Some(ensure_export_preset(project, "Windows Desktop")?)
+    };
     let mut workspace = crate::candidate_workspace::Workspace::create()?;
     let source = workspace.path.join("source");
     {
@@ -540,6 +747,13 @@ fn package_windows(project: &Project, input: &Value) -> Result<Value, String> {
         }
     }
     let private = Project::open(&source).map_err(|error| error.to_string())?;
+    if private_job && private.config.rust_package.is_some() {
+        build_project_with_policy(&private, true, false)?;
+    }
+    let preset = match preset {
+        Some(preset) => preset,
+        None => ensure_export_preset_with_policy(&private, "Windows Desktop", false)?,
+    };
     // The supplied full runtime advertises debug features. Its debug-selected
     // paths must carry the chosen release bytes in this package only.
     for (relative, _) in crate::snapshot::inventory(godot_root(&private)?)?
@@ -553,7 +767,7 @@ fn package_windows(project: &Project, input: &Value) -> Result<Value, String> {
             return Err("selected release library is missing; package was not published".into());
         }
         if release_library != runtime_library {
-            crate::build::install(&release_library, &runtime_library)
+            crate::build::install_private(&release_library, &runtime_library)
                 .map_err(|error| error.to_string())?;
         }
     }
@@ -578,25 +792,10 @@ fn package_windows(project: &Project, input: &Value) -> Result<Value, String> {
     )
     .map_err(|e| e.to_string())?;
     std::fs::create_dir(&stage).map_err(|e| e.to_string())?;
-    struct PackageStage(PathBuf, bool);
-    impl Drop for PackageStage {
-        fn drop(&mut self) {
-            if !self.1
-                && crate::diagnostics::checked_path(&self.0).is_ok()
-                && self
-                    .0
-                    .canonicalize()
-                    .map(crate::project::clean_path)
-                    .is_ok_and(|path| path == self.0)
-            {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-    }
     // This guard owns only the fresh, confined stage created above. It never
     // deletes the requested destination or any earlier package.
-    let mut staged = PackageStage(stage.clone(), false);
-    let packed = engine_run_with_context(
+    let mut staged = PublicationStage(stage.clone(), false);
+    let packed = engine_run_with_storage(
         &private,
         &[
             "--headless".into(),
@@ -608,6 +807,7 @@ fn package_windows(project: &Project, input: &Value) -> Result<Value, String> {
         ],
         Duration::from_secs(600),
         Some(&context),
+        Some(&stage),
     )?;
     if packed["ok"] != true {
         return Ok(packed);
@@ -636,15 +836,84 @@ fn package_windows(project: &Project, input: &Value) -> Result<Value, String> {
     )
     .map_err(|e| e.to_string())?;
     files::write_atomic(&stage.join("README.txt"),b"Launch game.exe. Keep game.pck and the supplied libraries beside it. This Windows package includes the Godot runtime; no separate engine installation is required.\n").map_err(|e|e.to_string())?;
+    let _content = crate::content_lock::ContentLock::exclusive(&project.root)?;
+    crate::transactions::ensure_writable(&project.root)?;
+    validate_package_destination(&project.root, &output)?;
+    let context = crate::operation_context::OperationContext::current();
+    let budget = context
+        .as_ref()
+        .map(|context| context.budget(Duration::from_secs(2)))
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or(Duration::from_secs(2));
+    validate_package_stage(
+        &project.root,
+        &stage,
+        crate::candidate_workspace::WORKSPACE_BYTES,
+        budget,
+    )?;
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+    let guard = publication_barrier()?;
+    if output.exists() {
+        if let Some(guard) = guard {
+            guard.rollback_complete();
+        }
+        return Err(
+            "package destination appeared during preparation; existing output preserved".into(),
+        );
+    }
     std::fs::rename(&stage, &output).map_err(|e| e.to_string())?;
     staged.1 = true;
+    if let Some(guard) = guard {
+        guard.finish();
+    }
     let cleaned = workspace.clean().is_ok();
     Ok(
         json!({"ok":true,"directory":output,"executable":output.join("game.exe"),"runtime_sha256":runtime_hash,"requires_separate_godot":false,"native_profile":"release","private_source_cleaned":cleaned}),
     )
+}
+
+fn validate_package_destination(root: &Path, output: &Path) -> Result<(), String> {
+    let relative = output
+        .strip_prefix(root)
+        .map_err(|error| error.to_string())?
+        .to_str()
+        .ok_or("package paths must be UTF-8")?;
+    if files::confined(root, relative)? != output || output.exists() {
+        return Err(
+            "package destination changed during preparation; existing output preserved".into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_package_stage(
+    root: &Path,
+    stage: &Path,
+    limit: u64,
+    budget: Duration,
+) -> Result<(), String> {
+    crate::diagnostics::checked_path(stage).map_err(|error| error.to_string())?;
+    if !stage.starts_with(root)
+        || stage
+            .canonicalize()
+            .map(crate::project::clean_path)
+            .map_err(|error| error.to_string())?
+            != stage
+    {
+        return Err("package staging directory was redirected; publication refused".into());
+    }
+    let pack = stage.join("game.pck");
+    crate::diagnostics::checked_path(&pack).map_err(|error| error.to_string())?;
+    let metadata = std::fs::symlink_metadata(pack)
+        .map_err(|_| "package export did not create the requested pack")?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() == 0 {
+        return Err("package requires a nonempty regular game.pck artifact".into());
+    }
+    crate::candidate_workspace::usage_with_budget(stage, limit, budget)?;
+    Ok(())
 }
 
 fn copy_native_libraries(
@@ -670,7 +939,8 @@ fn copy_native_libraries(
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            let copied = crate::build::install(&entry.path(), &path).map_err(|e| e.to_string())?;
+            let copied =
+                crate::build::install_private(&entry.path(), &path).map_err(|e| e.to_string())?;
             if copied.sha256 != crate::sha256_file(&entry.path()).map_err(|e| e.to_string())? {
                 return Err("native library copy hash mismatch".into());
             }
@@ -725,9 +995,18 @@ fn draft(project: &Project, input: &Value) -> Result<Value, String> {
     }
     let target = directory.join(format!("{key}-{id}.json"));
     if input["op"] == "draft_clear" {
+        let guard = publication_barrier()?;
         match std::fs::remove_file(&target) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(()) => {
+                if let Some(guard) = guard {
+                    guard.finish();
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(guard) = guard {
+                    guard.rollback_complete();
+                }
+            }
             Err(error) => return Err(error.to_string()),
         }
         return Ok(json!({"ok":true}));
@@ -737,11 +1016,12 @@ fn draft(project: &Project, input: &Value) -> Result<Value, String> {
         return Err("drafts are limited to 2 MiB".into());
     }
     let value = json!({"path":relative,"draft_id":id,"text":text,"base_sha256":input.get("base_sha256").and_then(Value::as_str).unwrap_or("")});
-    files::write_atomic(
-        &target,
-        &serde_json::to_vec(&value).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+    let guard = publication_barrier()?;
+    files::write_atomic(&target, &bytes).map_err(|e| e.to_string())?;
+    if let Some(guard) = guard {
+        guard.finish();
+    }
     Ok(json!({"ok":true,"draft_id":id}))
 }
 
@@ -801,24 +1081,91 @@ fn commit_file(
     bytes: &[u8],
     expected: Option<&str>,
 ) -> Result<(), String> {
+    commit_file_with_policy(root, path, bytes, expected, true)
+}
+fn commit_file_with_policy(
+    root: &Path,
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<&str>,
+    publish: bool,
+) -> Result<(), String> {
     let _content_lock = crate::content_lock::ContentLock::exclusive(root)?;
     crate::transactions::ensure_writable(root)?;
     let _file_lock = crate::BuildLock::try_acquire(path).map_err(|e| e.to_string())?;
+    let old = if path.is_file() {
+        Some(bounded_source_bytes(path)?)
+    } else {
+        None
+    };
     if let Some(expected) = expected {
-        let actual = if path.is_file() {
-            crate::sha256_file(path).map_err(|e| e.to_string())?
-        } else {
-            String::new()
-        };
+        let actual = old
+            .as_ref()
+            .map(|bytes| crate::sha256_hex(bytes))
+            .unwrap_or_default();
         if !actual.eq_ignore_ascii_case(expected) {
             return Err("file changed since it was read; inspect it before retrying".into());
         }
     }
-    if path.is_file() {
-        let old = std::fs::read(path).map_err(|e| e.to_string())?;
-        files::write_atomic(&backup_path(root, path)?, &old).map_err(|e| e.to_string())?;
+    if let Some(old) = &old {
+        files::write_atomic(&backup_path(root, path)?, old).map_err(|e| e.to_string())?;
     }
-    files::write_atomic(path, bytes).map_err(|e| e.to_string())
+    // The content lease coordinates Aurum writers. Recheck independently edited
+    // bytes after preparing the backup before the narrow final write boundary.
+    let current = if path.is_file() {
+        Some(bounded_source_bytes(path)?)
+    } else {
+        None
+    };
+    if current != old {
+        return Err("file changed during preparation; newer content preserved".into());
+    }
+    let guard = if publish {
+        publication_barrier()?
+    } else {
+        if let Some(context) = crate::operation_context::OperationContext::current() {
+            context.check().map_err(|error| error.to_string())?;
+        }
+        None
+    };
+    files::write_atomic(path, bytes).map_err(|e| e.to_string())?;
+    if let Some(guard) = guard {
+        guard.finish();
+    }
+    Ok(())
+}
+fn bounded_source_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| error.to_string())?
+        .take(2 * 1024 * 1024 + 1);
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        if let Some(context) = crate::operation_context::OperationContext::current() {
+            context.check().map_err(|error| error.to_string())?;
+        }
+        let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+        if bytes.len() > 2 * 1024 * 1024 {
+            return Err("managed text versions are limited to 2 MiB".into());
+        }
+    }
+    Ok(bytes)
+}
+fn publication_barrier() -> Result<Option<crate::operation_context::CommitGuard>, String> {
+    let context = crate::operation_context::OperationContext::current();
+    if let Some(context) = &context {
+        context.phase(crate::operation_context::Phase::Publishing);
+    }
+    context
+        .as_ref()
+        .map(|context| context.commit_barrier())
+        .transpose()
+        .map_err(|error| error.to_string())
 }
 fn godot_root(project: &Project) -> Result<&Path, String> {
     project
@@ -876,6 +1223,15 @@ fn engine_run_with_context(
     timeout: Duration,
     context: Option<&RuntimeContext>,
 ) -> Result<Value, String> {
+    engine_run_with_storage(project, args, timeout, context, None)
+}
+fn engine_run_with_storage(
+    project: &Project,
+    args: &[String],
+    timeout: Duration,
+    context: Option<&RuntimeContext>,
+    output_storage: Option<&Path>,
+) -> Result<Value, String> {
     let engine = match context {
         Some(context) => context.engine.clone(),
         None => engine_binary(project)?,
@@ -899,6 +1255,9 @@ fn engine_run_with_context(
         ] {
             command = command.env(key, context.userdata.to_string_lossy());
         }
+    }
+    if let Some(storage) = output_storage {
+        command = command.candidate_storage(storage);
     }
     let result = crate::native_runtime::run(&command, timeout).map_err(|e| e.to_string())?;
     let errors: Vec<_> = result
@@ -957,6 +1316,13 @@ pub(crate) fn validate_with_context(
 }
 
 pub fn build_project(project: &Project, release: bool) -> Result<Value, String> {
+    build_project_with_policy(project, release, true)
+}
+fn build_project_with_policy(
+    project: &Project,
+    release: bool,
+    publish: bool,
+) -> Result<Value, String> {
     let Some(package) = project.config.rust_package.as_deref() else {
         return Ok(
             json!({"ok":true,"native_build":false,"message":"Script project; no native build required"}),
@@ -968,21 +1334,30 @@ pub fn build_project(project: &Project, release: bool) -> Result<Value, String> 
     } else {
         crate::Profile::Debug
     };
+    let workspace = if crate::operation_context::OperationContext::current().is_some() {
+        project.confined_build_workspace()?
+    } else {
+        project.build_workspace().to_path_buf()
+    };
     let mut request = crate::BuildRequest::new(
-        project.build_workspace(),
+        &workspace,
         package,
         profile,
         project.library_destination(release)?,
         cargo,
     );
-    request.locked = project.build_workspace().join("Cargo.lock").is_file();
-    let _workspace_lock = if project.build_workspace() != project.root {
-        Some(crate::BuildLock::try_acquire(project.build_workspace()).map_err(|e| e.to_string())?)
+    request.locked = workspace.join("Cargo.lock").is_file();
+    let _workspace_lock = if workspace != project.root {
+        Some(crate::BuildLock::try_acquire(&workspace).map_err(|e| e.to_string())?)
     } else {
         None
     };
-    let report =
-        crate::build::run(&request, false, Duration::from_secs(1800)).map_err(|e| e.to_string())?;
+    let report = if publish {
+        crate::build::run(&request, false, Duration::from_secs(1800))
+    } else {
+        crate::build::run_private(&request, false, Duration::from_secs(1800))
+    }
+    .map_err(|error| error.to_string())?;
     Ok(
         json!({"ok":true,"built":report.built,"replaced":report.replaced,"sha256":report.installed.sha256,"message":report.summary(),"diagnostics":report.output}),
     )
@@ -1391,6 +1766,166 @@ fn ensure_imported(project: &Project) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn package_stage_refuses_missing_empty_and_oversized_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-package-stage-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = crate::project::clean_path(root.canonicalize().unwrap());
+        let stage = root.join(".aurum/package-stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        let budget = Duration::from_secs(2);
+        assert!(validate_package_stage(&root, &stage, 4096, budget).is_err());
+        std::fs::write(stage.join("game.pck"), b"").unwrap();
+        assert!(validate_package_stage(&root, &stage, 4096, budget).is_err());
+        std::fs::write(stage.join("game.pck"), b"artifact").unwrap();
+        assert!(validate_package_stage(&root, &stage, 4096, budget).is_ok());
+        std::fs::write(stage.join("extra"), vec![0; 4096]).unwrap();
+        assert!(validate_package_stage(&root, &stage, 4096, budget).is_err());
+        assert!(validate_package_stage(&root, &stage, 8192, Duration::ZERO).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn package_publication_refuses_a_parent_redirected_after_preparation() {
+        let base = std::env::temp_dir().join(format!(
+            "aurum-package-redirect-{}",
+            crate::random::session_id()
+        ));
+        let root = base.join("project");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), b"foreign content").unwrap();
+        let root = crate::project::clean_path(root.canonicalize().unwrap());
+        let output = managed_path(&root, "dist/windows").unwrap();
+        assert!(validate_package_destination(&root, &output).is_ok());
+        let parent = root.join("dist");
+        std::fs::remove_dir(&parent).unwrap();
+        #[cfg(windows)]
+        assert!(std::process::Command::new("cmd.exe")
+            .args(["/c", "mklink", "/J"])
+            .arg(&parent)
+            .arg(&outside)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success());
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &parent).unwrap();
+        assert!(validate_package_destination(&root, &output).is_err());
+        assert_eq!(
+            std::fs::read(outside.join("keep")).unwrap(),
+            b"foreign content"
+        );
+        assert!(!outside.join("windows").exists());
+        #[cfg(windows)]
+        std::fs::remove_dir(&parent).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(&parent).unwrap();
+        std::fs::remove_dir_all(base).unwrap();
+    }
+    #[test]
+    fn uncertain_worker_or_recovery_preserves_unpublished_stage() {
+        use crate::operation_context::OperationContext;
+        use std::time::Instant;
+        for termination in [true, false] {
+            let root = std::env::temp_dir().join(format!(
+                "aurum-uncertain-stage-{}",
+                crate::random::session_id()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let root = crate::project::clean_path(root.canonicalize().unwrap());
+            std::fs::write(root.join("artifact"), b"evidence").unwrap();
+            let context = OperationContext::new(Instant::now() + Duration::from_secs(10));
+            context
+                .scope(|| {
+                    if termination {
+                        context.mark_termination_unconfirmed();
+                    } else {
+                        context.mark_recovery_required();
+                    }
+                    drop(PublicationStage(root.clone(), false));
+                })
+                .unwrap();
+            assert!(context.recovery_required());
+            assert_eq!(std::fs::read(root.join("artifact")).unwrap(), b"evidence");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+    #[test]
+    fn source_prechecks_and_cancellation_do_not_report_publication() {
+        use crate::operation_context::OperationContext;
+        use std::time::Instant;
+        let root =
+            std::env::temp_dir().join(format!("aurum-job-source-{}", crate::random::session_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = crate::project::clean_path(root.canonicalize().unwrap());
+        let path = root.join("main.gd");
+        std::fs::write(&path, b"before").unwrap();
+        let stale = OperationContext::new(Instant::now() + Duration::from_secs(10));
+        stale
+            .scope(|| assert!(commit_file(&root, &path, b"after", Some("stale")).is_err()))
+            .unwrap();
+        assert!(!stale.committed());
+        assert!(stale.commit_status_verified());
+        let cancelled = OperationContext::new(Instant::now() + Duration::from_secs(10));
+        cancelled
+            .scope(|| {
+                cancelled.request_cancel().unwrap();
+                assert!(commit_file(&root, &path, b"after", None).is_err());
+            })
+            .unwrap();
+        assert!(!cancelled.committed());
+        assert!(cancelled.commit_status_verified());
+        assert_eq!(std::fs::read(&path).unwrap(), b"before");
+        let accepted = OperationContext::new(Instant::now() + Duration::from_secs(10));
+        accepted
+            .scope(|| {
+                commit_file(&root, &path, b"after", Some(&crate::sha256_hex(b"before"))).unwrap()
+            })
+            .unwrap();
+        assert!(accepted.committed());
+        assert!(accepted.commit_status_verified());
+        assert!(accepted.request_cancel().is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn background_export_requires_a_fresh_directory_before_starting_godot() {
+        use crate::operation_context::OperationContext;
+        use std::time::Instant;
+        let root =
+            std::env::temp_dir().join(format!("aurum-job-export-{}", crate::random::session_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("aurum.toml"),
+            crate::ProjectConfig::default().to_toml(),
+        )
+        .unwrap();
+        let project = Project::open(&root).unwrap();
+        let context = OperationContext::new(Instant::now() + Duration::from_secs(10));
+        context
+            .scope(|| {
+                assert!(export_job(
+                    &project,
+                    &json!({}),
+                    "Windows",
+                    &project.root.join("game.exe")
+                )
+                .unwrap_err()
+                .contains("new output directory"));
+            })
+            .unwrap();
+        assert!(!context.committed());
+        assert!(context.commit_status_verified());
+        assert!(!root.join(".aurum").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn plain_text_scenes_do_not_require_editor_import() {
         let root = std::env::temp_dir().join(format!(

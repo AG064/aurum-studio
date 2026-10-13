@@ -11,6 +11,45 @@ const MAX_JOURNAL_BYTES: u64 = 1024 * 1024;
 const MAX_HISTORY_BYTES: u64 = 128 * 1024 * 1024;
 type ChangeBytes = (String, Option<Vec<u8>>, Option<Vec<u8>>);
 
+fn operation_check() -> Result<(), String> {
+    if let Some(context) = crate::operation_context::OperationContext::current() {
+        context.check().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+fn operation_phase(phase: crate::operation_context::Phase) {
+    if let Some(context) = crate::operation_context::OperationContext::current() {
+        context.phase(phase);
+    }
+}
+fn commit_barrier() -> Result<Option<crate::operation_context::CommitGuard>, String> {
+    crate::operation_context::OperationContext::current()
+        .map(|context| context.commit_barrier())
+        .transpose()
+        .map_err(|error| error.to_string())
+}
+fn recovery_required() {
+    if let Some(context) = crate::operation_context::OperationContext::current() {
+        context.mark_recovery_required();
+    }
+}
+fn discard_prepared(directory: &Path) -> Result<(), String> {
+    crate::diagnostics::checked_path(directory).map_err(|error| error.to_string())?;
+    for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        crate::diagnostics::checked_path(&entry.path()).map_err(|error| error.to_string())?;
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_file()
+        {
+            return Err("prepared journal cleanup refused unexpected content".into());
+        }
+        std::fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
+    }
+    std::fs::remove_dir(directory).map_err(|error| error.to_string())
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Row {
@@ -239,6 +278,7 @@ pub fn history(root: &Path, input: &Value) -> Result<Value, String> {
     )
 }
 fn read_text(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    operation_check()?;
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.to_string()),
@@ -256,6 +296,7 @@ fn read_text(path: &Path) -> Result<Option<Vec<u8>>, String> {
     if bytes.len() > 2 * 1024 * 1024 || std::str::from_utf8(&bytes).is_err() {
         return Err("revision text file exceeds supported bounds".into());
     }
+    operation_check()?;
     Ok(Some(bytes))
 }
 fn hash(path: &Path) -> Result<Option<String>, String> {
@@ -299,9 +340,17 @@ fn clear_active(root: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn restore(root: &Path, directory: &Path, journal: &mut Journal) -> Result<Value, String> {
+fn restore(
+    root: &Path,
+    directory: &Path,
+    journal: &mut Journal,
+    protected_publication: bool,
+) -> Result<Value, String> {
+    operation_phase(crate::operation_context::Phase::Restoring);
+    operation_check()?;
     let mut conflicts = Vec::new();
     for (index, row) in journal.rows.iter().enumerate() {
+        operation_check()?;
         let path = crate::project_ops::managed_path(root, &row.path)?;
         let current = hash(&path)?;
         if current != row.before && current != row.after {
@@ -310,12 +359,35 @@ fn restore(root: &Path, directory: &Path, journal: &mut Journal) -> Result<Value
         blob(directory, index, true, &row.before)?;
     }
     if !conflicts.is_empty() {
+        recovery_required();
         journal.state = State::RecoveryConflict;
         save(directory, journal)?;
         return Ok(
-            json!({"ok":false,"recovery_blocked":true,"conflicts":conflicts,"revision_id":journal.id}),
+            json!({"ok":false,"recovery_blocked":true,"recovery_required":true,"conflicts":conflicts,"revision_id":journal.id}),
         );
     }
+    let commit = if protected_publication {
+        None
+    } else {
+        commit_barrier()?
+    };
+    let result = restore_protected(root, directory, journal);
+    match &result {
+        Ok(value) if value["ok"] == true => {
+            if let Some(commit) = commit {
+                commit.finish();
+            }
+        }
+        _ => recovery_required(),
+    }
+    result
+}
+
+fn restore_protected(
+    root: &Path,
+    directory: &Path,
+    journal: &mut Journal,
+) -> Result<Value, String> {
     journal.state = State::RollingBack;
     save(directory, journal)?;
     for (index, row) in journal.rows.iter().enumerate().rev() {
@@ -325,19 +397,32 @@ fn restore(root: &Path, directory: &Path, journal: &mut Journal) -> Result<Value
             continue;
         }
         if current != row.after {
+            recovery_required();
             journal.state = State::RecoveryConflict;
             save(directory, journal)?;
             return Ok(
-                json!({"ok":false,"recovery_blocked":true,"revision_id":journal.id,"conflicts":[{"path":row.path,"actual_sha256":current}]}),
+                json!({"ok":false,"recovery_blocked":true,"recovery_required":true,"revision_id":journal.id,"conflicts":[{"path":row.path,"actual_sha256":current}]}),
             );
         }
         let bytes = blob(directory, index, true, &row.before)?;
         apply_bytes(&path, bytes.as_deref())?;
+        if hash(&path)? != row.before {
+            return Err("restored file failed hash verification; recovery remains required".into());
+        }
     }
     for relative in journal.created_dirs.iter().rev() {
         let path = crate::project_ops::managed_path(root, relative)?;
-        if path.is_dir() {
-            let _ = std::fs::remove_dir(path);
+        if path.exists() {
+            if let Err(error) = std::fs::remove_dir(&path) {
+                recovery_required();
+                journal.state = State::RecoveryConflict;
+                save(directory, journal)?;
+                return Ok(
+                    json!({"ok":false,"recovery_blocked":true,"recovery_required":true,
+                    "revision_id":journal.id,"conflicts":[{"path":relative,
+                    "reason":"created_directory_could_not_be_restored","error":error.to_string()}]}),
+                );
+            }
         }
     }
     journal.state = State::RolledBack;
@@ -351,6 +436,8 @@ pub fn recover(project: &Project) -> Result<Value, String> {
 }
 
 pub(crate) fn recover_root(root: &Path) -> Result<Value, String> {
+    operation_phase(crate::operation_context::Phase::Restoring);
+    operation_check()?;
     let root = root
         .canonicalize()
         .map(crate::project::clean_path)
@@ -380,12 +467,19 @@ pub(crate) fn recover_root(root: &Path) -> Result<Value, String> {
         return Err("active pointer and journal identity disagree".into());
     }
     if journal.state == State::Committed || journal.state == State::RolledBack {
-        clear_active(&root)?;
+        let commit = commit_barrier()?;
+        if let Err(error) = clear_active(&root) {
+            recovery_required();
+            return Err(error);
+        }
+        if let Some(commit) = commit {
+            commit.finish();
+        }
         return Ok(
             json!({"ok":true,"recovered":true,"revision_id":revision,"content_changed":false}),
         );
     }
-    restore(&root, &directory, &mut journal)
+    restore(&root, &directory, &mut journal, false)
 }
 
 fn publish_rows(
@@ -394,6 +488,18 @@ fn publish_rows(
     undo_of: Option<String>,
     fail_after: Option<usize>,
 ) -> Result<Value, String> {
+    publish_rows_with(root, changes, undo_of, fail_after, |_| {})
+}
+
+fn publish_rows_with(
+    root: &Path,
+    changes: Vec<ChangeBytes>,
+    undo_of: Option<String>,
+    fail_after: Option<usize>,
+    mut observe: impl FnMut(Option<usize>),
+) -> Result<Value, String> {
+    operation_phase(crate::operation_context::Phase::Publishing);
+    operation_check()?;
     ensure_writable(root)?;
     if changes.is_empty() || changes.len() > MAX_ROWS {
         return Err("revision exceeds supported row bounds".into());
@@ -423,50 +529,69 @@ fn publish_rows(
         created_dirs: Vec::new(),
         undo_of,
     };
-    for (index, (relative, before, after)) in changes.iter().enumerate() {
-        let path = crate::project_ops::managed_path(root, relative)?;
-        if hash(&path)? != before.as_ref().map(|bytes| crate::sha256_hex(bytes)) {
-            return Err("content changed before revision preparation".into());
-        }
-        for (name, bytes) in [("before", before), ("after", after)] {
-            if let Some(bytes) = bytes {
-                durable(&directory.join(format!("{index:03}.{name}")), bytes)?;
+    let prepared = (|| -> Result<(), String> {
+        for (index, (relative, before, after)) in changes.iter().enumerate() {
+            operation_check()?;
+            let path = crate::project_ops::managed_path(root, relative)?;
+            if hash(&path)? != before.as_ref().map(|bytes| crate::sha256_hex(bytes)) {
+                return Err("content changed before revision preparation".into());
             }
-        }
-        let mut missing = Vec::new();
-        let mut parent = path.parent();
-        while let Some(path) = parent {
-            if path.exists() {
-                break;
+            for (name, bytes) in [("before", before), ("after", after)] {
+                if let Some(bytes) = bytes {
+                    durable(&directory.join(format!("{index:03}.{name}")), bytes)?;
+                }
             }
-            missing.push(
-                path.strip_prefix(root)
-                    .map_err(|error| error.to_string())?
-                    .to_string_lossy()
-                    .replace('\\', "/"),
-            );
-            parent = path.parent();
-        }
-        for entry in missing.into_iter().rev() {
-            if !journal.created_dirs.contains(&entry) {
-                journal.created_dirs.push(entry);
+            let mut missing = Vec::new();
+            let mut parent = path.parent();
+            while let Some(path) = parent {
+                if path.exists() {
+                    break;
+                }
+                missing.push(
+                    path.strip_prefix(root)
+                        .map_err(|error| error.to_string())?
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+                parent = path.parent();
             }
+            for entry in missing.into_iter().rev() {
+                if !journal.created_dirs.contains(&entry) {
+                    journal.created_dirs.push(entry);
+                }
+            }
+            journal.rows.push(Row {
+                path: relative.clone(),
+                before: before.as_ref().map(|bytes| crate::sha256_hex(bytes)),
+                after: after.as_ref().map(|bytes| crate::sha256_hex(bytes)),
+            });
         }
-        journal.rows.push(Row {
-            path: relative.clone(),
-            before: before.as_ref().map(|bytes| crate::sha256_hex(bytes)),
-            after: after.as_ref().map(|bytes| crate::sha256_hex(bytes)),
-        });
+        save(&directory, &journal)?;
+        observe(None);
+        operation_check()?;
+        Ok(())
+    })();
+    if let Err(error) = prepared {
+        discard_prepared(&directory)?;
+        return Err(error);
     }
-    save(&directory, &journal)?;
-    durable(
-        &active(root)?,
-        &serde_json::to_vec(&json!({"revision_id":revision})).map_err(|error| error.to_string())?,
-    )?;
-    journal.state = State::Publishing;
-    save(&directory, &journal)?;
+    let mut commit = match commit_barrier() {
+        Ok(commit) => commit,
+        Err(error) => {
+            discard_prepared(&directory)?;
+            return Err(error);
+        }
+    };
     let result = (|| -> Result<(), String> {
+        durable(
+            &active(root)?,
+            &serde_json::to_vec(&json!({"revision_id":revision}))
+                .map_err(|error| error.to_string())?,
+        )?;
+        journal.state = State::Publishing;
+        save(&directory, &journal)?;
         for (index, row) in journal.rows.iter().enumerate() {
+            observe(Some(index));
             #[cfg(test)]
             if std::env::var("AURUM_TRANSACTION_CRASH_AFTER")
                 .ok()
@@ -488,17 +613,40 @@ fn publish_rows(
                 return Err("published file failed hash verification".into());
             }
         }
+        journal.state = State::Committed;
+        save(&directory, &journal)?;
         Ok(())
     })();
     if let Err(error) = result {
-        let recovery = restore(root, &directory, &mut journal)?;
+        let recovery = if active(root)?.exists() {
+            restore(root, &directory, &mut journal, true).unwrap_or_else(|error| {
+                recovery_required();
+                json!({"ok":false,"recovery_required":true,"error":error,"revision_id":journal.id})
+            })
+        } else {
+            json!({"ok":true,"rolled_back":true,"content_changed":false,"revision_id":journal.id})
+        };
+        let restored = recovery["ok"] == true && recovery["rolled_back"] == true;
+        if restored {
+            if let Some(commit) = commit.take() {
+                commit.rollback_complete();
+            }
+        } else {
+            recovery_required();
+        }
         return Ok(
-            json!({"ok":false,"applied":false,"error":error,"revision_id":revision,"recovery":recovery}),
+            json!({"ok":false,"applied":false,"error":error,"revision_id":revision,
+                "source_rolled_back":restored,"recovery_required":!restored,"recovery":recovery}),
         );
     }
-    journal.state = State::Committed;
-    save(&directory, &journal)?;
-    clear_active(root)?;
+    if let Some(commit) = commit.take() {
+        commit.finish();
+    }
+    if let Err(error) = clear_active(root) {
+        recovery_required();
+        return Ok(json!({"ok":false,"applied":true,"revision_id":revision,
+            "recovery_required":true,"error":error,"files_changed":journal.rows.len(),"undo_of":journal.undo_of}));
+    }
     Ok(
         json!({"ok":true,"applied":true,"revision_id":revision,"files_changed":journal.rows.len(),"undo_of":journal.undo_of}),
     )
@@ -552,6 +700,22 @@ fn history_budget(root: &Path, additional: u64) -> Result<(), String> {
 }
 
 pub fn forget(project: &Project, revision: &str) -> Result<Value, String> {
+    forget_with(
+        project,
+        revision,
+        || {},
+        |path| std::fs::remove_dir_all(path),
+    )
+}
+
+fn forget_with(
+    project: &Project,
+    revision: &str,
+    prepared: impl FnOnce(),
+    remove: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<Value, String> {
+    operation_phase(crate::operation_context::Phase::Cleanup);
+    operation_check()?;
     id(revision)?;
     let _lease = crate::content_lock::ContentLock::exclusive(&project.root)?;
     ensure_writable(&project.root)?;
@@ -572,7 +736,19 @@ pub fn forget(project: &Project, revision: &str) -> Result<Value, String> {
     if canonical != expected {
         return Err("revision cleanup refused a redirected path".into());
     }
-    std::fs::remove_dir_all(&directory).map_err(|error| error.to_string())?;
+    prepared();
+    operation_check()?;
+    let commit = commit_barrier()?;
+    if let Err(error) = remove(&directory) {
+        recovery_required();
+        return Ok(
+            json!({"ok":false,"forgotten_revision":revision,"content_changed":false,
+            "deletion_complete":false,"recovery_required":true,"error":error.to_string()}),
+        );
+    }
+    if let Some(commit) = commit {
+        commit.finish();
+    }
     Ok(
         json!({"ok":true,"forgotten_revision":revision,"content_changed":false,"undo_available":false}),
     )
@@ -629,6 +805,8 @@ pub(crate) fn publish_candidate_with_artifacts(
     checked: &Value,
     artifacts: &[GeneratedArtifact],
 ) -> Result<Value, String> {
+    operation_phase(crate::operation_context::Phase::Publishing);
+    operation_check()?;
     let _lease = crate::content_lock::ContentLock::exclusive(&project.root)?;
     ensure_writable(&project.root)?;
     if crate::snapshot::fingerprint_all(&project.root)? != source_sha
@@ -727,6 +905,8 @@ pub(crate) fn publish_candidate_with_artifacts(
 }
 
 pub fn undo(project: &Project, revision: &str) -> Result<Value, String> {
+    operation_phase(crate::operation_context::Phase::Restoring);
+    operation_check()?;
     id(revision)?;
     let _lease = crate::content_lock::ContentLock::exclusive(&project.root)?;
     ensure_writable(&project.root)?;
@@ -737,6 +917,7 @@ pub fn undo(project: &Project, revision: &str) -> Result<Value, String> {
     }
     let mut changes = Vec::new();
     for (index, row) in journal.rows.iter().enumerate() {
+        operation_check()?;
         if hash(&crate::project_ops::managed_path(&project.root, &row.path)?)? != row.after {
             return Err(
                 "revision undo conflicts with newer content; newer edits were preserved".into(),
@@ -772,6 +953,315 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0.root);
         }
+    }
+    fn linked_fixture() -> Fixture {
+        let fixture = Fixture::new();
+        std::fs::write(fixture.0.root.join("first.gd"), b"first before").unwrap();
+        std::fs::write(fixture.0.root.join("second.gd"), b"second before").unwrap();
+        std::fs::write(
+            fixture.0.root.join("accepted.dll"),
+            b"accepted native library",
+        )
+        .unwrap();
+        fixture
+    }
+    fn linked_changes() -> Vec<ChangeBytes> {
+        vec![
+            (
+                "first.gd".into(),
+                Some(b"first before".to_vec()),
+                Some(b"first after".to_vec()),
+            ),
+            (
+                "second.gd".into(),
+                Some(b"second before".to_vec()),
+                Some(b"second after".to_vec()),
+            ),
+        ]
+    }
+    fn job_context() -> crate::operation_context::OperationContext {
+        crate::operation_context::OperationContext::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+    }
+
+    #[test]
+    fn cancellation_after_backups_before_publication_leaves_no_active_revision() {
+        let fixture = linked_fixture();
+        let before = crate::snapshot::fingerprint_all(&fixture.0.root).unwrap();
+        let context = job_context();
+        let result = context
+            .scope(|| {
+                publish_rows_with(&fixture.0.root, linked_changes(), None, None, |boundary| {
+                    if boundary.is_none() {
+                        context.request_cancel().unwrap();
+                    }
+                })
+            })
+            .unwrap();
+        assert!(result.is_err());
+        assert!(!context.committed());
+        assert!(context.commit_status_verified());
+        assert!(!context.recovery_required());
+        assert_eq!(
+            crate::snapshot::fingerprint_all(&fixture.0.root).unwrap(),
+            before
+        );
+        assert!(!active(&fixture.0.root).unwrap().exists());
+        assert_eq!(
+            history(&fixture.0.root, &json!({})).unwrap()["retained_revisions"],
+            0
+        );
+    }
+
+    #[test]
+    fn cancellation_inside_linked_publication_finishes_the_verified_commit() {
+        let fixture = linked_fixture();
+        let context = job_context();
+        let result = context
+            .scope(|| {
+                publish_rows_with(&fixture.0.root, linked_changes(), None, None, |boundary| {
+                    if boundary == Some(0) {
+                        context.request_cancel().unwrap();
+                    }
+                })
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["ok"], true);
+        assert!(context.committed());
+        assert!(context.commit_status_verified());
+        assert!(context.cancellation_requested());
+        assert!(context.request_cancel().is_err());
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("first.gd")).unwrap(),
+            b"first after"
+        );
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("second.gd")).unwrap(),
+            b"second after"
+        );
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("accepted.dll")).unwrap(),
+            b"accepted native library"
+        );
+        let undo_context = job_context();
+        undo_context
+            .scope(|| undo(&fixture.0, result["revision_id"].as_str().unwrap()))
+            .unwrap()
+            .unwrap();
+        assert!(undo_context.committed());
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("first.gd")).unwrap(),
+            b"first before"
+        );
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("second.gd")).unwrap(),
+            b"second before"
+        );
+    }
+
+    #[test]
+    fn interrupted_linked_publication_proves_full_rollback_despite_cancellation() {
+        let fixture = linked_fixture();
+        let context = job_context();
+        let result = context
+            .scope(|| {
+                publish_rows_with(
+                    &fixture.0.root,
+                    linked_changes(),
+                    None,
+                    Some(1),
+                    |boundary| {
+                        if boundary == Some(1) {
+                            context.request_cancel().unwrap();
+                        }
+                    },
+                )
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["source_rolled_back"], true);
+        assert_eq!(result["recovery_required"], false);
+        assert!(!context.committed());
+        assert!(context.commit_status_verified());
+        assert!(!context.recovery_required());
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("first.gd")).unwrap(),
+            b"first before"
+        );
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("second.gd")).unwrap(),
+            b"second before"
+        );
+        assert!(!active(&fixture.0.root).unwrap().exists());
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("accepted.dll")).unwrap(),
+            b"accepted native library"
+        );
+    }
+
+    #[test]
+    fn cancelled_rollback_conflict_retains_newer_edits_and_recovery_evidence() {
+        let fixture = linked_fixture();
+        let context = job_context();
+        let result = context
+            .scope(|| {
+                publish_rows_with(
+                    &fixture.0.root,
+                    linked_changes(),
+                    None,
+                    Some(1),
+                    |boundary| {
+                        if boundary == Some(1) {
+                            std::fs::write(fixture.0.root.join("first.gd"), b"newer external edit")
+                                .unwrap();
+                            context.request_cancel().unwrap();
+                        }
+                    },
+                )
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["source_rolled_back"], false);
+        assert_eq!(result["recovery_required"], true);
+        assert!(!context.committed());
+        assert!(!context.commit_status_verified());
+        assert!(context.recovery_required());
+        assert!(active(&fixture.0.root).unwrap().exists());
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("first.gd")).unwrap(),
+            b"newer external edit"
+        );
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("second.gd")).unwrap(),
+            b"second before"
+        );
+        assert!(ensure_writable(&fixture.0.root).is_err());
+        std::fs::write(fixture.0.root.join("first.gd"), b"first after").unwrap();
+        let recovery_context = job_context();
+        let recovered = recovery_context
+            .scope(|| recover(&fixture.0))
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered["ok"], true);
+        assert!(recovery_context.committed());
+        assert!(recovery_context.commit_status_verified());
+        assert!(!active(&fixture.0.root).unwrap().exists());
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("first.gd")).unwrap(),
+            b"first before"
+        );
+    }
+
+    #[test]
+    fn rollback_preserves_new_files_in_created_directories_and_requires_recovery() {
+        let fixture = linked_fixture();
+        let context = job_context();
+        let changes = vec![
+            (
+                "created/main.gd".into(),
+                None,
+                Some(b"candidate source".to_vec()),
+            ),
+            (
+                "second.gd".into(),
+                Some(b"second before".to_vec()),
+                Some(b"second after".to_vec()),
+            ),
+        ];
+        let result = context
+            .scope(|| {
+                publish_rows_with(&fixture.0.root, changes, None, Some(1), |boundary| {
+                    if boundary == Some(1) {
+                        std::fs::write(fixture.0.root.join("created/newer.gd"), b"external source")
+                            .unwrap();
+                        context.request_cancel().unwrap();
+                    }
+                })
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["source_rolled_back"], false);
+        assert_eq!(result["recovery_required"], true);
+        assert!(context.recovery_required());
+        assert!(!context.commit_status_verified());
+        assert!(!fixture.0.root.join("created/main.gd").exists());
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("created/newer.gd")).unwrap(),
+            b"external source"
+        );
+        assert!(active(&fixture.0.root).unwrap().exists());
+    }
+
+    #[test]
+    fn revision_forget_is_cancellable_before_deletion_and_commits_actual_deletion() {
+        let fixture = linked_fixture();
+        let publication = publish_rows(&fixture.0.root, linked_changes(), None, None).unwrap();
+        let revision = publication["revision_id"].as_str().unwrap();
+        let before = crate::snapshot::fingerprint_all(&fixture.0.root).unwrap();
+        let context = job_context();
+        let result = context
+            .scope(|| {
+                forget_with(
+                    &fixture.0,
+                    revision,
+                    || {
+                        context.request_cancel().unwrap();
+                    },
+                    |_| panic!("cancellation must not reach revision deletion"),
+                )
+            })
+            .unwrap();
+        assert!(result.is_err());
+        assert!(!context.committed());
+        assert!(context.commit_status_verified());
+        assert!(state_root(&fixture.0.root).unwrap().join(revision).exists());
+        let deletion_context = job_context();
+        deletion_context
+            .scope(|| forget(&fixture.0, revision))
+            .unwrap()
+            .unwrap();
+        assert!(deletion_context.committed());
+        assert!(!state_root(&fixture.0.root).unwrap().join(revision).exists());
+        assert_eq!(
+            crate::snapshot::fingerprint_all(&fixture.0.root).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn partial_revision_forget_reports_unconfirmed_metadata_effects() {
+        let fixture = linked_fixture();
+        let publication = publish_rows(&fixture.0.root, linked_changes(), None, None).unwrap();
+        let revision = publication["revision_id"].as_str().unwrap();
+        let before = crate::snapshot::fingerprint_all(&fixture.0.root).unwrap();
+        let context = job_context();
+        let result = context
+            .scope(|| {
+                forget_with(
+                    &fixture.0,
+                    revision,
+                    || {},
+                    |directory| {
+                        std::fs::remove_file(directory.join("000.before"))?;
+                        Err(std::io::Error::other("injected partial metadata deletion"))
+                    },
+                )
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["deletion_complete"], false);
+        assert_eq!(result["recovery_required"], true);
+        assert!(!context.committed());
+        assert!(!context.commit_status_verified());
+        assert!(context.recovery_required());
+        assert_eq!(
+            crate::snapshot::fingerprint_all(&fixture.0.root).unwrap(),
+            before
+        );
     }
     #[test]
     fn compiled_artifact_is_verified_but_not_published_or_undone() {

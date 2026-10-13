@@ -1,7 +1,45 @@
 //! Bounded source snapshots shared by preview exports and rendered playtests.
 use crate::hash::Sha256;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
+
+fn check_operation() -> Result<(), String> {
+    if let Some(context) = crate::operation_context::OperationContext::current() {
+        context.check().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn copy_file(source: &Path, destination: &Path) -> Result<(), String> {
+    let Some(context) = crate::operation_context::OperationContext::current() else {
+        return std::fs::copy(source, destination)
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    };
+    context.check().map_err(|error| error.to_string())?;
+    let mut source = std::fs::File::open(source).map_err(|error| error.to_string())?;
+    let permissions = source
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .permissions();
+    let mut target = std::fs::File::create(destination).map_err(|error| error.to_string())?;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        context.check().map_err(|error| error.to_string())?;
+        let count = source
+            .read(&mut buffer)
+            .map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        context.check().map_err(|error| error.to_string())?;
+        target
+            .write_all(&buffer[..count])
+            .map_err(|error| error.to_string())?;
+    }
+    context.check().map_err(|error| error.to_string())?;
+    std::fs::set_permissions(destination, permissions).map_err(|error| error.to_string())
+}
 
 fn ignored(name: &str) -> bool {
     (name.starts_with('.') && name != ".gdignore" && name != ".cargo")
@@ -22,6 +60,7 @@ pub fn includes(relative: &str) -> bool {
 
 /// Bounded source inventory without reading file content.
 pub fn inventory(source: &Path) -> Result<Vec<(String, u64)>, String> {
+    check_operation()?;
     let mut entries = Vec::new();
     visit(
         source,
@@ -52,15 +91,18 @@ fn visit(
     bytes: &mut u64,
     callback: &mut impl FnMut(&Path, &str) -> Result<(), String>,
 ) -> Result<(), String> {
+    check_operation()?;
     if depth > 24 {
         return Err("Project nesting exceeds the snapshot limit".into());
     }
-    let mut entries = std::fs::read_dir(directory)
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+        check_operation()?;
+        entries.push(entry.map_err(|error| error.to_string())?);
+    }
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
+        check_operation()?;
         let name = entry.file_name();
         let name = name.to_str().ok_or("Snapshot filenames must be UTF-8")?;
         if ignored(name) {
@@ -108,7 +150,7 @@ fn visit(
             return Err(format!("Unsupported snapshot entry: {name}"));
         }
     }
-    Ok(())
+    check_operation()
 }
 
 pub fn copy(source: &Path, destination: &Path) -> Result<(), String> {
@@ -117,6 +159,10 @@ pub fn copy(source: &Path, destination: &Path) -> Result<(), String> {
 
 /// Omit tooling from newly created snapshots. Never delete or alter source entries.
 pub fn copy_excluding(source: &Path, destination: &Path, excluded: &[&str]) -> Result<(), String> {
+    if let Some(context) = crate::operation_context::OperationContext::current() {
+        context.phase(crate::operation_context::Phase::Staging);
+    }
+    check_operation()?;
     std::fs::create_dir_all(destination).map_err(|e| e.to_string())?;
     visit(
         source,
@@ -135,7 +181,7 @@ pub fn copy_excluding(source: &Path, destination: &Path, excluded: &[&str]) -> R
             let target = destination.join(relative);
             std::fs::create_dir_all(target.parent().ok_or("Missing snapshot parent")?)
                 .map_err(|e| e.to_string())?;
-            std::fs::copy(path, target).map_err(|e| e.to_string())?;
+            copy_file(path, &target)?;
             Ok(())
         },
     )
@@ -154,6 +200,7 @@ pub fn fingerprint_all(source: &Path) -> Result<String, String> {
 }
 
 fn fingerprint_with_live_data(source: &Path, include_live: bool) -> Result<String, String> {
+    check_operation()?;
     let mut hash = Sha256::new();
     visit(
         source,
@@ -178,13 +225,14 @@ fn fingerprint_with_live_data(source: &Path, include_live: bool) -> Result<Strin
             );
             let mut buffer = [0; 64 * 1024];
             loop {
+                check_operation()?;
                 let size = file.read(&mut buffer).map_err(|e| e.to_string())?;
                 if size == 0 {
                     break;
                 }
                 hash.update(&buffer[..size]);
             }
-            Ok(())
+            check_operation()
         },
     )?;
     Ok(hash
@@ -197,6 +245,70 @@ fn fingerprint_with_live_data(source: &Path, include_live: bool) -> Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancelled_snapshot_work_stops_without_modifying_source_or_committing() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-snapshot-cancel-{}",
+            crate::random::session_id()
+        ));
+        let source = root.join("source");
+        let destination = root.join("copy");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("first.gd"), b"first source").unwrap();
+        std::fs::write(source.join("second.gd"), b"second source").unwrap();
+        let before = fingerprint_all(&source).unwrap();
+        let context = crate::operation_context::OperationContext::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        );
+        std::fs::create_dir(&destination).unwrap();
+        let result = context
+            .scope(|| {
+                visit(
+                    &source,
+                    &source,
+                    0,
+                    false,
+                    &mut 0,
+                    &mut 0,
+                    &mut |path, relative| {
+                        copy_file(path, &destination.join(relative))?;
+                        context.request_cancel().unwrap();
+                        Ok(())
+                    },
+                )
+            })
+            .unwrap();
+        assert!(result.is_err());
+        assert!(destination.join("first.gd").exists());
+        assert!(!destination.join("second.gd").exists());
+        assert!(!context.committed());
+        assert_eq!(fingerprint_all(&source).unwrap(), before);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelled_copy_and_fingerprint_refuse_even_empty_trees() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-snapshot-empty-cancel-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let destination = root.join("copy");
+        let context = crate::operation_context::OperationContext::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        );
+        context
+            .scope(|| {
+                context.request_cancel().unwrap();
+                assert!(copy(&root, &destination).is_err());
+                assert!(fingerprint_all(&root).is_err());
+                assert!(inventory(&root).is_err());
+            })
+            .unwrap();
+        assert!(!destination.exists());
+        assert!(!context.committed());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn atomic_write_staging_does_not_enter_fingerprints_or_copies() {
         let root = std::env::temp_dir().join(format!(

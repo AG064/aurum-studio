@@ -789,11 +789,11 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
                         .and_then(serde_json::Value::as_str)
                         .map(PathBuf::from)
                         .unwrap_or_else(|| selected_root(shell));
-                    aurum_studio_core::project_ops::execute_in_runtime(
+                    aurum_studio_core::project_ops::execute_in_service(
                         &root,
                         &input,
                         false,
-                        &shell.native_runtime,
+                        Arc::clone(&shell.native_runtime),
                     )
                 });
             Routed::Once(match result {

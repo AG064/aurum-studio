@@ -4,11 +4,9 @@ use crate::Project;
 #[cfg(windows)]
 use serde_json::json;
 use serde_json::Value;
-#[cfg(windows)]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(windows)]
 use std::sync::{Arc, Mutex};
 
 pub const OPERATIONS: &[&str] = &[
@@ -29,6 +27,7 @@ pub fn supported(op: &str) -> bool {
 #[derive(Default)]
 pub struct NativeRuntime {
     controller_root: Option<PathBuf>,
+    jobs: Mutex<BTreeMap<PathBuf, Arc<crate::jobs::JobManager>>>,
     #[cfg(windows)]
     projects: Mutex<BTreeMap<PathBuf, Arc<Controller>>>,
     closed: AtomicBool,
@@ -48,6 +47,95 @@ struct Controller {
     lease: Mutex<Option<std::fs::File>>,
     busy: AtomicBool,
 }
+#[cfg(windows)]
+fn validate_mutation(input: &Value, operation: &str) -> Result<usize, String> {
+    let (field, maximum) = if operation == "native_apply" {
+        ("properties", 128)
+    } else {
+        ("input_actions", 32)
+    };
+    let rows = input[field]
+        .as_array()
+        .filter(|rows| !rows.is_empty() && rows.len() <= maximum)
+        .ok_or("native mutation requires a bounded non-empty array")?;
+    for row in rows {
+        if !row.is_object() {
+            return Err("native mutation entries must be objects".into());
+        }
+        if operation == "native_apply" {
+            let path = row["path"]
+                .as_str()
+                .ok_or("native property path must be a string")?;
+            if path.chars().count() > 512
+                || path.starts_with('/')
+                || path.contains(':')
+                || path.split('/').any(|part| part == "..")
+            {
+                return Err("native property path is invalid".into());
+            }
+            if !row["property"]
+                .as_str()
+                .is_some_and(|name| !name.is_empty() && name.chars().count() <= 256)
+                || row.get("value").is_none()
+            {
+                return Err("native property name or value is missing or invalid".into());
+            }
+        } else if !row["action"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty() && name.chars().count() <= 128)
+            || !row["pressed"].is_boolean()
+        {
+            return Err("native input action or pressed state is invalid".into());
+        }
+    }
+    Ok(rows.len())
+}
+#[cfg(windows)]
+fn execute_mutation(
+    preview: &crate::native_preview::NativePreview,
+    input: &Value,
+    operation: &str,
+) -> Result<Value, String> {
+    let count = validate_mutation(input, operation)?;
+    if preview.status()["running"] != true {
+        return Err("native preview is not running".into());
+    }
+    let (request, count_key) = if operation == "native_apply" {
+        (
+            serde_json::json!({"op":"apply","changes":input["properties"]}),
+            "applied",
+        )
+    } else {
+        (
+            serde_json::json!({"op":"input","events":input["input_actions"]}),
+            "events",
+        )
+    };
+    let context = crate::operation_context::OperationContext::current();
+    if let Some(context) = &context {
+        context.check().map_err(|error| error.to_string())?;
+        context.phase(crate::operation_context::Phase::Publishing);
+    }
+    let guard = context
+        .as_ref()
+        .map(|context| context.commit_barrier())
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let result = preview.request(&request, std::time::Duration::from_secs(5))?;
+    if result["ok"] == true && result[count_key].as_u64() == Some(count as u64) {
+        if let Some(guard) = guard {
+            guard.finish();
+        }
+    } else if let Some(context) = context {
+        // A response/timeout alone cannot certify that live script callbacks
+        // left no effects. Keep the operation outcome explicitly unverified.
+        context.mark_recovery_required();
+    }
+    if result["ok"] == true && result[count_key].as_u64() != Some(count as u64) {
+        return Err("native mutation response did not confirm the complete batch".into());
+    }
+    Ok(result)
+}
 impl NativeRuntime {
     pub fn controller(root: &Path) -> Self {
         let mut runtime = Self::default();
@@ -58,6 +146,41 @@ impl NativeRuntime {
         self.controller_root
             .as_ref()
             .is_some_and(|owned| crate::ownership::paths_equal(owned, root))
+    }
+    pub fn job_manager(
+        &self,
+        root: &Path,
+        create: bool,
+    ) -> Result<Option<Arc<crate::jobs::JobManager>>, String> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err("project controller is shutting down".into());
+        }
+        if !self.is_controller_for(root) {
+            return Err("background jobs require their project controller".into());
+        }
+        let root = root
+            .canonicalize()
+            .map(crate::project::clean_path)
+            .map_err(|error| error.to_string())?;
+        let mut managers = self
+            .jobs
+            .lock()
+            .map_err(|_| "job controller is unavailable")?;
+        if let Some(manager) = managers.get(&root) {
+            return Ok(Some(Arc::clone(manager)));
+        }
+        if !create {
+            return Ok(None);
+        }
+        let directory = crate::files::confined(&root, ".aurum/background-jobs")?;
+        crate::diagnostics::checked_path(&directory).map_err(|error| error.to_string())?;
+        let manager = Arc::new(crate::jobs::JobManager::new(Some(directory))?);
+        if self.closed.load(Ordering::Acquire) {
+            manager.shutdown();
+            return Err("project controller closed while preparing jobs".into());
+        }
+        managers.insert(root, Arc::clone(&manager));
+        Ok(Some(manager))
     }
     pub fn knows_project(&self, root: &Path) -> bool {
         #[cfg(not(windows))]
@@ -205,6 +328,15 @@ impl NativeRuntime {
                                     .into(),
                             );
                         }
+                        let context = crate::operation_context::OperationContext::current();
+                        if let Some(context) = &context {
+                            context.phase(crate::operation_context::Phase::Activating);
+                        }
+                        let guard = context
+                            .as_ref()
+                            .map(|context| context.commit_barrier())
+                            .transpose()
+                            .map_err(|error| error.to_string())?;
                         let activated = preview.activate()?;
                         if activated["ok"] != true {
                             return Err("native preview activation failed".into());
@@ -213,6 +345,9 @@ impl NativeRuntime {
                         result["ok"] = json!(true);
                         result["started"] = json!(true);
                         *slot = Some(preview);
+                        if let Some(guard) = guard {
+                            guard.finish();
+                        }
                         Ok(result)
                     }
                     "native_stop" => {
@@ -224,7 +359,20 @@ impl NativeRuntime {
                                 .take();
                             return Ok(json!({"ok":true,"stopped":false}));
                         };
+                        let context = crate::operation_context::OperationContext::current();
+                        if let Some(context) = &context {
+                            context.check().map_err(|error| error.to_string())?;
+                            context.phase(crate::operation_context::Phase::Cleanup);
+                        }
+                        let guard = context
+                            .as_ref()
+                            .map(|context| context.commit_barrier())
+                            .transpose()
+                            .map_err(|error| error.to_string())?;
                         preview.stop()?;
+                        if let Some(guard) = guard {
+                            guard.finish();
+                        }
                         slot.take();
                         controller
                             .lease
@@ -239,8 +387,7 @@ impl NativeRuntime {
                             .ok_or("no native preview is running in this host")?;
                         match op {
                             "native_inspect" => preview.request(&json!({"op":"inspect","path":input.get("node_path").cloned().unwrap_or(json!(".")),"include_state":input.get("include_state").cloned().unwrap_or(json!(false))}),std::time::Duration::from_secs(5)),
-                            "native_apply" => preview.request(&json!({"op":"apply","changes":input.get("properties").ok_or("properties are required")?}),std::time::Duration::from_secs(5)),
-                            "native_input" => preview.request(&json!({"op":"input","events":input.get("input_actions").ok_or("input_actions are required")?}),std::time::Duration::from_secs(5)),
+                            "native_apply" | "native_input" => execute_mutation(preview, input, op),
                             "native_checkpoint" => preview.checkpoint(&Project::open(&root).map_err(|error|error.to_string())?),
                             "native_replace" => preview.replace(&Project::open(&root).map_err(|error|error.to_string())?),
                             _ => Err("unknown native operation".into()),
@@ -280,6 +427,14 @@ impl NativeRuntime {
     }
     pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
+        let managers = self
+            .jobs
+            .lock()
+            .map(|jobs| jobs.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for manager in managers {
+            manager.shutdown();
+        }
         #[cfg(windows)]
         if let Ok(projects) = self.projects.lock() {
             for controller in projects.values() {
@@ -318,6 +473,46 @@ fn host_lease(root: &Path) -> Result<std::fs::File, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[cfg(windows)]
+    #[test]
+    fn malformed_short_mutations_fail_before_any_commit_barrier() {
+        let context = crate::operation_context::OperationContext::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+        );
+        context
+            .scope(|| {
+                assert!(validate_mutation(&json!({"properties":[]}), "native_apply").is_err());
+                assert!(validate_mutation(
+                    &json!({"properties":[{"path":"../foreign","property":"speed","value":2}]}),
+                    "native_apply"
+                )
+                .is_err());
+                assert!(validate_mutation(
+                    &json!({"input_actions":[{"action":"jump","pressed":"yes"}]}),
+                    "native_input"
+                )
+                .is_err());
+                assert_eq!(
+                    validate_mutation(
+                        &json!({"properties":[{"path":".","property":"speed","value":2}]}),
+                        "native_apply"
+                    )
+                    .unwrap(),
+                    1
+                );
+                assert_eq!(
+                    validate_mutation(
+                        &json!({"input_actions":[{"action":"jump","pressed":true}]}),
+                        "native_input"
+                    )
+                    .unwrap(),
+                    1
+                );
+            })
+            .unwrap();
+        assert!(!context.committed());
+        assert!(context.commit_status_verified());
+    }
     #[test]
     fn native_permissions_are_checked_before_creating_state() {
         let root = std::env::temp_dir().join(format!(

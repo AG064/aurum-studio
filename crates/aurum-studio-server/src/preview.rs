@@ -143,8 +143,9 @@ impl Preview {
                 &host,
                 "cargo",
             );
-            let report = aurum_studio_core::build::run(&request, false, Duration::from_secs(600))
-                .map_err(|e| format!("Host registry build for Web import failed: {e}"))?;
+            let report =
+                aurum_studio_core::build::run_private(&request, false, Duration::from_secs(600))
+                    .map_err(|e| format!("Host registry build for Web import failed: {e}"))?;
             built["host_artifacts"] = json!([{"name":name,"path":report.installed.path,"sha256":report.installed.sha256}]);
             let receipt = work.join("rust-web.json");
             files::write_atomic(

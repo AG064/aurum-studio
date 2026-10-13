@@ -270,18 +270,28 @@ impl Worker {
         directory: Option<&Path>,
         overrides: &[(String, String)],
     ) -> io::Result<(Self, File, File)> {
-        if !program.is_absolute()
-            || !program
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-        {
+        Self::spawn_with_argv0(program, program, args, directory, overrides)
+    }
+    pub(super) fn spawn_with_argv0(
+        program: &Path,
+        argv0: &Path,
+        args: &[String],
+        directory: Option<&Path>,
+        overrides: &[(String, String)],
+    ) -> io::Result<(Self, File, File)> {
+        if [program, argv0].iter().any(|path| {
+            !path.is_absolute()
+                || !path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+        }) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "owned workers require an absolute .exe path",
             ));
         }
         let application = wide(program.as_os_str())?;
-        let mut command = quote(program.as_os_str())?;
+        let mut command = quote(argv0.as_os_str())?;
         for arg in args {
             command.push(b' ' as u16);
             command.extend(quote(OsStr::new(arg))?);
@@ -693,6 +703,50 @@ mod tests {
             &path
         ));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn resolved_application_keeps_the_quoted_invoked_argument_name() {
+        use std::io::Read;
+        let path = fixture();
+        let application = std::env::current_exe().unwrap();
+        let invoked = path.join("cargo proxy \u{65e5}.exe");
+        let (worker, mut stdout, mut stderr) = Worker::spawn_with_argv0(
+            &application,
+            &invoked,
+            &["--exact".into(), HELPER.into(), "--nocapture".into()],
+            None,
+            &[
+                (
+                    "AURUM_WORKER_FIXTURE".into(),
+                    path.to_string_lossy().into_owned(),
+                ),
+                ("AURUM_WORKER_ROLE".into(), "echo".into()),
+                ("AURUM_WORKER_VALUE".into(), "argument-name-witness".into()),
+            ],
+        )
+        .unwrap();
+        let started = Instant::now();
+        let code = loop {
+            if let Some(code) = worker.try_wait().unwrap() {
+                break code;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        worker.terminate().unwrap();
+        let mut output = String::new();
+        let mut errors = String::new();
+        stdout.read_to_string(&mut output).unwrap();
+        stderr.read_to_string(&mut errors).unwrap();
+        assert_eq!(code, 0, "{output}\n{errors}");
+        let line = output
+            .lines()
+            .find_map(|line| line.strip_prefix("worker-fixture:"))
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(value["args"][0], invoked.to_string_lossy().as_ref());
+        assert!(worker.termination_confirmed().unwrap());
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn observed_storage_failure_stops_the_entire_tree() {

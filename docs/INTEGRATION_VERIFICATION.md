@@ -1,5 +1,121 @@
 # Integration verification
 
+## Shared background-job gate, 2026-10-13
+
+The [compiled jobs fixture](../scripts/tests/jobs-acceptance.mjs) uses an
+ephemeral shared Studio controller, actual CLI/HTTP/MCP clients and controlled
+owned Godot work. It holds both manager slots while respecting the serial
+runtime gate, saturates eight queue slots, expires a queued mutation, and
+cancels both an unspawned gate waiter and a witnessed active worker. Polling,
+read-only and foreign-capability refusal, disconnect/reconnect identity,
+bounded source-free summaries and result retrieval/hash contracts are checked
+through the public adapters.
+
+Small results are retained, results over 32 KiB retain only complete hashes,
+and results beyond the 2 MiB streaming budget require an explicit incomplete
+marker. The fixture also checks 64-terminal retention, explicit forget and
+controller-crash recovery without request replay. Its actual native replacement
+cancellation must retain the accepted PID/checkpoint and working source/DLL
+bytes while the prepared process terminates. An unrelated process is witnessed
+before and after cancellation and host interruption.
+
+An actual export-pack job must publish `dist/job-export/game.pck` with a verified
+commit and complete-directory receipt after synchronous preset configuration.
+Another request into that existing parent must fail without claiming a commit
+or modifying the first pack. Background export requires a fresh output parent
+so pack, executable and platform sidecars share one publication point.
+The working source, generated UID-file inventory and import-cache hashes are
+captured after preset configuration and must remain unchanged during both
+successful and refused asynchronous exports.
+
+The expanded fixture now submits an asynchronous package to fresh
+`dist/job-package`, requires a committed/verified receipt and nonempty regular
+`game.pck` plus bundled executable, then runs that executable headlessly for two
+frames with a finite deadline and no runtime error tags. Working source, UID
+and cache inventories must remain unchanged.
+
+Package/storage qualification on 2026-10-14 passed all 158 expanded fixture
+checks against binary
+`EF2B0557388F2C26141D3C5CD25881762E18799C4F7272183FAD1A19466B27C4`.
+The source snapshot passed 746 focused Rust/doc tests, strict Clippy and CLI
+build, including package precondition/stage checks and dual-root storage
+regressions. The package job succeeded, committed with verified status and
+cleaned its private source. Its nonempty regular pack and executable loaded
+headlessly for two frames, exited zero, and emitted no runtime error tags.
+Working source, UID and import-cache inventories stayed unchanged. Pack SHA-256
+was `b4a726df89cf43dc6945922f917b26c2d6e6aba06c5d5492b38e7c1b3c2e7864`;
+bundled runtime SHA-256 was
+`b2ca888d5115a6cedee564764a2ee494a625f2ec2edbabd010fe33c9a88a6bf8`.
+The portable Cargo gate also passed 31 checks on that same binary, with both
+cancelled/deadline workers confirmed gone, uncommitted, verified and without
+recovery requirements.
+
+The first expanded run reached committed package publication, then stopped
+after 152 checks because the fixture compared `C:/Temp` with Rust's canonical
+`C:/temp` spelling. Both directory and executable resolved to the same physical
+paths. The repaired assertion uses realpath identity and retains regular-file
+and expected `game.exe` checks. The first committed result was recovered from
+its public fields and verified byte-for-byte against the persisted result
+hash; the failure, body and logs remain preserved. Only the fixture comparison
+and immediate package-result retention changed before the passing rerun.
+
+```powershell
+node scripts/tests/jobs-acceptance.mjs C:/Builds/aurum.exe C:/Aurum/runtime/Godot.exe
+pwsh scripts/tests/cargo-jobs-acceptance.ps1 -AurumBinary C:/Builds/aurum.exe -Mode Both -TempRoot C:/Temp/aurum-cargo-tests
+```
+
+The previously qualified corrected-argv0 Windows binary
+`1D2B6E9B7A22940B0FC6214E4DB24D2AC48F3A61781FEF9F70AD2CC143954BB3`
+passed all 152 job/Godot fixture checks. Both witnessed cancellations remained
+uncommitted with verified commit status, and export-pack publication committed
+successfully while working source, UID files and cache inventories stayed
+unchanged. Its exported pack hash was
+`4b4d7728a2e4407f9dcc4a79e7d7570bb5eaa96d9ba077ead1247f8648cf5067`.
+That earlier source snapshot passed 739 focused Rust/doc tests, strict Clippy
+and CLI build. The later package confinement, recovery-state, PCK-kind/size and
+aggregate staging-storage changes were qualified by the 746/158/31 gates above.
+The preserved 152/31 results below apply to the earlier snapshot.
+
+The portable [real Cargo gate](../scripts/tests/cargo-jobs-acceptance.ps1)
+passed 31 checks on that same binary. It used actual offline dependency-free
+Cargo builds, witnessed build-script PID and creation identity before both
+explicit cancellation and deadline expiry, and confirmed their termination.
+Receipts ended `cancelled` and `timed_out`, uncommitted, verified and without
+recovery requirements. Seven configuration/source/manifest/DLL/lock hashes
+remained unchanged; an unrelated process stayed alive. Four privacy assertions
+also verified omission of private capabilities from summaries and public
+receipts. This is compiler-process evidence; game-state behavior is covered by
+the separate 152-check Godot fixture. A preceding local Cargo witness passed
+27 checks before the portable script added those privacy assertions.
+
+The earlier Windows qualification binary
+`4DBAB5A766D9CDD4AD4CEB88AA895BCD3CD680D5DEBC1777DA3A71026C906721`
+passed all 152 fixture checks. The receipt confirmed both active validation
+and prepared native replacement cancellation as `cancelled`, uncommitted and
+commit-status verified. Export-pack publication succeeded with a verified
+commit; source, UID and import-cache inventories remained unchanged. The
+published pack hash was
+`29b13d6e6521f498bd161daec4ea5274e484edabda3750a650e7ddd13d7b176a`.
+
+The initial run stopped after 36 checks when a suppressed `Get-Process` lookup
+for an already terminated PID returned PowerShell exit code 1. Exact-PID CIM
+queries now return a successful explicit null for absence and retain errors
+for failed queries or inaccessible identity fields. Only the fixture helper
+changed before the passing run; its source hash was
+`C74037E6950FE6CB60E0A41639FF72BDC661874167C506165E24CC7D30597E0C`.
+The failed receipt, reproduction and full logs remain preserved beside the
+passing receipt under the ephemeral `aurum-roadmap-01a13506` evidence tree.
+
+The earlier binary's real Cargo witness exposed the installed rustup shim being
+invoked under its canonical executable name. Owned spawning now retains the
+original invocation argv0 while using the canonical executable and identity
+for process ownership; the corrected-argv0 snapshot gates above cover that path.
+Sources, caches, state, process markers and evidence stay
+in ephemeral storage. The job receipt store
+is `.aurum/background-jobs`; the existing scene worker staging directory
+`.aurum/jobs` retains its separate purpose. Runtime/dependency context and real
+model-token, latency and task-success benchmarks remain required roadmap work.
+
 ## Contained nested Cargo workspace gate, 2026-10-13
 
 The [nested workspace fixture](../scripts/tests/native-workspace-acceptance.mjs)

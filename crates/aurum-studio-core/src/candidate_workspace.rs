@@ -182,6 +182,13 @@ impl Workspace {
         })
     }
     pub(crate) fn clean(&mut self) -> Result<(), String> {
+        if crate::operation_context::OperationContext::current()
+            .is_some_and(|context| context.termination_unconfirmed())
+        {
+            return Err(
+                "owned worker termination is unconfirmed; private workspace retained".into(),
+            );
+        }
         if self.lease.is_none() {
             return Ok(());
         }
@@ -193,6 +200,17 @@ impl Workspace {
 }
 impl Drop for Workspace {
     fn drop(&mut self) {
+        if crate::operation_context::OperationContext::current()
+            .is_some_and(|context| context.termination_unconfirmed())
+        {
+            // Keep the OS lease until host exit, so another allocation cannot
+            // reclaim source still potentially used by our uncertain worker.
+            if let Some(lease) = self.lease.take() {
+                std::mem::forget(lease);
+            }
+            eprintln!("aurum candidates: private workspace and lease retained until host exit because worker termination is unconfirmed");
+            return;
+        }
         if self.lease.is_some() && self.clean().is_err() {
             eprintln!("aurum candidates: private workspace retained for next-allocation cleanup; source was not removed");
         }

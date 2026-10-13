@@ -11,6 +11,53 @@ pub const RECORD_BYTES: usize = 4 * 1024 * 1024;
 pub const SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 pub const BASELINES: usize = 16;
 
+fn check_operation() -> Result<(), String> {
+    if let Some(context) = crate::operation_context::OperationContext::current() {
+        context.check().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+fn publication_barrier() -> Result<Option<crate::operation_context::CommitGuard>, String> {
+    let context = crate::operation_context::OperationContext::current();
+    if let Some(context) = &context {
+        context.phase(crate::operation_context::Phase::Publishing);
+    }
+    context
+        .as_ref()
+        .map(|context| context.commit_barrier())
+        .transpose()
+        .map_err(|error| error.to_string())
+}
+fn digest(bytes: &[u8]) -> Result<String, String> {
+    let mut hash = crate::hash::Sha256::new();
+    for chunk in bytes.chunks(65536) {
+        check_operation()?;
+        hash.update(chunk);
+    }
+    check_operation()?;
+    Ok(hash.hex())
+}
+fn hash_source(reader: impl Read, expected: u64) -> Result<String, String> {
+    let mut reader = reader.take(expected.saturating_add(1));
+    let mut hash = crate::hash::Sha256::new();
+    let mut chunk = [0u8; 65536];
+    let mut observed = 0u64;
+    loop {
+        check_operation()?;
+        let count = reader.read(&mut chunk).map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        observed += count as u64;
+        hash.update(&chunk[..count]);
+        check_operation()?;
+    }
+    if observed != expected {
+        return Err("source changed during context scan; retry".into());
+    }
+    Ok(hash.hex())
+}
+
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Scope {
@@ -139,6 +186,7 @@ fn accepts(scope: &Scope, path: &str) -> bool {
                 }))
 }
 fn scan_once(root: &Path, scope: &Scope) -> Result<BTreeMap<String, Entry>, String> {
+    check_operation()?;
     let mut result = BTreeMap::new();
     let mut total = 0u64;
     let inventory = if scope.prefix.is_empty() {
@@ -158,6 +206,7 @@ fn scan_once(root: &Path, scope: &Scope) -> Result<BTreeMap<String, Entry>, Stri
         }
     };
     for (path, bytes) in inventory {
+        check_operation()?;
         if !accepts(scope, &path) {
             continue;
         }
@@ -169,34 +218,17 @@ fn scan_once(root: &Path, scope: &Scope) -> Result<BTreeMap<String, Entry>, Stri
         }
         let target = files::confined(root, &path)?;
         crate::diagnostics::checked_path(&target).map_err(|error| error.to_string())?;
-        let mut file = File::open(target)
-            .map_err(|error| error.to_string())?
-            .take(bytes.saturating_add(1));
-        let mut hash = crate::hash::Sha256::new();
-        let mut chunk = [0u8; 65536];
-        let mut observed = 0u64;
-        loop {
-            let count = file.read(&mut chunk).map_err(|error| error.to_string())?;
-            if count == 0 {
-                break;
-            }
-            observed += count as u64;
-            hash.update(&chunk[..count]);
-        }
-        if observed != bytes {
-            return Err("source changed during context scan; retry".into());
-        }
-        result.insert(
-            path,
-            Entry {
-                bytes,
-                sha256: hash.hex(),
-            },
-        );
+        let file = File::open(target).map_err(|error| error.to_string())?;
+        let sha256 = hash_source(file, bytes)?;
+        result.insert(path, Entry { bytes, sha256 });
     }
     Ok(result)
 }
 fn capture(root: &Path, scope: Scope) -> Result<Record, String> {
+    check_operation()?;
+    if let Some(context) = crate::operation_context::OperationContext::current() {
+        context.phase(crate::operation_context::Phase::Staging);
+    }
     let _lease = crate::content_lock::ContentLock::shared(root)?;
     crate::transactions::ensure_writable(root)?;
     let files = scan_once(root, &scope)?;
@@ -211,16 +243,19 @@ fn capture(root: &Path, scope: Scope) -> Result<Record, String> {
     })
 }
 fn encoded(record: &Record) -> Result<Vec<u8>, String> {
+    check_operation()?;
     let bytes = serde_json::to_vec(record).map_err(|error| error.to_string())?;
+    check_operation()?;
     if bytes.len() > RECORD_BYTES {
         return Err("context manifest exceeds 4 MiB; select a narrower scope".into());
     }
     Ok(bytes)
 }
 fn id(record: &Record) -> Result<String, String> {
-    Ok(crate::sha256_hex(&encoded(record)?))
+    digest(&encoded(record)?)
 }
 fn read(root: &Path, baseline: &str) -> Result<Record, String> {
+    check_operation()?;
     if !valid_id(baseline) {
         return Err("baseline_id must be 64 lowercase hexadecimal characters".into());
     }
@@ -232,6 +267,7 @@ fn read(root: &Path, baseline: &str) -> Result<Record, String> {
         .take(RECORD_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
+    check_operation()?;
     if bytes.len() > RECORD_BYTES {
         return Err("context baseline exceeds its bound".into());
     }
@@ -248,31 +284,36 @@ fn read(root: &Path, baseline: &str) -> Result<Record, String> {
     // A digest alone cannot establish the shape of manually copied manifests.
     if scope(&serde_json::to_value(&record.scope).map_err(|error| error.to_string())?)?
         != record.scope
-        || record.files.iter().any(|(path, entry)| {
-            path.is_empty()
-                || !clean_prefix(path).is_ok_and(|clean| clean == *path)
-                || !accepts(&record.scope, path)
-                || !valid_id(&entry.sha256)
-        })
-        || record
-            .files
-            .values()
-            .map(|entry| entry.bytes)
-            .try_fold(0u64, |total, bytes| total.checked_add(bytes))
-            .is_none_or(|total| total > SOURCE_BYTES)
     {
         return Err("context baseline contents are invalid".into());
+    }
+    let mut total = 0u64;
+    for (path, entry) in &record.files {
+        check_operation()?;
+        if path.is_empty()
+            || !clean_prefix(path).is_ok_and(|clean| clean == *path)
+            || !accepts(&record.scope, path)
+            || !valid_id(&entry.sha256)
+        {
+            return Err("context baseline contents are invalid".into());
+        }
+        total = total
+            .checked_add(entry.bytes)
+            .filter(|total| *total <= SOURCE_BYTES)
+            .ok_or("context baseline contents are invalid")?;
     }
     Ok(record)
 }
 pub fn snapshot(root_path: &Path, input: &Value) -> Result<Value, String> {
+    check_operation()?;
     let root = root(root_path)?;
     crate::Project::open(&root).map_err(|error| error.to_string())?;
     let selected = scope(input)?;
     let record = capture(&root, selected)?;
     let bytes = encoded(&record)?;
-    let baseline = crate::sha256_hex(&bytes);
+    let baseline = digest(&bytes)?;
     let directory = directory(&root)?;
+    check_operation()?;
     let _lease = lease(&directory)?;
     let path = directory.join(format!("{baseline}.json"));
     crate::diagnostics::checked_path(&path).map_err(|error| error.to_string())?;
@@ -285,6 +326,7 @@ pub fn snapshot(root_path: &Path, input: &Value) -> Result<Value, String> {
             .map_err(|error| error.to_string())?
             .enumerate()
         {
+            check_operation()?;
             if scanned >= 64 {
                 return Err("context baseline directory exceeds its entry bound".into());
             }
@@ -300,7 +342,11 @@ pub fn snapshot(root_path: &Path, input: &Value) -> Result<Value, String> {
         if count >= BASELINES {
             return Err("context retains 16 baselines; explicitly forget an old baseline".into());
         }
+        let guard = publication_barrier()?;
         files::write_atomic(&path, &bytes).map_err(|error| error.to_string())?;
+        if let Some(guard) = guard {
+            guard.finish();
+        }
     }
     Ok(
         json!({"ok":true,"baseline_id":baseline,"scope":record.scope,"files":record.files.len(),"source_bytes":record.files.values().map(|entry|entry.bytes).sum::<u64>(),"reused":reused,"source_mutated":false}),
@@ -374,6 +420,7 @@ pub fn delta(root_path: &Path, input: &Value) -> Result<Value, String> {
     )
 }
 pub fn forget(root_path: &Path, input: &Value) -> Result<Value, String> {
+    check_operation()?;
     let root = root(root_path)?;
     let baseline = input["baseline_id"]
         .as_str()
@@ -383,13 +430,21 @@ pub fn forget(root_path: &Path, input: &Value) -> Result<Value, String> {
     let _lease = lease(&directory)?;
     let path = directory.join(format!("{baseline}.json"));
     crate::diagnostics::checked_path(&path).map_err(|error| error.to_string())?;
+    // Recheck under the store lease before entering the removal barrier.
+    read(&root, baseline)?;
+    let guard = publication_barrier()?;
     std::fs::remove_file(path).map_err(|error| error.to_string())?;
+    if let Some(guard) = guard {
+        guard.finish();
+    }
     Ok(json!({"ok":true,"forgotten":baseline,"source_mutated":false,"recoverable":false}))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operation_context::OperationContext;
+    use std::time::{Duration, Instant};
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
@@ -568,5 +623,125 @@ mod tests {
         );
         forget(&fixture.0, &json!({"baseline_id":first})).unwrap();
         fixture.baseline();
+    }
+    #[test]
+    fn source_hash_cancellation_stops_after_one_chunk_without_a_commit() {
+        struct CancellingReader {
+            source: std::io::Cursor<Vec<u8>>,
+            context: OperationContext,
+            reads: usize,
+        }
+        impl Read for CancellingReader {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.source.read(output)?;
+                self.reads += 1;
+                if count > 0 {
+                    self.context.request_cancel()?;
+                }
+                Ok(count)
+            }
+        }
+        let context = OperationContext::new(Instant::now() + Duration::from_secs(20));
+        let mut reader = CancellingReader {
+            source: std::io::Cursor::new(vec![b'x'; 2 * 65536]),
+            context: context.clone(),
+            reads: 0,
+        };
+        let error = context
+            .scope(|| hash_source(&mut reader, 2 * 65536))
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("cancellation"));
+        assert_eq!(reader.reads, 1);
+        assert_eq!(reader.source.position(), 65536);
+        assert!(!context.committed());
+        assert!(context.commit_status_verified());
+    }
+    #[test]
+    fn only_a_new_baseline_publication_marks_the_job_committed() {
+        let fixture = Fixture::new();
+        let publication = OperationContext::new(Instant::now() + Duration::from_secs(20));
+        let first = publication
+            .scope(|| snapshot(&fixture.0, &json!({"prefix":"game"})))
+            .unwrap()
+            .unwrap();
+        assert_eq!(first["reused"], false);
+        assert!(publication.committed());
+        assert!(publication.commit_status_verified());
+        let reuse = OperationContext::new(Instant::now() + Duration::from_secs(20));
+        let second = reuse
+            .scope(|| snapshot(&fixture.0, &json!({"prefix":"game"})))
+            .unwrap()
+            .unwrap();
+        assert_eq!(second["reused"], true);
+        assert_eq!(second["baseline_id"], first["baseline_id"]);
+        assert!(!reuse.committed());
+        assert!(reuse.commit_status_verified());
+    }
+    #[test]
+    fn refused_context_preconditions_do_not_enter_a_commit_barrier() {
+        let fixture = Fixture::new();
+        let invalid = OperationContext::new(Instant::now() + Duration::from_secs(20));
+        assert!(invalid
+            .scope(|| snapshot(&fixture.0, &json!({"prefix":"../outside"})))
+            .unwrap()
+            .is_err());
+        assert!(!invalid.committed());
+        assert!(invalid.commit_status_verified());
+        let missing = OperationContext::new(Instant::now() + Duration::from_secs(20));
+        assert!(missing
+            .scope(|| forget(&fixture.0, &json!({"baseline_id":"0".repeat(64)})))
+            .unwrap()
+            .is_err());
+        assert!(!missing.committed());
+        assert!(missing.commit_status_verified());
+        assert!(!fixture.0.join(".aurum").exists());
+    }
+    #[test]
+    fn successful_context_removal_marks_only_the_completed_mutation() {
+        let fixture = Fixture::new();
+        let baseline = fixture.baseline();
+        let context = OperationContext::new(Instant::now() + Duration::from_secs(20));
+        context
+            .scope(|| forget(&fixture.0, &json!({"baseline_id":baseline})))
+            .unwrap()
+            .unwrap();
+        assert!(context.committed());
+        assert!(context.commit_status_verified());
+        assert!(!fixture
+            .0
+            .join(".aurum/agent-context")
+            .join(format!("{baseline}.json"))
+            .exists());
+        assert!(fixture.0.join("game/main.gd").exists());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn failed_context_removal_keeps_commit_status_unconfirmed() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let fixture = Fixture::new();
+        let baseline = fixture.baseline();
+        let path = fixture
+            .0
+            .join(".aurum/agent-context")
+            .join(format!("{baseline}.json"));
+        let locked = OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .open(&path)
+            .unwrap();
+        let context = OperationContext::new(Instant::now() + Duration::from_secs(20));
+        assert!(context
+            .scope(|| forget(&fixture.0, &json!({"baseline_id":baseline})))
+            .unwrap()
+            .is_err());
+        assert!(!context.committed());
+        assert!(!context.commit_status_verified());
+        assert!(path.exists());
+        drop(locked);
+        assert_eq!(
+            std::fs::read_to_string(fixture.0.join("game/main.gd")).unwrap(),
+            "old\n"
+        );
     }
 }

@@ -2,6 +2,7 @@
 //! Holding this object keeps its source lease and Windows job alive. Dropping
 //! it terminates only that job before releasing the private copy.
 use crate::candidate_workspace::{self, Workspace};
+use crate::operation_context::{OperationContext, Phase};
 use crate::ownership::{OwnershipRecord, ProcessKind};
 use crate::runtime_channel::Channel;
 use crate::{files, snapshot, Project, Session};
@@ -51,6 +52,29 @@ fn host_identity(project: &Project) -> Result<OwnershipRecord, String> {
         kind: ProcessKind::Worker,
     })
 }
+fn operation_check() -> Result<(), String> {
+    if let Some(context) = OperationContext::current() {
+        context.check().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+fn operation_phase(phase: Phase) -> Result<(), String> {
+    operation_check()?;
+    if let Some(context) = OperationContext::current() {
+        context.phase(phase);
+    }
+    Ok(())
+}
+fn operation_budget(local: Duration) -> Result<Duration, String> {
+    OperationContext::current().map_or(Ok(local), |context| {
+        context.budget(local).map_err(|error| error.to_string())
+    })
+}
+fn note_retirement_failure() {
+    if let Some(context) = OperationContext::current() {
+        context.mark_termination_unconfirmed();
+    }
+}
 
 // Neither the channel nor its token may be serialized or printed by Debug.
 pub struct NativePreview {
@@ -78,6 +102,7 @@ impl NativePreview {
         headless: bool,
         parent: Option<&crate::native_userdata::UserdataRun>,
     ) -> Result<Self, String> {
+        operation_phase(Phase::Staging)?;
         let (mut workspace, candidate, source_sha256, engine) = {
             let _lease = crate::content_lock::ContentLock::shared(&project.root)?;
             crate::transactions::ensure_writable(&project.root)?;
@@ -99,7 +124,9 @@ impl NativePreview {
             let source_sha256 = snapshot::fingerprint_all(&project.root)?;
             let workspace = Workspace::create_native()?;
             let source = workspace.path.join("source");
+            operation_check()?;
             snapshot::copy(&project.root, &source)?;
+            operation_check()?;
             if snapshot::fingerprint_all(&source)? != source_sha256
                 || snapshot::fingerprint_all(&project.root)? != source_sha256
             {
@@ -138,6 +165,7 @@ impl NativePreview {
             &engine,
             &validation_data,
         )?;
+        operation_phase(Phase::Importing)?;
         let environment: Vec<(String, String)> = [
             "APPDATA",
             "LOCALAPPDATA",
@@ -157,8 +185,10 @@ impl NativePreview {
         for (key, value) in &environment {
             setup_command = setup_command.env(key, value);
         }
-        let prepared = crate::native_runtime::run(&setup_command, Duration::from_secs(30))
-            .map_err(|error| error.to_string())?;
+        let prepared =
+            crate::native_runtime::run(&setup_command, operation_budget(Duration::from_secs(30))?)
+                .map_err(|error| error.to_string())?;
+        operation_phase(Phase::Validating)?;
         if !prepared.success() || prepared.stderr.contains("ERROR:") {
             return Err("private native setup failed; working content was not changed".into());
         }
@@ -174,9 +204,16 @@ impl NativePreview {
                 "private native validation failed; the existing game was not touched".into(),
             );
         }
-        candidate_workspace::usage(&workspace.path, candidate_workspace::WORKSPACE_BYTES)?;
+        operation_check()?;
+        candidate_workspace::usage_with_budget(
+            &workspace.path,
+            candidate_workspace::WORKSPACE_BYTES,
+            operation_budget(Duration::from_secs(2))?,
+        )?;
         let prepared_sha256 = snapshot::fingerprint_all(&candidate.root)?;
+        operation_check()?;
         let userdata = crate::native_userdata::UserdataRun::stage(&project.root, parent)?;
+        operation_check()?;
         let mut random = crate::random::bytes(32);
         if random.source != crate::random::Source::OperatingSystem {
             return Err("native preview requires operating-system token generation".into());
@@ -224,6 +261,7 @@ impl NativePreview {
         if headless {
             args.insert(0, "--headless".into());
         }
+        operation_phase(Phase::Validating)?;
         let (worker, stdout, stderr) =
             crate::worker_windows::Worker::spawn(&engine, &args, Some(&candidate.root), &overrides)
                 .map_err(|error| error.to_string())?;
@@ -233,8 +271,9 @@ impl NativePreview {
             std::thread::spawn(move || crate::diagnostic_relay::drain(pipe, &session));
         }
         let result = (|| -> Result<_, String> {
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = Instant::now() + operation_budget(Duration::from_secs(15))?;
             let ready = loop {
+                operation_check()?;
                 if Instant::now() >= deadline {
                     return Err(
                         "prepared native game did not become ready within 15 seconds".into(),
@@ -253,6 +292,7 @@ impl NativePreview {
                             "prepared native game did not become ready within 15 seconds".into(),
                         );
                     }
+                    operation_check()?;
                     break serde_json::from_slice::<Ready>(&bytes)
                         .map_err(|_| "invalid native readiness record")?;
                 }
@@ -266,8 +306,9 @@ impl NativePreview {
                 candidate_workspace::usage_with_budget(
                     &workspace.path,
                     candidate_workspace::WORKSPACE_BYTES,
-                    deadline.saturating_duration_since(Instant::now()),
+                    operation_budget(deadline.saturating_duration_since(Instant::now()))?,
                 )?;
+                operation_check()?;
                 if Instant::now() >= deadline {
                     return Err(
                         "prepared native game did not become ready within 15 seconds".into(),
@@ -299,12 +340,16 @@ impl NativePreview {
                 return Err("native process identity does not match its prepared launch".into());
             }
             let channel = Channel::new(ready.port, token, owner.clone())?;
-            let checkpoint =
-                channel.request(&json!({"op":"checkpoint"}), Duration::from_secs(5))?;
+            let checkpoint = channel.request(
+                &json!({"op":"checkpoint"}),
+                operation_budget(Duration::from_secs(5))?,
+            )?;
+            operation_check()?;
             if checkpoint["ok"] != true || checkpoint["checkpoint"]["paused"] != true {
                 return Err("prepared native game did not boot paused".into());
             }
             if dependencies["native"] == true {
+                operation_phase(Phase::Dependencies)?;
                 let manifests: Vec<_> = dependencies["manifests"]
                     .as_array()
                     .ok_or("missing prepared dependency manifests")?
@@ -313,10 +358,12 @@ impl NativePreview {
                     .collect();
                 let actual = channel.request(
                     &json!({"op":"dependencies","manifests":manifests}),
-                    Duration::from_secs(5),
+                    operation_budget(Duration::from_secs(5))?,
                 )?;
+                operation_check()?;
                 crate::native_dependencies::verify(&dependencies, &actual)?;
             }
+            operation_check()?;
             owner
                 .write(&session.ownership_directory())
                 .map_err(|error| error.to_string())?;
@@ -330,6 +377,8 @@ impl NativePreview {
                 let path = workspace.path.clone();
                 let data_path = userdata.path.clone();
                 let log = session.clone();
+                // This standing monitor captures no job context. A completed
+                // job's cancellation or deadline must not stop accepted gameplay.
                 std::thread::spawn(move || {
                     while !stopping.load(Ordering::Acquire) {
                         if !watched.try_wait().is_ok_and(|status| status.is_none()) {
@@ -367,6 +416,7 @@ impl NativePreview {
                 let retirement = worker.terminate();
                 drop(worker);
                 if let Err(retirement) = retirement {
+                    note_retirement_failure();
                     // Retain the marked copy and its allocation lease until
                     // host exit rather than removing files under a live job.
                     std::mem::forget(workspace);
@@ -382,7 +432,9 @@ impl NativePreview {
         }
     }
     pub fn request(&self, input: &Value, budget: Duration) -> Result<Value, String> {
-        self.channel.request(input, budget)
+        let result = self.channel.request(input, operation_budget(budget)?)?;
+        operation_check()?;
+        Ok(result)
     }
     pub fn status(&self) -> Value {
         json!({"pid":self.owner.pid,"running":self.worker.try_wait().is_ok_and(|status|status.is_none()),"source_sha256":self.source_sha256,
@@ -395,11 +447,13 @@ impl NativePreview {
         snapshot::fingerprint_all(&project.root).is_ok_and(|hash| hash == self.source_sha256)
     }
     pub fn activate(&self) -> Result<Value, String> {
+        operation_phase(Phase::Activating)?;
         let result = self.request(
             &json!({"op":"resume","paused":false,"render_loop_enabled":true,"show_window":true}),
             Duration::from_secs(5),
         )?;
         if result["ok"] == true {
+            operation_budget(Duration::from_secs(5))?;
             self.userdata.publish()?;
         }
         Ok(result)
@@ -443,9 +497,11 @@ impl NativePreview {
     /// Prepare and prove restoration before terminating the witnessed old job.
     /// The previous preview remains owned until the new one is active and ready.
     pub fn replace(&mut self, project: &Project) -> Result<Value, String> {
+        operation_check()?;
         if !crate::ownership::paths_equal(&self.owner.project, &project.root) {
             return Err("native replacement must use the original project".into());
         }
+        let previous_userdata = crate::native_userdata::list(&project.root)?["current"].clone();
         let mut replacement = Self::prepare_from(project, self.headless, Some(&self.userdata))?;
         let _lease = crate::content_lock::ContentLock::shared(&project.root)?;
         crate::transactions::ensure_writable(&project.root)?;
@@ -454,12 +510,22 @@ impl NativePreview {
         }
         let started = Instant::now();
         let freeze_id = crate::random::session_id();
-        let frozen = self.request(
-            &json!({"op":"checkpoint","freeze":true,"freeze_id":freeze_id}),
-            Duration::from_secs(5),
-        );
+        // Preserve a returned freeze witness even if cancellation arrives during
+        // the exchange, so rollback can verify the original control state.
+        let frozen = operation_budget(Duration::from_secs(5)).and_then(|budget| {
+            self.channel.request(
+                &json!({"op":"checkpoint","freeze":true,"freeze_id":freeze_id}),
+                budget,
+            )
+        });
+        let rollback_checkpoint = frozen
+            .as_ref()
+            .ok()
+            .map(|value| value["checkpoint"].clone());
+        let mut commit = None;
         let result = (|| -> Result<_, String> {
             let frozen = frozen?;
+            operation_check()?;
             if !replacement.userdata.seed_unchanged()? {
                 return Err("native saved data changed during preparation; the original data remains current".into());
             }
@@ -476,7 +542,7 @@ impl NativePreview {
                 if remaining.is_zero() {
                     Err("native replacement exceeded its freeze lease budget".to_string())
                 } else {
-                    Ok(remaining)
+                    operation_budget(remaining)
                 }
             };
             let checkpoint = &frozen["checkpoint"];
@@ -486,6 +552,7 @@ impl NativePreview {
             {
                 return Err("invalid native checkpoint control state".into());
             }
+            operation_phase(Phase::Restoring)?;
             let baseline = replacement.request(&json!({"op":"checkpoint"}), remaining()?)?;
             let mut held = checkpoint.clone();
             held["paused"] = json!(true);
@@ -541,6 +608,11 @@ impl NativePreview {
             })
             .map_err(|error| error.to_string())?;
             persist_handoff(&receipt_path, &journal)?;
+            operation_phase(Phase::Activating)?;
+            commit = OperationContext::current()
+                .map(|context| context.commit_barrier())
+                .transpose()
+                .map_err(|error| error.to_string())?;
             let activated = replacement.request(
                 &json!({"op":"resume","paused":checkpoint["paused"],
                 "render_loop_enabled":checkpoint["render_loop_enabled"],"show_window":true}),
@@ -563,18 +635,48 @@ impl NativePreview {
                 );
             }
             replacement.userdata.publish()?;
+            if let Some(guard) = commit.take() {
+                guard.finish();
+            }
             Ok((journal, receipt_path, restored))
         })();
         let (mut journal, receipt_path, restored) = match result {
             Ok(result) => result,
             Err(error) => {
+                let _ = replacement.stop();
+                let replacement_stopped =
+                    replacement.worker.termination_confirmed().unwrap_or(false);
                 let resumed = self
+                    .channel
                     .request(
                         &json!({"op":"release_freeze","freeze_id":freeze_id}),
                         Duration::from_secs(5),
                     )
                     .is_ok_and(|value| value["ok"] == true);
-                return Err(format!("{error}; previous_game_resumed={resumed}"));
+                let controls_restored = rollback_checkpoint.as_ref().is_some_and(|checkpoint| {
+                    self.channel
+                        .request(&json!({"op":"checkpoint"}), Duration::from_secs(5))
+                        .is_ok_and(|value| {
+                            value["ok"] == true
+                                && checkpoint["paused"].is_boolean()
+                                && checkpoint["render_loop_enabled"].is_boolean()
+                                && value["checkpoint"]["paused"] == checkpoint["paused"]
+                                && value["checkpoint"]["render_loop_enabled"]
+                                    == checkpoint["render_loop_enabled"]
+                        })
+                });
+                let userdata_unchanged = crate::native_userdata::list(&project.root)
+                    .is_ok_and(|value| value["current"] == previous_userdata);
+                let rollback_verified =
+                    resumed && controls_restored && replacement_stopped && userdata_unchanged;
+                if rollback_verified {
+                    if let Some(guard) = commit.take() {
+                        guard.rollback_complete();
+                    }
+                } else if let Some(context) = OperationContext::current() {
+                    context.mark_recovery_required();
+                }
+                return Err(format!("{error}; previous_game_resumed={resumed}; previous_controls_restored={controls_restored}; replacement_stopped={replacement_stopped}; userdata_generation_unchanged={userdata_unchanged}; rollback_verified={rollback_verified}"));
             }
         };
         let previous_pid = self.owner.pid;
@@ -584,6 +686,9 @@ impl NativePreview {
         self.monitor_stop.store(true, Ordering::Release);
         let retirement_error = self.worker.terminate().err().map(|error| error.to_string());
         let retired = retirement_error.is_none();
+        if !retired {
+            note_retirement_failure();
+        }
         if retired {
             let _ = self.owner.remove(&self.session.ownership_directory());
         }
@@ -601,7 +706,10 @@ impl NativePreview {
     }
     pub fn stop(&mut self) -> Result<(), String> {
         self.monitor_stop.store(true, Ordering::Release);
-        self.worker.terminate().map_err(|error| error.to_string())?;
+        self.worker.terminate().map_err(|error| {
+            note_retirement_failure();
+            error.to_string()
+        })?;
         let ownership = self
             .owner
             .remove(&self.session.ownership_directory())
@@ -623,6 +731,7 @@ impl NativePreview {
     /// Resume a checkpoint after the recorded host and both jobs have ended.
     /// No recorded PID is stopped, and newer working source is never overwritten.
     pub fn recover(project: &Project) -> Result<(Self, Value), String> {
+        operation_check()?;
         let path = files::confined(&project.root, ".aurum/native/replacement-latest.json")?;
         crate::diagnostics::checked_path(&path).map_err(|error| error.to_string())?;
         let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
@@ -681,7 +790,9 @@ impl NativePreview {
                     .into(),
             );
         }
-        let preview = Self::prepare(project, recovery.headless)?;
+        let previous_userdata = crate::native_userdata::list(&project.root)?["current"].clone();
+        let mut preview = Self::prepare(project, recovery.headless)?;
+        operation_phase(Phase::Restoring)?;
         let baseline = preview.request(&json!({"op":"checkpoint"}), Duration::from_secs(5))?;
         let mut held = recovery.checkpoint.clone();
         held["paused"] = json!(true);
@@ -708,20 +819,49 @@ impl NativePreview {
         if !preview.source_still_current(project) {
             return Err("source changed during native recovery; working edits preserved".into());
         }
-        let resumed=preview.request(&json!({"op":"resume","paused":recovery.checkpoint["paused"],"render_loop_enabled":recovery.checkpoint["render_loop_enabled"],"show_window":true}),Duration::from_secs(5))?;
-        if resumed["ok"] != true {
-            return Err("native recovery activation failed".into());
-        }
-        preview.userdata.publish()?;
         recovery.phase = "recovered".into();
         recovery.host = host_identity(project)?;
         recovery.previous = recovery.replacement;
         recovery.replacement = preview.owner.clone();
-        let persisted = persist_handoff(
-            &path,
-            &serde_json::to_value(&recovery).map_err(|error| error.to_string())?,
-        )
-        .is_ok();
+        let journal = serde_json::to_value(&recovery).map_err(|error| error.to_string())?;
+        let mut commit = None;
+        let activation = (|| -> Result<(), String> {
+            operation_phase(Phase::Activating)?;
+            commit = OperationContext::current()
+                .map(|context| context.commit_barrier())
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            let resumed = preview.request(&json!({"op":"resume","paused":recovery.checkpoint["paused"],"render_loop_enabled":recovery.checkpoint["render_loop_enabled"],"show_window":true}), Duration::from_secs(5))?;
+            if resumed["ok"] != true {
+                return Err("native recovery activation failed".into());
+            }
+            if preview.request(&json!({"op":"inspect","path":"."}), Duration::from_secs(5))?["ok"]
+                != true
+            {
+                return Err("activated native recovery scene was not ready".into());
+            }
+            operation_budget(Duration::from_secs(5))?;
+            preview.userdata.publish()?;
+            if let Some(guard) = commit.take() {
+                guard.finish();
+            }
+            Ok(())
+        })();
+        if let Err(error) = activation {
+            let _ = preview.stop();
+            let stopped = preview.worker.termination_confirmed().unwrap_or(false);
+            let userdata_unchanged = crate::native_userdata::list(&project.root)
+                .is_ok_and(|value| value["current"] == previous_userdata);
+            if stopped && userdata_unchanged {
+                if let Some(guard) = commit.take() {
+                    guard.rollback_complete();
+                }
+            } else if let Some(context) = OperationContext::current() {
+                context.mark_recovery_required();
+            }
+            return Err(format!("{error}; recovery_run_stopped={stopped}; userdata_generation_unchanged={userdata_unchanged}; rollback_verified={}", stopped && userdata_unchanged));
+        }
+        let persisted = persist_handoff(&path, &journal).is_ok();
         let receipt = json!({"ok":true,"recovered":true,"pid":preview.owner.pid,"state_preserved":true,"evidence":path,"evidence_persisted":persisted});
         Ok((preview, receipt))
     }
@@ -798,6 +938,50 @@ impl Drop for NativePreview {
 mod tests {
     use super::*;
     #[test]
+    fn cancelled_preparation_refuses_before_project_state_or_worker_creation() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-native-cancelled-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("aurum.toml"),
+            "schema_version=1\nname=\"cancelled\"\nmodules=[]\n",
+        )
+        .unwrap();
+        let project = Project::open(&root).unwrap();
+        let context = OperationContext::new(Instant::now() + Duration::from_secs(5));
+        context
+            .scope(|| {
+                context.request_cancel().unwrap();
+                let error = NativePreview::prepare(&project, true).err().unwrap();
+                assert!(error.contains("cancellation"), "{error}");
+            })
+            .unwrap();
+        assert!(!root.join(".aurum").exists());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn private_channel_and_ready_budgets_use_the_global_remainder() {
+        let context = OperationContext::new(Instant::now() + Duration::from_secs(1));
+        context
+            .scope(|| {
+                assert!(
+                    operation_budget(Duration::from_secs(15)).unwrap() <= Duration::from_secs(1)
+                );
+                assert!(
+                    operation_budget(Duration::from_millis(10)).unwrap()
+                        <= Duration::from_millis(10)
+                );
+            })
+            .unwrap();
+        assert_eq!(
+            operation_budget(Duration::from_secs(5)).unwrap(),
+            Duration::from_secs(5)
+        );
+    }
+    #[test]
     #[ignore = "requires checksum-pinned Godot; explicit Windows native acceptance"]
     fn actual_private_native_preparation() {
         let engine = std::env::var_os("AURUM_GODOT").expect("AURUM_GODOT is required");
@@ -868,7 +1052,16 @@ mod tests {
         )
         .unwrap();
         let previous_owner = preview.owner.clone();
-        let replaced = preview.replace(&project).unwrap();
+        let context = OperationContext::new(Instant::now() + Duration::from_secs(120));
+        let replaced = context
+            .scope(|| preview.replace(&project))
+            .unwrap()
+            .unwrap();
+        assert!(context.committed());
+        // The accepted run belongs to its host, not the finished job token.
+        context.interrupt();
+        std::thread::sleep(Duration::from_millis(1100));
+        assert_eq!(preview.status()["running"], true);
         assert_eq!(replaced["state_preserved"], true);
         assert_eq!(replaced["previous_termination_confirmed"], true);
         assert_ne!(preview.owner.pid, old_pid);

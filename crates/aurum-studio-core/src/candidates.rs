@@ -3,10 +3,22 @@ use crate::candidate_workspace::Workspace;
 use crate::{files, snapshot, Project};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MAX_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RECEIPT_BYTES: usize = 64 * 1024;
+
+fn operation_phase(phase: crate::operation_context::Phase) {
+    if let Some(context) = crate::operation_context::OperationContext::current() {
+        context.phase(phase);
+    }
+}
+fn operation_check() -> Result<(), String> {
+    if let Some(context) = crate::operation_context::OperationContext::current() {
+        context.check().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
 
 fn self_contained_project(project: &Project, inventory: &[(String, u64)]) -> Result<(), String> {
     if project.config.validation_command.is_some() {
@@ -133,6 +145,8 @@ fn runtime_validate(
     candidate: &Project,
     userdata: &Path,
 ) -> Result<Validation, String> {
+    operation_phase(crate::operation_context::Phase::Dependencies);
+    operation_check()?;
     self_contained_project(candidate, &snapshot::inventory(&candidate.root)?)?;
     let engine = crate::project_ops::engine_binary(original)?
         .canonicalize()
@@ -181,7 +195,11 @@ fn runtime_validate(
                 .into(),
         });
     }
+    operation_phase(crate::operation_context::Phase::Importing);
+    operation_check()?;
     let mut outcome = crate::project_ops::validate_with_context(candidate, Some(&context))?;
+    operation_phase(crate::operation_context::Phase::Validating);
+    operation_check()?;
     #[cfg(windows)]
     if outcome["ok"] == true && dependencies["native"] == true {
         outcome["native_dependencies"] =
@@ -312,6 +330,8 @@ fn run_with_validation(
     publish: bool,
 ) -> Result<Value, String> {
     let started = Instant::now();
+    operation_phase(crate::operation_context::Phase::Staging);
+    operation_check()?;
     let evidence = receipt_path(project)?;
     let mut workspace = None;
     let prepared = (|| -> Result<_, String> {
@@ -333,11 +353,13 @@ fn run_with_validation(
             .as_array()
             .ok_or("missing checked changes")?
         {
+            operation_check()?;
             if !snapshot::includes(change["path"].as_str().ok_or("missing checked path")?) {
                 return Err("candidate changes cannot target excluded source/state paths".into());
             }
         }
         let source_sha = snapshot::fingerprint_all(&source.root)?;
+        operation_check()?;
         #[cfg(not(test))]
         {
             workspace = Some(Workspace::create()?);
@@ -363,6 +385,7 @@ fn run_with_validation(
         let changes: Vec<crate::revisions::Change> =
             serde_json::from_value(input["changes"].clone()).map_err(|error| error.to_string())?;
         for change in changes {
+            operation_check()?;
             let path = crate::project_ops::managed_path(&directory, &change.path)?;
             match change.action {
                 crate::revisions::Action::Create | crate::revisions::Action::Replace => {
@@ -398,11 +421,21 @@ fn run_with_validation(
     let userdata = private.path.join("userdata");
     std::fs::create_dir(&userdata).map_err(|error| error.to_string())?;
     // The original content lease ended before invoking any compiler/runtime.
+    operation_phase(crate::operation_context::Phase::Validating);
+    operation_check()?;
     let result = validator(&candidate, &userdata);
-    let storage = crate::candidate_workspace::usage(
+    operation_check()?;
+    let storage_budget = crate::operation_context::OperationContext::current()
+        .map(|context| context.budget(Duration::from_secs(2)))
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or(Duration::from_secs(2));
+    let storage = crate::candidate_workspace::usage_with_budget(
         &private.path,
         crate::candidate_workspace::WORKSPACE_BYTES,
+        storage_budget,
     );
+    operation_check()?;
     let storage_ok = storage.is_ok();
     let result = result.and_then(|result| storage.map(|_| result));
     let (validation, artifacts) = match result {
@@ -415,6 +448,7 @@ fn run_with_validation(
                     json!("native source revision accepts at most one generated library");
             }
             for artifact in &result.artifacts {
+                operation_check()?;
                 match artifact.verified_path(&candidate.root) {
                     Ok(_) if artifact_evidence.is_empty() => {
                         artifact_evidence
@@ -446,6 +480,7 @@ fn run_with_validation(
         .as_array()
         .ok_or("missing checked changes")?
     {
+        operation_check()?;
         if !storage_ok {
             break;
         }
@@ -478,6 +513,8 @@ fn run_with_validation(
         "native_dependencies":validation["native_dependencies"],
         "scope":"private source/resource validation; native builds when configured; no gameplay proof"});
     if publish && receipt["ok"] == true {
+        operation_phase(crate::operation_context::Phase::Publishing);
+        operation_check()?;
         let publication = match crate::transactions::publish_candidate_with_artifacts(
             project,
             &candidate,
@@ -497,6 +534,7 @@ fn run_with_validation(
         receipt["scope"] =
             json!("validated journaled source publication; compiled artifacts remain private; no gameplay proof");
     }
+    operation_phase(crate::operation_context::Phase::Cleanup);
     match private.clean() {
         Ok(()) => receipt["cleanup_ok"] = json!(true),
         Err(error) => {
@@ -552,6 +590,65 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0.root);
         }
+    }
+
+    #[test]
+    fn cancellation_after_private_validation_never_publishes_source() {
+        let fixture = Fixture::new();
+        let before = snapshot::fingerprint_all(&fixture.0.root).unwrap();
+        let context = crate::operation_context::OperationContext::new(
+            Instant::now() + Duration::from_secs(30),
+        );
+        let mut private_root = None;
+        let result = context
+            .scope(|| {
+                run_with(
+                    &fixture.0,
+                    &fixture.changes(),
+                    |candidate, _| {
+                        private_root = Some(candidate.root.clone());
+                        assert_eq!(
+                            context.progress().phase,
+                            crate::operation_context::Phase::Validating
+                        );
+                        context.request_cancel().unwrap();
+                        Ok(json!({"ok":true}))
+                    },
+                    true,
+                )
+            })
+            .unwrap();
+        assert!(result.is_err());
+        assert!(!context.committed());
+        assert!(context.commit_status_verified());
+        assert!(!private_root.unwrap().exists());
+        assert_eq!(snapshot::fingerprint_all(&fixture.0.root).unwrap(), before);
+        assert!(!fixture.0.root.join(".aurum/revisions/active.json").exists());
+    }
+
+    #[test]
+    fn private_validation_and_receipt_writes_do_not_commit_the_job() {
+        let fixture = Fixture::new();
+        let context = crate::operation_context::OperationContext::new(
+            Instant::now() + Duration::from_secs(30),
+        );
+        let result = context
+            .scope(|| {
+                validate_with(&fixture.0, &fixture.changes(), |_, _| {
+                    assert!(!context.committed());
+                    Ok(json!({"ok":true}))
+                })
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["evidence_persisted"], true);
+        assert_eq!(result["applied"], false);
+        assert!(!context.committed());
+        assert_eq!(
+            context.progress().phase,
+            crate::operation_context::Phase::Cleanup
+        );
     }
 
     #[test]

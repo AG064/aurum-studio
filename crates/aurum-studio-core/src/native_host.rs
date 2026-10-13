@@ -239,15 +239,33 @@ pub fn route(root: &Path, input: &Value) -> Result<Value, String> {
     let op = input["op"]
         .as_str()
         .ok_or("native operation must be a string")?;
+    let jobs = crate::project_jobs::supported(op);
+    let mut request = input.clone();
+    request["project"] = json!(root);
+    if jobs {
+        crate::jobs::validate_request_size(&request)?;
+    }
+    let body = serde_json::to_vec(&request).map_err(|_| "native request encoding failed")?;
+    if body.len() > 2 * 1024 * 1024 {
+        return Err("native routed request exceeds 2 MiB".into());
+    }
     let mut endpoint = metadata(&root)?;
     if endpoint.is_none() {
+        if jobs && !matches!(op, "job_submit" | "job_reconnect") {
+            return Ok(
+                json!({"ok":true,"host_available":false,"jobs_available":false,"reconnect_required":true}),
+            );
+        }
         if op == "native_status" {
             return Ok(json!({"ok":true,"running":false,"host_available":false}));
         }
         if matches!(op, "native_stop" | "native_host_stop") {
             return Ok(json!({"ok":true,"stopped":false,"host_available":false}));
         }
-        if !matches!(op, "native_start" | "native_recover") {
+        if !matches!(
+            op,
+            "native_start" | "native_recover" | "job_submit" | "job_reconnect"
+        ) {
             return Err("no native controller is running; start a native session first".into());
         }
         Project::open(&root).map_err(|error| error.to_string())?;
@@ -268,12 +286,6 @@ pub fn route(root: &Path, input: &Value) -> Result<Value, String> {
     }
     let secret = token(&root)?;
     verify_scope(&root, &endpoint, &secret)?;
-    let mut request = input.clone();
-    request["project"] = json!(root);
-    let body = serde_json::to_vec(&request).map_err(|_| "native request encoding failed")?;
-    if body.len() > 2 * 1024 * 1024 {
-        return Err("native routed request exceeds 2 MiB".into());
-    }
     let budget = if matches!(op, "native_start" | "native_replace" | "native_recover") {
         Duration::from_secs(240)
     } else {

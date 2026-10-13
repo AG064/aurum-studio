@@ -102,8 +102,80 @@ project state.
 Scopes hash at most 512 MiB of public source with bounded nesting/file counts.
 Two scans detect drift, but external editors do not participate in an atomic
 filesystem snapshot. These are compact source-context operations, not runtime
-state, dependency analysis or measured model-token savings. Background job
-progress/cancellation and token/latency benchmarks remain roadmap work.
+state, dependency analysis or measured model-token savings. Runtime/dependency
+context and token/latency/task-success benchmarks remain roadmap work.
+
+## Shared background jobs
+
+Development source adds project-scoped `job_submit`, `job_status`, `job_result`,
+`job_list`, `job_cancel`, `job_forget` and `job_reconnect` operations through the
+same CLI, authenticated HTTP and MCP controller. These are not in the 0.4.0
+download. Submit an ordinary project request and retain the returned 32-character
+job ID and 64-character owner capability. Keep that bearer capability private;
+a job ID alone grants no access.
+
+```powershell
+$aurumJobTicket = aurum project A:/Games/MyGame --request-json '{"op":"job_submit","request":{"op":"changes_validate","changes":[{"path":"player.gd","action":"create","expected_sha256":"","text":"extends Node3D\n"}]},"timeout_seconds":120}' | ConvertFrom-Json
+$aurumJobQuery = @{op='job_status'; job_id=$aurumJobTicket.job_id; owner_capability=$aurumJobTicket.owner_capability} | ConvertTo-Json -Compress
+aurum project A:/Games/MyGame --read-only --request-json $aurumJobQuery
+```
+
+Permission checks precede admission. A nested request cannot change project
+scope, submit another job or stop the controller. The manager admits two active
+and eight queued jobs; Godot management still uses its separate serial runtime
+gate. A running job can therefore be waiting for that gate. The absolute
+1-to-600-second deadline includes queue time. Requests are bounded to 2 MiB;
+transport limits still apply.
+
+Status reports named phases, a monotonic sequence, cancellation and commit
+status. Pass `after_sequence` to receive a compact `unchanged` reply when progress
+has not advanced. Status and bounded lists contain metadata rather than source
+or result bodies. `job_result` retrieves retained results up to 32 KiB. Larger
+results keep an independently computed hash when complete serialization fits
+the 2 MiB streaming budget. `result_complete:false`, `result_bytes_exact:false`
+and an absent full-result hash explicitly identify incomplete capture.
+
+Cancellation requests do not themselves prove termination. Poll to a terminal
+receipt and check ownership/commit evidence. Owned workers and runtime-gate
+waiters cooperate before commit; an accepted mutation is not undone by
+cancellation. Failed rollback or unconfirmed termination cannot be reported as
+clean cancellation. Native replacement cancellation before activation retains
+the accepted game and working source.
+
+Client disconnect keeps the shared controller and jobs running. Explicit
+`job_reconnect` can start a controller and load bounded summary receipts from
+`.aurum/background-jobs`. Requests, source text, result bodies and plaintext
+capabilities are not stored there. After a controller crash, unfinished jobs are
+`interrupted` with `commit_status_verified:false`; they are never replayed.
+Completed hashes remain available, while in-memory result bodies are lost.
+Up to 64 terminal receipts are retained. `job_forget` explicitly removes one
+terminal receipt and refuses active/queued jobs.
+
+For a background `export` request, the output's parent directory must be new.
+For example, export `dist/job-export/game.pck` only while `dist/job-export` does
+not exist. Configure the preset before submitting the job. The worker snapshots
+source and redirects userdata privately. It stages the complete output and
+sidecars, then publishes only that output directory with one rename. An existing
+parent is refused before the publication barrier;
+ordinary synchronous export keeps its established behavior.
+
+Background Windows `package` uses a fresh output directory and a private source
+copy. The expanded package gate requires a nonempty regular pack and bundled
+executable, confirmed publication, bounded standalone execution and unchanged
+working source/cache contents. The latest Windows package gate passed with
+confinement, recovery-state and aggregate source/output staging-storage checks.
+
+The [compiled jobs fixture](../scripts/tests/jobs-acceptance.mjs) passed 158
+checks on the latest Windows qualification binary across queue, permission,
+reconnect, bounds, owned Godot cancellation and packaged-game execution. The
+[portable Cargo gate](../scripts/tests/cargo-jobs-acceptance.ps1) passed 31
+real offline compiler cancellation/deadline/privacy checks on the same binary.
+The matching source passed 746 focused Rust/doc tests and strict Clippy.
+See [job verification evidence](INTEGRATION_VERIFICATION.md#shared-background-job-gate-2026-10-13)
+for binary identity, counts and retained failure history.
+Runtime/dependency
+context plus real model-token, latency and authoring-success benchmarks remain
+required before the efficient-agent milestone is complete.
 
 ## Remaining boundaries
 
@@ -115,7 +187,8 @@ headset certification. Project code runs with the user's permissions. Run tests
 in disposable copies. Android/iOS/VR capability must be qualified on the
 relevant toolchains and actual devices.
 
-Remaining gates include native dependency staging, cancellable background jobs,
+Remaining gates include external native dependency staging, runtime/dependency
+context and agent benchmarks,
 representative asset/material/animation workflows, target-specific preflight
 and independent device tests. Track these separately from the 0.4.0 contract
 and the 3D reference milestone.

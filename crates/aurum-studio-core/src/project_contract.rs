@@ -57,6 +57,10 @@ fn parameters() -> Value {
     result["baseline_id"] = json!({"type":"string","pattern":"^[a-f0-9]{64}$","description":"Retained context baseline identity"});
     result["current_id"] = json!({"type":"string","pattern":"^[a-f0-9]{64}$","description":"Content identity from the preceding delta page; required with after"});
     result["after"] = json!({"type":"string","maxLength":1024,"description":"next_after from the preceding context page"});
+    result["job_id"] = json!({"type":"string","pattern":"^[a-f0-9]{32}$","description":"Background job identity from job_submit"});
+    result["owner_capability"] = json!({"type":"string","pattern":"^[a-f0-9]{64}$","description":"Private owner capability returned by the first submission; required for reconnect, results and cancellation"});
+    result["after_sequence"] = json!({"type":"integer","minimum":0,"description":"Last observed monotonic job progress sequence"});
+    result["request"] = json!({"type":"object","required":["op"],"description":"One supported project operation; nested jobs, project scope overrides and controller shutdown are refused. Detailed schemas remain available through describe."});
     result
 }
 
@@ -67,6 +71,10 @@ fn fields(op: &str) -> &'static [&'static str] {
         "context_snapshot" => &["prefix", "extensions"],
         "context_delta" => &["baseline_id", "current_id", "after", "limit"],
         "context_forget" => &["baseline_id"],
+        "job_submit" => &["request", "owner_capability", "timeout_seconds"],
+        "job_status" => &["job_id", "owner_capability", "after_sequence"],
+        "job_result" | "job_cancel" | "job_forget" => &["job_id", "owner_capability"],
+        "job_list" | "job_reconnect" => &["owner_capability", "limit"],
         "changes_check" | "changes_validate" | "changes_apply" => &["changes"],
         "changes_undo" | "changes_forget" => &["revision_id"],
         "changes_history" => &["revision_id", "limit"],
@@ -109,6 +117,11 @@ fn fields(op: &str) -> &'static [&'static str] {
 fn required(op: &str) -> &'static [&'static str] {
     match op {
         "context_delta" | "context_forget" => &["baseline_id"],
+        "job_submit" => &["request"],
+        "job_status" | "job_result" | "job_cancel" | "job_forget" => {
+            &["job_id", "owner_capability"]
+        }
+        "job_list" | "job_reconnect" => &["owner_capability"],
         "changes_check" | "changes_validate" | "changes_apply" => &["changes"],
         "changes_undo" | "changes_forget" => &["revision_id"],
         "native_apply" => &["properties"],
@@ -161,6 +174,16 @@ pub fn describe(operation: Option<&str>) -> Result<Value, String> {
     let mut required_fields = vec!["op"];
     required_fields.extend_from_slice(required(op));
     let mut result = json!({"contract_version":1,"op":op,"read_only":is_read_only(op),"input_schema":{"type":"object","properties":properties,"required":required_fields}});
+    if crate::project_jobs::supported(op) {
+        result["constraints"] = json!({"active_max":crate::jobs::MAX_ACTIVE,"queued_max":crate::jobs::MAX_QUEUED,"terminal_receipts_max":crate::jobs::MAX_TERMINAL,
+            "request_bytes_max":crate::jobs::MAX_REQUEST_BYTES,"retained_result_bytes_max":crate::jobs::MAX_RESULT_BYTES,"default_timeout_seconds":120,
+            "deadline":"includes queue waiting and operation work","status":"monotonic bounded summaries; job_result retrieves retained result separately",
+            "owner":"random private capability; caller owner names confer no authority",
+            "reconnect":"explicit job_reconnect starts a controller and loads summaries; interrupted mutations are never replayed",
+            "cancellation":"only owned transient workers; committed effects remain committed; unresolved commit/rollback reports uncertainty and recovery evidence",
+            "export":"background export requires a fresh output directory; executable, pack and sidecars publish together after bounded private staging (1 GiB maximum)",
+            "execution_sandboxed":false});
+    }
     if matches!(op, "context_snapshot" | "context_delta" | "context_forget") {
         result["constraints"] = json!({"baseline_limit":crate::agent_context::BASELINES,"baseline_bytes_max":crate::agent_context::RECORD_BYTES,"scope_source_bytes_max":crate::agent_context::SOURCE_BYTES,
             "files_max":20000,"page_limit_max":200,"content_in_results":false,"automatic_pruning":false,

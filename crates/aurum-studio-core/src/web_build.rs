@@ -2,10 +2,16 @@
 //! SDK provisioning is explicit; this module never installs or upgrades tools.
 use crate::{files, Project};
 use serde_json::{json, Value};
+use std::io::Read;
 use std::path::PathBuf;
 use std::time::Duration;
 
 pub fn build(project: &Project) -> Result<Value, String> {
+    let context = crate::operation_context::OperationContext::current();
+    if let Some(context) = &context {
+        context.check().map_err(|error| error.to_string())?;
+        context.phase(crate::operation_context::Phase::Dependencies);
+    }
     let package = project
         .config
         .rust_package
@@ -115,7 +121,7 @@ pub fn build(project: &Project) -> Result<Value, String> {
             features.join(","),
             "--message-format=json".into(),
         ])
-        .directory(&project.root)
+        .directory(project.confined_build_workspace()?)
         .env("CARGO_TARGET_DIR", target.display().to_string())
         .env("CARGO_ENCODED_RUSTFLAGS", flags)
         .env(
@@ -130,8 +136,14 @@ pub fn build(project: &Project) -> Result<Value, String> {
         )
         .env("EM_CONFIG", sdk.join(".emscripten").display().to_string())
         .env("PATH", path.to_string_lossy());
+    if context.is_some() {
+        command = command.candidate_storage(&work);
+    }
     if let Some(root) = sdk_rustup(&sdk) {
         command = command.env("RUSTUP_HOME", root.display().to_string());
+    }
+    if let Some(context) = &context {
+        context.phase(crate::operation_context::Phase::Compiling);
     }
     let result = command
         .run(Duration::from_secs(600))
@@ -145,6 +157,9 @@ pub fn build(project: &Project) -> Result<Value, String> {
     }
     let mut artifacts = Vec::new();
     for line in result.stdout.lines() {
+        if let Some(context) = &context {
+            context.check().map_err(|error| error.to_string())?;
+        }
         let Ok(message) = serde_json::from_str::<Value>(line) else {
             continue;
         };
@@ -177,17 +192,42 @@ pub fn build(project: &Project) -> Result<Value, String> {
             {
                 return Err("Cargo reported an artifact outside the managed Web target".into());
             }
-            let bytes = std::fs::read(&canonical).map_err(|e| e.to_string())?;
-            if bytes.len() < 8 || &bytes[..8] != b"\0asm\x01\0\0\0" {
+            let mut artifact =
+                std::fs::File::open(&canonical).map_err(|error| error.to_string())?;
+            let mut header = [0; 8];
+            artifact
+                .read_exact(&mut header)
+                .map_err(|error| error.to_string())?;
+            if &header != b"\0asm\x01\0\0\0" {
                 return Err("Cargo did not produce a WebAssembly module".into());
             }
-            artifacts.push(json!({"path":canonical,"name":message["target"]["name"],"sha256":crate::sha256_hex(&bytes)}));
+            let mut hash = crate::Sha256::new();
+            hash.update(&header);
+            let mut buffer = [0; 64 * 1024];
+            loop {
+                if let Some(context) = &context {
+                    context.check().map_err(|error| error.to_string())?;
+                }
+                let count = artifact
+                    .read(&mut buffer)
+                    .map_err(|error| error.to_string())?;
+                if count == 0 {
+                    break;
+                }
+                hash.update(&buffer[..count]);
+            }
+            artifacts.push(
+                json!({"path":canonical,"name":message["target"]["name"],"sha256":hash.hex()}),
+            );
         }
     }
     if artifacts.is_empty() {
         return Err("Rust Web build produced no cdylib Wasm artifact".into());
     }
-    let value = json!({"ok":true,"target":"wasm32-unknown-emscripten","threaded":false,"toolchain":toolchain,"artifacts":artifacts,"logs":work});
+    let value = json!({"ok":true,"target":"wasm32-unknown-emscripten","threaded":false,"toolchain":toolchain,"artifacts":artifacts,"logs":work,"published":false,"private_build":true});
+    if let Some(context) = &context {
+        context.check().map_err(|error| error.to_string())?;
+    }
     files::write_atomic(
         &work.join("build.json"),
         &serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?,

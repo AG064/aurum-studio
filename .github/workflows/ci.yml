@@ -129,6 +129,11 @@ jobs:
           if($LASTEXITCODE){throw 'Private Rust native build and handoff failed'}
           node ./scripts/tests/native-workspace-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
           if($LASTEXITCODE){throw 'Contained native Cargo workspace acceptance failed'}
+          # The expanded jobs suite covers async package publication and aggregate staging storage.
+          node ./scripts/tests/jobs-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
+          if($LASTEXITCODE){throw 'Shared jobs, cancellation and async package/storage acceptance failed'}
+          ./scripts/tests/cargo-jobs-acceptance.ps1 -AurumBinary ./target/debug/aurum.exe -Mode Both -TempRoot "$env:TEMP"
+          if($LASTEXITCODE){throw 'Real offline Cargo cancellation and deadline acceptance failed'}
           node ./scripts/tests/native-mission-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
           if($LASTEXITCODE){throw 'Real native mission replacement acceptance failed'}
           node ./scripts/tests/native-recovery-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
@@ -148,6 +153,8 @@ jobs:
             ${{ runner.temp }}/aurum-runtime-tests/**/*.log
             ${{ runner.temp }}/aurum-runtime-tests/**/evidence.json
             ${{ runner.temp }}/aurum-runtime-tests/**/verification.json
+            ${{ runner.temp }}/aurum-runtime-tests/**/receipt.json
+            ${{ runner.temp }}/aurum-runtime-tests/**/*-receipt.json
           retention-days: 14
 
   lint:

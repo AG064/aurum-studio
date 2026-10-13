@@ -1,7 +1,7 @@
 //! Building the native extension and installing it safely.
 //!
 //! The guarantee this module exists to provide is narrow and absolute: **a
-//! failed build never damages the working extension.** Everything is ordered
+//! failed compilation never damages the working extension.** Everything is ordered
 //! around that. Cargo runs, the artifact is waited on until it stops changing,
 //! it is hashed and staged *inside the destination directory*, and only then
 //! is the installed library swapped. Any failure before the swap leaves the
@@ -12,11 +12,108 @@
 //! because killing the editor to force a copy would discard the user's work to
 //! save a retry.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::hash::sha256_file;
 use crate::process::{Command, Outcome};
+
+fn operation_check() -> Result<(), BuildError> {
+    if let Some(context) = crate::operation_context::OperationContext::current() {
+        context
+            .check()
+            .map_err(|error| BuildError::Io(error.to_string()))?;
+    }
+    Ok(())
+}
+fn operation_phase(phase: crate::operation_context::Phase) {
+    if let Some(context) = crate::operation_context::OperationContext::current() {
+        context.phase(phase);
+    }
+}
+fn operation_budget(local: Duration) -> Result<Duration, BuildError> {
+    crate::operation_context::OperationContext::current()
+        .map(|context| context.budget(local))
+        .transpose()
+        .map_err(|error| BuildError::Io(error.to_string()))
+        .map(|budget| budget.unwrap_or(local))
+}
+fn checked_hash(path: &Path) -> std::io::Result<String> {
+    let Some(context) = crate::operation_context::OperationContext::current() else {
+        return sha256_file(path);
+    };
+    context.check()?;
+    let mut hash = crate::hash::Sha256::new();
+    let mut file = std::fs::File::open(path)?;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        context.check()?;
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    context.check()?;
+    Ok(hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+fn copy_artifact(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let context = crate::operation_context::OperationContext::current();
+    if let Some(context) = &context {
+        context.check()?;
+    }
+    let mut source = std::fs::File::open(source)?;
+    let permissions = source.metadata()?.permissions();
+    let mut target = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        if let Some(context) = &context {
+            context.check()?;
+        }
+        let count = source.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        if let Some(context) = &context {
+            context.check()?;
+        }
+        target.write_all(&buffer[..count])?;
+    }
+    std::fs::set_permissions(destination, permissions)?;
+    target.sync_all()?;
+    if let Some(context) = &context {
+        context.check()?;
+    }
+    Ok(())
+}
+struct StagedLibrary(PathBuf);
+impl Drop for StagedLibrary {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if let Ok(metadata) = std::fs::symlink_metadata(&self.0) {
+            if metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.permissions().readonly()
+            {
+                let mut permissions = metadata.permissions();
+                // Windows readonly is a file attribute, not Unix mode bits.
+                // This applies only to our fresh abandoned staging file.
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+                let _ = std::fs::set_permissions(&self.0, permissions);
+            }
+        }
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 /// Which Cargo profile a build uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +341,7 @@ pub fn wait_until_stable(
     settle: Duration,
     timeout: Duration,
 ) -> Result<u64, BuildError> {
+    let timeout = operation_budget(timeout)?;
     let started = Instant::now();
     wait_until_stable_with(
         path,
@@ -260,7 +358,13 @@ pub fn wait_until_stable(
             ))
         },
         || started.elapsed(),
-        || std::thread::sleep(Duration::from_millis(25)),
+        || {
+            let delay = crate::operation_context::OperationContext::current()
+                .map(|context| context.deadline().saturating_duration_since(Instant::now()))
+                .unwrap_or(Duration::from_millis(25))
+                .min(Duration::from_millis(25));
+            std::thread::sleep(delay);
+        },
     )
 }
 
@@ -277,8 +381,10 @@ fn wait_until_stable_with(
     let mut stable_since = elapsed();
 
     loop {
+        operation_check()?;
         let current = snapshot()?;
         let now = elapsed();
+        operation_check()?;
 
         match last {
             Some(previous) if previous == current => {
@@ -310,10 +416,40 @@ pub const ARTIFACT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Stage an artifact beside its destination, and swap it in.
 ///
 /// Staging inside the destination directory keeps the swap on one volume,
-/// where a rename is atomic. The original is moved aside first and restored if
-/// the swap fails, so there is no path through this function that loses the
-/// installed library.
+/// where a rename is atomic. A failed swap preserves the existing library.
+/// The successful atomic replacement of the verified staging file records
+/// the installed-library commit before optional reload notification.
 pub fn install(staged_source: &Path, destination: &Path) -> Result<Artifact, BuildError> {
+    install_with(staged_source, destination, || {})
+}
+
+/// Stage verified library bytes in a private snapshot or unpublished package.
+/// This keeps job cancellation and deadlines without recording publication.
+pub fn install_private(staged_source: &Path, destination: &Path) -> Result<Artifact, BuildError> {
+    install_with_policy(staged_source, destination, false, || {})
+}
+
+fn install_with(
+    staged_source: &Path,
+    destination: &Path,
+    prepared: impl FnOnce(),
+) -> Result<Artifact, BuildError> {
+    install_with_policy(staged_source, destination, true, prepared)
+}
+
+fn install_with_policy(
+    staged_source: &Path,
+    destination: &Path,
+    record_commit: bool,
+    prepared: impl FnOnce(),
+) -> Result<Artifact, BuildError> {
+    operation_phase(crate::operation_context::Phase::Staging);
+    operation_check()?;
+    let previous = if destination.exists() {
+        Some(checked_hash(destination).map_err(|error| BuildError::Install(error.to_string()))?)
+    } else {
+        None
+    };
     let directory = destination.parent().ok_or_else(|| {
         BuildError::Install(format!(
             "'{}' has no parent directory",
@@ -324,38 +460,74 @@ pub fn install(staged_source: &Path, destination: &Path) -> Result<Artifact, Bui
         BuildError::Install(format!("could not create '{}': {e}", directory.display()))
     })?;
 
-    let staged = destination.with_extension(format!(
-        "{}.staging",
-        destination
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("tmp")
-    ));
+    let staged = StagedLibrary(crate::files::sibling_temp(destination));
 
     // Copy first, verify, then swap. Nothing before the swap touches the
     // destination.
-    std::fs::copy(staged_source, &staged)
-        .map_err(|e| BuildError::Install(format!("could not stage '{}': {e}", staged.display())))?;
+    copy_artifact(staged_source, &staged.0).map_err(|e| {
+        BuildError::Install(format!("could not stage '{}': {e}", staged.0.display()))
+    })?;
 
-    let staged_hash = sha256_file(&staged)
+    let staged_hash = checked_hash(&staged.0)
         .map_err(|e| BuildError::Install(format!("could not hash the staged artifact: {e}")))?;
-    let source_hash = sha256_file(staged_source)
+    let source_hash = checked_hash(staged_source)
         .map_err(|e| BuildError::Install(format!("could not hash the source artifact: {e}")))?;
     if staged_hash != source_hash {
-        let _ = std::fs::remove_file(&staged);
         return Err(BuildError::Install(format!(
             "the staged copy does not match the source ({staged_hash} vs {source_hash})"
         )));
     }
 
-    let bytes = std::fs::metadata(&staged)
+    let bytes = std::fs::metadata(&staged.0)
         .map_err(|e| BuildError::Install(e.to_string()))?
         .len();
 
-    // ---- commit boundary: everything fallible above has succeeded --------
-    if let Err(error) = crate::files::replace(&staged, destination) {
-        let _ = std::fs::remove_file(&staged);
+    prepared();
+    operation_check()?;
+    let current = if destination.exists() {
+        Some(checked_hash(destination).map_err(|error| BuildError::Install(error.to_string()))?)
+    } else {
+        None
+    };
+    if current != previous {
+        return Err(BuildError::Install(
+            "installed library changed while staging; newer bytes were preserved".into(),
+        ));
+    }
+    if record_commit {
+        operation_phase(crate::operation_context::Phase::Publishing);
+    }
+    let context = crate::operation_context::OperationContext::current();
+    let mut commit = if record_commit {
+        context
+            .as_ref()
+            .map(|context| context.commit_barrier())
+            .transpose()
+            .map_err(|error| BuildError::Install(error.to_string()))?
+    } else {
+        None
+    };
+    if let Err(error) = crate::files::replace(&staged.0, destination) {
+        let unchanged = match &previous {
+            Some(hash) => checked_hash(destination).is_ok_and(|current| current == *hash),
+            None => !destination.exists(),
+        };
+        if unchanged {
+            if let Some(commit) = commit.take() {
+                commit.rollback_complete();
+            }
+        } else if record_commit {
+            if let Some(context) = &context {
+                context.mark_recovery_required();
+            }
+        }
         return Err(BuildError::Install(locked_message(destination, &error)));
+    }
+    if let Some(commit) = commit.take() {
+        commit.finish();
+    }
+    if !record_commit {
+        operation_check()?;
     }
 
     Ok(Artifact {
@@ -401,10 +573,11 @@ fn run_cargo_with_retry(
 ) -> Result<Outcome, BuildError> {
     let mut delay = Duration::from_millis(10);
     for attempt in 0..3 {
+        operation_check()?;
         match command.run(timeout) {
             Ok(outcome) => return Ok(outcome),
             Err(error) if error.raw_os_error() == Some(TEXT_FILE_BUSY) && attempt < 2 => {
-                std::thread::sleep(delay);
+                std::thread::sleep(operation_budget(delay)?);
                 delay *= 3;
             }
             Err(error) => {
@@ -424,9 +597,29 @@ const TEXT_FILE_BUSY: i32 = 26;
 const TEXT_FILE_BUSY: i32 = -1;
 pub fn run(
     request: &BuildRequest,
-    _force: bool,
+    force: bool,
     cargo_timeout: Duration,
 ) -> Result<BuildReport, BuildError> {
+    run_with_policy(request, force, cargo_timeout, true)
+}
+
+/// Build a library for private validation/import without publishing it.
+pub fn run_private(
+    request: &BuildRequest,
+    force: bool,
+    cargo_timeout: Duration,
+) -> Result<BuildReport, BuildError> {
+    run_with_policy(request, force, cargo_timeout, false)
+}
+
+fn run_with_policy(
+    request: &BuildRequest,
+    _force: bool,
+    cargo_timeout: Duration,
+    record_commit: bool,
+) -> Result<BuildReport, BuildError> {
+    operation_phase(crate::operation_context::Phase::Dependencies);
+    operation_check()?;
     // Package names and library target names are independent. Cargo's opaque
     // package identity also distinguishes dependency artifacts from this build.
     let started = std::time::Instant::now();
@@ -457,6 +650,8 @@ pub fn run(
         ));
     }
     // Only Cargo knows whether dependencies or source files changed.
+    operation_phase(crate::operation_context::Phase::Compiling);
+    operation_check()?;
     let command = request.command();
     let outcome: Outcome = run_cargo_with_retry(&command, remaining)?;
     let mut diagnostics = outcome.stderr.clone();
@@ -483,6 +678,8 @@ pub fn run(
     }
 
     let source = reported_library(&outcome.stdout, &package_id, &target_name)?;
+    operation_phase(crate::operation_context::Phase::Validating);
+    operation_check()?;
 
     if !source.is_file() {
         return Err(BuildError::NoArtifact(source));
@@ -493,13 +690,17 @@ pub fn run(
 
     // Capture what was installed *before* the swap, so "replaced" reports
     // whether the content actually changed rather than merely that a build ran.
-    let previous = sha256_file(&request.destination).ok();
+    let previous = checked_hash(&request.destination).ok();
+    operation_check()?;
     let installed = if previous.as_deref() == Some(source_artifact.sha256.as_str()) {
         artifact_of(&request.destination)?
+    } else if !record_commit {
+        install_private(&source, &request.destination)?
     } else {
         install(&source, &request.destination)?
     };
     let replaced = previous.as_deref() != Some(installed.sha256.as_str());
+    operation_phase(crate::operation_context::Phase::Cleanup);
     let mut output = diagnostics;
     if request.profile.is_debug() {
         if let Err(error) = publish_reload_marker(&request.destination, &installed.sha256) {
@@ -626,7 +827,7 @@ fn publish_reload_marker(destination: &Path, hash: &str) -> std::io::Result<()> 
 fn artifact_of(path: &Path) -> Result<Artifact, BuildError> {
     let metadata = std::fs::metadata(path)
         .map_err(|e| BuildError::Io(format!("could not stat '{}': {e}", path.display())))?;
-    let sha256 = sha256_file(path)
+    let sha256 = checked_hash(path)
         .map_err(|e| BuildError::Io(format!("could not hash '{}': {e}", path.display())))?;
     Ok(Artifact {
         path: path.to_path_buf(),
@@ -638,6 +839,132 @@ fn artifact_of(path: &Path) -> Result<Artifact, BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_installs_allow_multiple_stages_without_committing_and_remain_cancellable() {
+        let root = temp_dir("private-installs");
+        let source = root.join("compiled.dll");
+        let accepted = root.join("accepted.dll");
+        std::fs::write(&source, b"compiled library").unwrap();
+        std::fs::write(&accepted, b"accepted library").unwrap();
+        let context = crate::operation_context::OperationContext::new(
+            Instant::now() + Duration::from_secs(30),
+        );
+        context
+            .scope(|| {
+                install_private(&source, &root.join("private/first.dll")).unwrap();
+                install_private(&source, &root.join("private/second.dll")).unwrap();
+                assert!(!context.committed());
+                assert!(context.request_cancel().unwrap());
+                assert!(install_private(&source, &root.join("private/cancelled.dll")).is_err());
+            })
+            .unwrap();
+        assert!(!context.committed());
+        assert!(context.commit_status_verified());
+        assert!(!root.join("private/cancelled.dll").exists());
+        assert_eq!(std::fs::read(&accepted).unwrap(), b"accepted library");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelled_artifact_staging_preserves_the_installed_library() {
+        let root = temp_dir("cancelled-staging");
+        let source = root.join("compiled.dll");
+        let destination = root.join("installed/active.dll");
+        std::fs::create_dir(destination.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"compiled library").unwrap();
+        std::fs::write(&destination, b"accepted library").unwrap();
+        let context = crate::operation_context::OperationContext::new(
+            Instant::now() + Duration::from_secs(30),
+        );
+        let result = context
+            .scope(|| {
+                install_with(&source, &destination, || {
+                    assert!(!context.committed());
+                    context.request_cancel().unwrap();
+                })
+            })
+            .unwrap();
+        assert!(result.is_err());
+        assert!(!context.committed());
+        assert!(context.commit_status_verified());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"accepted library");
+        assert_eq!(
+            std::fs::read_dir(destination.parent().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn verified_library_switch_commits_and_refuses_late_cancellation() {
+        let root = temp_dir("committed-switch");
+        let source = root.join("compiled.dll");
+        let destination = root.join("active.dll");
+        std::fs::write(&source, b"compiled library").unwrap();
+        std::fs::write(&destination, b"accepted library").unwrap();
+        let context = crate::operation_context::OperationContext::new(
+            Instant::now() + Duration::from_secs(30),
+        );
+        let artifact = context
+            .scope(|| {
+                install_with(&source, &destination, || {
+                    assert!(!context.committed());
+                })
+            })
+            .unwrap()
+            .unwrap();
+        assert!(context.committed());
+        assert!(context.commit_status_verified());
+        assert!(context.request_cancel().is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"compiled library");
+        assert_eq!(artifact.sha256, crate::sha256_hex(b"compiled library"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn library_changes_during_staging_are_preserved() {
+        let root = temp_dir("newer-library");
+        let source = root.join("compiled.dll");
+        let destination = root.join("active.dll");
+        std::fs::write(&source, b"compiled library").unwrap();
+        std::fs::write(&destination, b"accepted library").unwrap();
+        assert!(install_with(&source, &destination, || {
+            std::fs::write(&destination, b"newer external library").unwrap();
+        })
+        .is_err());
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"newer external library"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_during_artifact_settling_never_installs() {
+        let context = crate::operation_context::OperationContext::new(
+            Instant::now() + Duration::from_secs(30),
+        );
+        let result = context
+            .scope(|| {
+                wait_until_stable_with(
+                    Path::new("private-artifact"),
+                    ARTIFACT_SETTLE,
+                    ARTIFACT_TIMEOUT,
+                    || {
+                        context.request_cancel().unwrap();
+                        Ok((1, std::time::SystemTime::UNIX_EPOCH))
+                    },
+                    || Duration::ZERO,
+                    || panic!("cancelled settling must not wait"),
+                )
+            })
+            .unwrap();
+        assert!(result.is_err());
+        assert!(!context.committed());
+    }
 
     #[test]
     fn renamed_library_requires_matching_package_and_reported_artifact() {

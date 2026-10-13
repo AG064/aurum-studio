@@ -70,7 +70,7 @@ pub fn runtime_fingerprint() -> &'static str {
 /// A headless Aurum engine session.
 #[derive(Debug)]
 pub struct Engine {
-    pub(crate) native_runtime: aurum_studio_core::native_operations::NativeRuntime,
+    pub(crate) native_runtime: std::sync::Arc<aurum_studio_core::native_operations::NativeRuntime>,
     world: DynamicWorld,
     state: State,
     events: VecDeque<DynamicEvent>,
@@ -95,7 +95,9 @@ impl Engine {
     /// An empty session at 60 Hz with a default space configuration.
     pub fn new() -> Self {
         Self {
-            native_runtime: aurum_studio_core::native_operations::NativeRuntime::default(),
+            native_runtime: std::sync::Arc::new(
+                aurum_studio_core::native_operations::NativeRuntime::default(),
+            ),
             world: DynamicWorld::new(),
             state: State::new(),
             events: VecDeque::new(),

@@ -55,9 +55,12 @@ candidates before source-only publication and undo. Compiled candidate DLLs
 are hash-verified and excluded from revision records, preserving working
 libraries and the accepted native game. External workspace staging, shared
 compilation caching and device/release qualification remain open.
-Contained nested Cargo workspaces are the next native integration gate: nested
-Godot roots, virtual workspaces, renamed member libraries and copied local
-dependencies, with source/hint refusal and working-cache preservation checks.
+Contained nested Cargo workspace support is published on `main` in `38e68fc`.
+Its Windows fixture passed 49 checks, and
+[that commit's hosted CI run](https://github.com/AG064/aurum-studio/actions/runs/38445290216)
+passed all 13 jobs. It covers nested Godot roots, virtual workspaces, renamed
+member libraries and copied local dependencies, with source/hint refusal and
+working-cache preservation checks.
 
 The next implementation slices and lock/recovery boundaries are specified in
 [project revisions](PROJECT_REVISIONS.md).
@@ -82,9 +85,9 @@ development source includes private Windows native preparation, verified
 replacement, failure fallback and persistent HTTP/MCP session operations.
 Checkpoint/host-crash recovery and shared CLI/MCP/Studio controller routing are
 implemented in development source. Self-contained native dependency staging is
-also in development source. Busy-operation cancellation, external native
-dependencies and final release qualification remain open. This work is not in
-the 0.4.0 download.
+also in development source. Shared jobs now provide qualified owned
+cancellation paths. External native dependencies and final release
+qualification remain open. This work is not in the 0.4.0 download.
 
 The opt-in private runtime bridge binds loopback on an ephemeral port and uses
 a per-launch token, versioned JSON framing, a 1 MiB request/reply bound, four
@@ -114,10 +117,11 @@ releasing or modifying a suspended run. `native_input` delivers registered
 Godot actions inside the owned game, never OS keyboard input.
 
 Complete explicit checkpoints and verified handoffs persist bounded recovery
-records without Aurum transport tokens. `native_recover` checks recorded host/game creation
-identities, refuses live or inaccessible processes, validates the working source
-hash, and proves restoration in a fresh private process before activation. It
-never signals a recorded PID or overwrites newer working edits. Actual host
+records without Aurum transport tokens. `native_recover` checks recorded
+host/game creation identities, refuses live or inaccessible processes,
+validates the working source hash, and proves restoration in a fresh private
+process before activation. It never signals a recorded PID or overwrites newer
+working edits. Actual host
 termination, checkpoint-only recovery, newer-source refusal and corrupt-journal
 refusal are executable gates; recovery resumes stored checkpoint state, not
 arbitrary memory or progress since that checkpoint.
@@ -158,8 +162,8 @@ Original imports and lockfiles remain untouched. Development source adds
 contained relative Cargo workspace hints and a dedicated compiled acceptance
 gate for nested roots and member dependencies. Workspaces outside the imported
 root still require source-staging, provenance and freshness support. External
-workspace delivery, private compile caching, background jobs/cancellation and
-device/release gates remain open.
+workspace delivery, private compile caching, runtime/dependency context,
+agent benchmarks and device/release gates remain open.
 
 - Extend versioned capture/restore hooks to supervised native games.
 - Prepare a replacement privately, validate state compatibility, then hand
@@ -177,8 +181,24 @@ not arbitrary native memory migration or a promise of zero process restarts.
 Status: in progress. Development source adds explicit scoped content-hash
 baselines, read-only bounded deltas, reconnect by baseline ID and
 content-identified pagination. These operations report paths/hashes rather than
-source text. Shared jobs, progress, cancellation, runtime/dependency context and
-model-token/latency benchmarks remain open. See [compact source context](AGENT_WORKFLOWS.md#compact-source-context).
+source text. Development source also adds a shared bounded job manager with
+owner capabilities, named progress, queue-inclusive deadlines, cancellation,
+result summaries and crash/reconnect receipts. The latest Windows qualification
+binary passed 158 expanded job/Godot/package checks and 31 portable real Cargo
+cancellation, deadline and privacy checks; its source snapshot passed 746
+focused Rust/doc tests and strict Clippy. Package confinement, recovery/PCK
+checks, aggregate staging-storage observation and standalone packaged execution
+are included in those gates. Runtime/dependency context and real model-token,
+latency and task-success benchmarks remain open. See
+[compact source context](AGENT_WORKFLOWS.md#compact-source-context) and
+[shared jobs](AGENT_WORKFLOWS.md#shared-background-jobs).
+
+Two jobs may be active while Godot's management gate remains serial. Cancellation
+must confirm owned-worker termination or preserved gate-waiting state before
+claiming completion, and must not relabel committed or uncertain mutations as
+clean cancellation. Controller crash recovery loads metadata without replaying
+requests or retaining plaintext capabilities/source. These contracts do not
+complete the broader efficient-agent milestone or its benchmark requirement.
 
 - Revision-based change queries, filtered dependency/context discovery and
   knowledge keyed to the installed runtime and operation contract.
