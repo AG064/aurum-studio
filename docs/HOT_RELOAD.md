@@ -80,6 +80,16 @@ exit or timeout. Build selection uses Cargo package/artifact identities, not a
 guessed DLL filename, including custom library target names. The working DLL,
 Cargo.lock and import directory are untouched.
 
+Self-contained Rust/GDExtension source revisions use this private build path
+through `changes_validate` and `changes_apply`. Compilation and resource checks
+precede journaled source publication. The receipt reports the generated
+library's path/hash and `native_artifacts_published:false`; those bytes are
+verified but excluded from source replacements and undo records. Applying or
+undoing source does not replace the running game or installed working DLL.
+Call `native_replace` separately to verify and activate the changed game, or
+`build` to install a normal native library. See
+[project revisions](PROJECT_REVISIONS.md#journaled-publication-and-revision-undo).
+
 Before activation, the game must report the expected manifest loaded and match
 the prepared selected-library and declared-dependency hashes. External paths,
 missing dependencies, stale artifact reports, changed private source and
@@ -90,8 +100,8 @@ paths, not every system DLL or arbitrary code performing dynamic loads.
 Current bounds: 16 manifests of at most 64 KiB each, 128 MiB per compiled Rust
 library, a 120-second compiler deadline and the existing private-source/storage
 budgets. Cold builds can hit these limits. A shared compile cache, external
-workspace staging, custom validators, concurrent save writers and cancellation
-of an in-flight preparation still need qualification. Rendered Windows play,
+workspace staging, custom validators, concurrent save writers, background jobs
+and cancellation of an in-flight preparation still need qualification. Rendered Windows play,
 headset and physical mobile acceptance remain separate from headless tests.
 
 ## Verify native extension reload

@@ -56,7 +56,7 @@ fn host_identity(project: &Project) -> Result<OwnershipRecord, String> {
 pub struct NativePreview {
     worker: Arc<crate::worker_windows::Worker>,
     monitor_stop: Arc<AtomicBool>,
-    workspace: Workspace,
+    workspace: Option<Workspace>,
     channel: Channel,
     source_sha256: String,
     prepared_sha256: String,
@@ -275,10 +275,7 @@ impl NativePreview {
                 session: session.id.clone(),
                 executable: engine,
                 pid: live.pid,
-                started: live
-                    .started
-                    .clone()
-                    .ok_or("native process creation time unavailable")?,
+                started: worker.creation_time().map_err(|error| error.to_string())?,
                 project: project.root.clone(),
                 kind: ProcessKind::Game,
             };
@@ -339,7 +336,7 @@ impl NativePreview {
                     worker,
                     monitor_stop,
                     source: candidate.root,
-                    workspace,
+                    workspace: Some(workspace),
                     channel,
                     source_sha256,
                     prepared_sha256,
@@ -351,10 +348,20 @@ impl NativePreview {
                 })
             }
             Err(error) => {
-                let _ = worker.terminate();
+                let retirement = worker.terminate();
                 drop(worker);
-                let _ = workspace.clean();
-                Err(error)
+                if let Err(retirement) = retirement {
+                    // Retain the marked copy and its allocation lease until
+                    // host exit rather than removing files under a live job.
+                    std::mem::forget(workspace);
+                    return Err(format!("{error}; native retirement was not confirmed: {retirement}; private workspace retained"));
+                }
+                match workspace.clean() {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => Err(format!(
+                        "{error}; native workspace cleanup failed: {cleanup}"
+                    )),
+                }
             }
         }
     }
@@ -559,8 +566,11 @@ impl NativePreview {
         // If termination/cleanup is delayed, retain the verified active successor
         // and report the uncertainty instead of destroying the only proven run.
         self.monitor_stop.store(true, Ordering::Release);
-        let retired = self.worker.terminate().is_ok();
-        let _ = self.owner.remove(&self.session.ownership_directory());
+        let retirement_error = self.worker.terminate().err().map(|error| error.to_string());
+        let retired = retirement_error.is_none();
+        if retired {
+            let _ = self.owner.remove(&self.session.ownership_directory());
+        }
         std::mem::swap(self, &mut replacement);
         journal["phase"] = json!("committed");
         journal["previous_termination_confirmed"] = json!(retired);
@@ -568,6 +578,7 @@ impl NativePreview {
         Ok(
             json!({"ok":true,"replaced":true,"previous_pid":previous_pid,"pid":self.owner.pid,
             "state_preserved":true,"restoration":restored,"previous_termination_confirmed":retired,
+            "previous_termination_error":retirement_error,
             "evidence":receipt_path,"evidence_persisted":evidence_persisted,"source_sha256":self.source_sha256,
             "scope":"host-owned native replacement; custom hooks declare state completeness"}),
         )
@@ -575,8 +586,23 @@ impl NativePreview {
     pub fn stop(&mut self) -> Result<(), String> {
         self.monitor_stop.store(true, Ordering::Release);
         self.worker.terminate().map_err(|error| error.to_string())?;
-        let _ = self.owner.remove(&self.session.ownership_directory());
-        self.workspace.clean()
+        let ownership = self
+            .owner
+            .remove(&self.session.ownership_directory())
+            .or_else(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(|error| format!("native ownership cleanup failed: {error}"));
+        let workspace = self.workspace.as_mut().map_or(Ok(()), Workspace::clean);
+        match (ownership, workspace) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(ownership), Err(workspace)) => Err(format!("{ownership}; {workspace}")),
+        }
     }
     /// Resume a checkpoint after the recorded host and both jobs have ended.
     /// No recorded PID is stopped, and newer working source is never overwritten.
@@ -736,7 +762,19 @@ fn checkpoint_preserved(old: &Value, baseline: &Value, actual: &Value) -> Result
 }
 impl Drop for NativePreview {
     fn drop(&mut self) {
-        let _ = self.stop();
+        if let Err(error) = self.stop() {
+            crate::diagnostics::report(
+                self.session
+                    .log(&format!("native preview cleanup failed: {error}")),
+            );
+            if !self.worker.termination_confirmed().unwrap_or(false) {
+                // Keep the private source and its lease until host exit. The
+                // next allocator can then recover this marked workspace.
+                if let Some(workspace) = self.workspace.take() {
+                    std::mem::forget(workspace);
+                }
+            }
+        }
     }
 }
 
@@ -813,11 +851,12 @@ mod tests {
             original.replace("speed: float = 4.0", "speed: float = 6.0"),
         )
         .unwrap();
+        let previous_owner = preview.owner.clone();
         let replaced = preview.replace(&project).unwrap();
         assert_eq!(replaced["state_preserved"], true);
         assert_eq!(replaced["previous_termination_confirmed"], true);
         assert_ne!(preview.owner.pid, old_pid);
-        assert!(crate::ownership::inspect(old_pid).is_none());
+        assert!(crate::ownership::recorded_process_gone(&previous_owner));
         let after_replacement = preview
             .request(&json!({"op":"checkpoint"}), budget)
             .unwrap();

@@ -47,10 +47,42 @@ try {
     await input("move_right",false);await input("pause",true);await input("pause",false);
     before=await action({op:"native_checkpoint"});check(before.checkpoint.paused && before.checkpoint.custom.counter===42,"normal input uses the real Rust method and pauses the mission");
     check(!(await readdir(project)).includes(".godot") && (await readFile(join(project,"addons/native/bin/active.dll"),"utf8"))===staleDll,"working import directory and stale DLL remain untouched");
-    const changed=rust.replace("build_revision:1","build_revision:2");await writeFile(join(project,"src/lib.rs"),changed);
+    const changed=rust.replace("build_revision:1","build_revision:2");
+    const revisionRequest={changes:[{path:"src/lib.rs",action:"replace",expected_sha256:createHash("sha256").update(rust).digest("hex"),text:changed}]};
+    const invalidRevision=await action({op:"changes_validate",changes:[{...revisionRequest.changes[0],text:changed+'\ninvalid syntax!\n'}]});
+    check(invalidRevision.ok===false && invalidRevision.validated===false && invalidRevision.applied===false && invalidRevision.cleanup_ok===true && invalidRevision.candidate_retained===false,"failed native compilation refuses publication and cleans its private candidate");
+    check((await readFile(join(project,"src/lib.rs"),"utf8"))===rust && (await readFile(join(project,"addons/native/bin/active.dll"),"utf8"))===staleDll,"failed native candidate preserves working source and DLL bytes");
+    check((await action({op:"native_status"})).pid===started.pid,"failed native candidate preserves the accepted process");
+    assert.deepEqual((await action({op:"native_checkpoint"})).checkpoint,before.checkpoint);checks++;
+    const staleRevision=await action({op:"changes_apply",changes:[{...revisionRequest.changes[0],expected_sha256:"0".repeat(64)}]});
+    check(staleRevision.ok===false && staleRevision.applied===false && staleRevision.phase==="preflight","stale source hashes refuse native publication before compilation");
+    check((await action({op:"changes_history"})).retained_revisions===0,"failed and stale native candidates create no source revision history");
+    const validated=await action({op:"changes_validate",...revisionRequest});
+    check(validated.ok===true && validated.native_build===true && validated.applied===false && validated.native_artifacts_published===false,"native candidate builds privately before publication");
+    check(validated.source_still_current===true && validated.requested_changes_intact===true && validated.cleanup_ok===true && validated.candidate_retained===false,"successful native validation verifies source/proposal integrity and removes its private copy");
+    check([validated.source_sha256,validated.prepared_sha256,validated.candidate_sha256].every(hash=>typeof hash==="string" && /^[a-f0-9]{64}$/.test(hash)) && validated.validation_changed_snapshot===true && validated.prepared_sha256!==validated.candidate_sha256,"compiled native candidate has a changed, bounded fingerprint");
+    check(Array.isArray(validated.native_artifacts) && validated.native_artifacts.length===1 && validated.native_artifacts[0].path==="addons/native/bin/active.dll" && /^[a-f0-9]{64}$/.test(validated.native_artifacts[0].sha256),"candidate reports the sole generated library path and verified hash");
+    const dependencies=validated.native_dependencies;
+    check(dependencies?.ok===true && dependencies.manifests===1 && Array.isArray(dependencies.libraries) && dependencies.libraries.length===1 && dependencies.libraries[0].path===validated.native_artifacts[0].path && dependencies.libraries[0].sha256===validated.native_artifacts[0].sha256 && dependencies.libraries[0].loaded===true && dependencies.libraries[0].dependencies===0,"candidate verifies the loaded native library against its compiled artifact identity");
+    const published=await action({op:"changes_apply",...revisionRequest});
+    check(published.ok===true && published.applied===true && published.native_build===true && published.native_artifacts_published===false && published.cleanup_ok===true,"validated Rust source revision publishes while compiled artifacts remain private");
+    check((await readFile(join(project,"src/lib.rs"),"utf8"))===changed && (await action({op:"native_status"})).pid===started.pid,"source publication changes requested text without replacing gameplay");
+    check((await readFile(join(project,"addons/native/bin/active.dll"),"utf8"))===staleDll,"source publication never installs compiled validation DLLs");
+    const history=await action({op:"changes_history",revision_id:published.publication.revision_id});
+    const recorded=history.revisions[0];
+    check(recorded.revision_id===published.publication.revision_id && recorded.files_truncated===false && recorded.files.some(file=>file.path==="src/lib.rs" && file.before_sha256===revisionRequest.changes[0].expected_sha256 && file.after_sha256===createHash("sha256").update(changed).digest("hex")),"revision history records the requested Rust source identities");
+    check(recorded.files.every(file=>file.path==="src/lib.rs" || file.path.endsWith(".uid")),"compiled DLLs are excluded from source revision and undo records");
     const replaced=await action({op:"native_replace"});check(replaced.state_preserved && replaced.pid!==started.pid,"actual Rust implementation edit replaces native run");
     let after=await action({op:"native_checkpoint"});assert.deepEqual(after.checkpoint.custom,before.checkpoint.custom);checks++;
     const inspected=await action({op:"native_inspect",node_path:"RustState"});check(inspected.properties.find(property=>property.name==="build_revision").value===2,"new native constructor executes after verified state restore");
+    const built=await action({op:"build",release:false});
+    const installed=await readFile(join(project,"addons/native/bin/active.dll"));
+    check(built.ok===true && installed.length>1000 && createHash("sha256").update(installed).digest("hex")===built.sha256,"normal build installs the reported renamed library while the private game remains active");
+    const undone=await action({op:"changes_undo",revision_id:published.publication.revision_id});
+    check(undone.ok===true && (await readFile(join(project,"src/lib.rs"),"utf8"))===rust,"native source revision has guarded whole-revision undo");
+    check((await action({op:"native_status"})).pid===replaced.pid && createHash("sha256").update(await readFile(join(project,"addons/native/bin/active.dll"))).digest("hex")===built.sha256,"undo preserves accepted gameplay and the actual installed DLL");
+    assert.deepEqual((await action({op:"native_checkpoint"})).checkpoint,after.checkpoint);checks++;
+    const reapplied=await action({op:"changes_apply",...revisionRequest});check(reapplied.ok===true && reapplied.applied===true && reapplied.native_artifacts_published===false && createHash("sha256").update(await readFile(join(project,"addons/native/bin/active.dll"))).digest("hex")===built.sha256,"undone source can be revalidated and published without modifying the installed DLL");
     await input("pause",true);await input("pause",false);await input("dash",true);await input("dash",false);await input("pause",true);await input("pause",false);
     after=await action({op:"native_checkpoint"});check(after.checkpoint.custom.counter===44,"new native method implementation runs after replacement");
     await writeFile(join(project,"src/lib.rs"),changed+'\ninvalid Rust syntax!\n');
@@ -65,9 +97,6 @@ try {
     await writeFile(manifest,originalManifest);
     check((await readFile(join(project,"Cargo.lock"),"utf8"))===lock && (await readFile(join(project,"main.gd"),"utf8"))===checkedScript,"private compilation preserves working lockfile and game script");
     await action({op:"native_stop"});
-    const built=await action({op:"build",release:false});
-    const installed=await readFile(join(project,"addons/native/bin/active.dll"));
-    check(installed.length>1000 && createHash("sha256").update(installed).digest("hex")===built.sha256,"normal build installs the reported renamed library at its declared path");
     const played=await action({op:"play",frames:30,report:true,user_args:["--normal-build-check"]});
     check(played.ok,"normal build runs the actual native implementation through the declared manifest");
     const packaged=await action({op:"package",output:"dist/rust-package"});
@@ -75,7 +104,7 @@ try {
     const launched=spawnSync(packaged.executable,["--headless","--path",packaged.directory,"--main-pack",join(packaged.directory,"game.pck"),"--","--package-build-check","--aurum-report",packageReport],{env:environment,windowsHide:true,encoding:"utf8",timeout:30000});
     assert.ifError(launched.error);check(launched.status===0 && JSON.parse(await readFile(packageReport,"utf8")).ok,"portable package executes the release native library, not a stale debug build");
     check(createHash("sha256").update(await readFile(join(project,"addons/native/bin/active.dll"))).digest("hex")===built.sha256 && packaged.private_source_cleaned,"packaging preserves the working debug library and removes its private source");
-    await writeFile(join(root,"verification.json"),JSON.stringify({ok:true,checks,started,replaced,before:before.checkpoint,after:after.checkpoint,scope:"actual self-contained offline Rust native build/handoff; not graphics or device qualification"},null,2));
+    await writeFile(join(root,"verification.json"),JSON.stringify({ok:true,checks,started,replaced,invalidRevision,validated,published,history,undone,reapplied,built,before:before.checkpoint,after:after.checkpoint,scope:"actual self-contained offline Rust native validation/source publication/undo/build/handoff; not graphics or device qualification"},null,2));
 } finally {
     if(address){const url=new URL(address.url);try{await fetch(`${url.origin}/api/stop`,{method:"POST",headers:{"X-Aurum-Token":url.searchParams.get("t")},signal:AbortSignal.timeout(5000)});}catch{}}
     try{await bound(done,10000,"Studio shutdown");}catch{server.kill();await bound(done,5000,"Studio termination");}

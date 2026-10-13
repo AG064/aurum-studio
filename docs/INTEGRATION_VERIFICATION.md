@@ -1,5 +1,52 @@
 # Integration verification
 
+## Self-contained native source revisions, 2026-10-13
+
+Current development source privately compiles configured Rust/GDExtension
+candidates before Godot import/resource validation. The same `changes_validate`
+and `changes_apply` operations used for script projects produce bounded source,
+proposal and candidate fingerprints plus the generated library's path/hash.
+Publication rechecks those identities under the content lease, journals the
+requested text and supported UID sidecars, and excludes compiled native bytes
+from publication and whole-revision undo.
+
+The [actual Rust fixture](../scripts/tests/native-rust-acceptance.mjs) now
+exercises compilation failure with accepted-PID/checkpoint/source/DLL retention,
+stale-source refusal, successful private validation and cleanup, source-only
+publication, DLL-free revision history and undo preserving a real installed
+library. It reuses the existing normal build for that installed-library check
+while the managed game runs from its private copy, then verifies source
+republication, native method behavior, normal play and package execution.
+Compiled-library tampering and source/candidate fingerprint mismatches also
+have core regression coverage.
+
+The final Windows continuation passed 678 focused Rust/doc tests, strict Clippy,
+60 script/resource revision checks, 38 actual Rust build/revision/handoff/package
+checks, 22 persistent-session checks and 16 shared-controller routing checks.
+The ignored actual private-native preparation test passed explicitly, including
+confirmed retirement of the original process. Source snapshots, fixtures,
+compiler output and verification evidence stayed in ephemeral storage.
+
+One initial Rust start was refused by the bounded storage-inspection guard
+before a game was created. The error now distinguishes elapsed-time and
+entry-count limits; the 250 ms, 50,000-entry, depth, byte and link guards remain
+unchanged. The complete fresh-root Rust run passed all 38 checks. Hosted CI
+must still be checked for the exact published commit.
+
+```powershell
+node scripts/tests/native-rust-acceptance.mjs C:/Builds/aurum.exe C:/Aurum/runtime/Godot.exe
+```
+
+The fixture needs Windows, a compiled current `aurum`, Godot 4.7, Cargo/rustc and
+the repository-pinned godot-rust dependencies already available offline. It
+creates its project, target directory, Studio state and evidence under an
+ephemeral host directory. Fixture lockfile setup resolves its package change
+offline without changing the pinned gdext revision; actual candidate builds
+remain frozen/offline. External workspace staging, shared compilation caching,
+background jobs/cancellation, rendered/device acceptance and a new binary
+release remain separate gates. Trusted build scripts and native code retain
+the user's permissions.
+
 ## Normal native builds and portable package profile, 2026-10-13
 
 The development build path now identifies the configured package and library
@@ -47,9 +94,10 @@ running game's loaded-manifest state and selected DLL/dependency hashes, rather
 than treating a compiler exit as evidence of the executing build.
 
 Existing native lifecycle (22), routing (16), recovery (11) and actual private
-script preparation also passed. External workspaces, native revision
-publication, shared build caching, cancellation and rendered/device proof
-remain separate. Each native compiler has a finite deadline and an owned
+script preparation also passed. Native source publication is covered by the
+development slice above. External workspaces, shared build caching,
+background jobs/cancellation and rendered/device proof remain separate.
+Each native compiler has a finite deadline and an owned
 Windows job; trusted build scripts/native code still use the user's permissions.
 
 ## Managed native sessions, 2026-10-13
@@ -88,9 +136,9 @@ actual agent contracts/receipts. Gameplay and pause screenshots were inspected.
 Rendering used software Chromium; this does not qualify native graphics or
 physical devices.
 
-These are development-source results, not a new binary release. Native/Rust
-dependency staging, in-flight cancellation, arbitrary concurrent save writers,
-hardware rendering, mobile devices and headsets remain separate gates. Source
+These are development-source results, not a new binary release. External
+native/Rust dependency staging, in-flight cancellation, arbitrary concurrent
+save writers, hardware rendering, mobile devices and headsets remain separate gates. Source
 copies are not security sandboxes, and a complete custom checkpoint is a
 declaration by the game's hooks, not independent proof of arbitrary memory.
 

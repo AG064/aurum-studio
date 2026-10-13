@@ -49,8 +49,12 @@ Status: in progress. Read-only `changes_check` and disposable `changes_validate`
 are published on `main`. The current Windows script/resource slice includes
 content leases, real Godot validation and journaled text publication/recovery/undo
 with passing hosted CI. Candidate crash cleanup, shared storage reservations
-and owned-worker lifetime controls also passed all 13 hosted CI jobs. Native dependency
-staging remains pending.
+and owned-worker lifetime controls also passed all 13 hosted CI jobs. Current
+development source also privately compiles self-contained Rust/GDExtension
+candidates before source-only publication and undo. Compiled candidate DLLs
+are hash-verified and excluded from revision records, preserving working
+libraries and the accepted native game. External workspace staging, shared
+compilation caching and device/release qualification remain open.
 
 The next implementation slices and lock/recovery boundaries are specified in
 [project revisions](PROJECT_REVISIONS.md).
@@ -145,8 +149,11 @@ targets. Godot parses manifests in a blank probe project; before activation the
 actual game reports loaded manifests and verifies selected-library/dependency
 hashes. A real Rust fixture covers code replacement, native method behavior,
 checkpoint continuity, stale working DLLs, compiler failure and external-path
-refusal. Original DLLs, imports and lockfiles remain untouched. External
-workspaces, private compile caching and native revision publication remain open.
+refusal. Native source revisions now compile candidates before journaled
+publication and preserve installed DLLs and accepted gameplay through undo.
+Original imports and lockfiles remain untouched. External workspaces, private
+compile caching, background jobs/cancellation and device/release gates remain
+open.
 
 - Extend versioned capture/restore hooks to supervised native games.
 - Prepare a replacement privately, validate state compatibility, then hand

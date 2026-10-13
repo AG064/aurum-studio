@@ -578,12 +578,56 @@ pub fn forget(project: &Project, revision: &str) -> Result<Value, String> {
     )
 }
 
-pub(crate) fn publish_candidate(
+pub(crate) struct GeneratedArtifact {
+    pub path: String,
+    pub sha256: String,
+}
+impl GeneratedArtifact {
+    pub(crate) fn verified_path(&self, root: &Path) -> Result<PathBuf, String> {
+        if self.path.is_empty()
+            || self.path.len() > 4096
+            || self.path.contains('\\')
+            || self
+                .path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || !crate::snapshot::includes(&self.path)
+            || !Path::new(&self.path).extension().is_some_and(|extension| {
+                extension.eq_ignore_ascii_case(crate::build::dynamic_library_extension())
+            })
+            || self.sha256.len() != 64
+            || !self.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err("invalid generated native artifact exemption".into());
+        }
+        let path = crate::project_ops::managed_path(root, &self.path)?;
+        crate::diagnostics::checked_path(&path).map_err(|error| error.to_string())?;
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata.len() > 128 * 1024 * 1024 {
+            return Err(
+                "generated native library must be a regular file of at most 128 MiB".into(),
+            );
+        }
+        if crate::sha256_file(&path).map_err(|error| error.to_string())? != self.sha256 {
+            return Err("compiled candidate library changed before source publication".into());
+        }
+        Ok(path)
+    }
+}
+fn path_key(path: &str) -> String {
+    if cfg!(windows) {
+        path.to_lowercase()
+    } else {
+        path.to_string()
+    }
+}
+pub(crate) fn publish_candidate_with_artifacts(
     project: &Project,
     candidate: &Project,
     source_sha: &str,
     candidate_sha: &str,
     checked: &Value,
+    artifacts: &[GeneratedArtifact],
 ) -> Result<Value, String> {
     let _lease = crate::content_lock::ContentLock::exclusive(&project.root)?;
     ensure_writable(&project.root)?;
@@ -603,8 +647,24 @@ pub(crate) fn publish_candidate(
                 .map(str::to_string)
         })
         .collect::<Result<_, _>>()?;
+    if artifacts.len() > 1 {
+        return Err("native source revision accepts at most one generated library".into());
+    }
+    for artifact in artifacts {
+        if paths
+            .iter()
+            .any(|path| path_key(path) == path_key(&artifact.path))
+        {
+            return Err("invalid generated native artifact exemption".into());
+        }
+        artifact.verified_path(&candidate.root)?;
+    }
     for (relative, _) in crate::snapshot::inventory(&project.root)? {
-        if paths.contains(&relative) {
+        if paths.contains(&relative)
+            || artifacts
+                .iter()
+                .any(|artifact| path_key(&artifact.path) == path_key(&relative))
+        {
             continue;
         }
         let original = crate::project_ops::managed_path(&project.root, &relative)?;
@@ -620,7 +680,11 @@ pub(crate) fn publish_candidate(
         }
     }
     for (relative, _) in crate::snapshot::inventory(&candidate.root)? {
-        if paths.contains(&relative) {
+        if paths.contains(&relative)
+            || artifacts
+                .iter()
+                .any(|artifact| path_key(&artifact.path) == path_key(&relative))
+        {
             continue;
         }
         let original = crate::project_ops::managed_path(&project.root, &relative)?;
@@ -709,6 +773,162 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0.root);
         }
     }
+    #[test]
+    fn compiled_artifact_is_verified_but_not_published_or_undone() {
+        let original = Fixture::new();
+        let copied = Fixture::new();
+        let library = format!("native.{}", crate::build::dynamic_library_extension());
+        std::fs::write(original.0.root.join("game.rs"), "old source").unwrap();
+        std::fs::write(original.0.root.join(&library), "working library").unwrap();
+        let source_sha = crate::snapshot::fingerprint_all(&original.0.root).unwrap();
+        let input = json!({"changes":[{"path":"game.rs","action":"replace","expected_sha256":crate::sha256_hex(b"old source"),"text":"new source"}]});
+        let checked = crate::revisions::check(&original.0.root, &input).unwrap();
+        crate::snapshot::copy(&original.0.root, &copied.0.root).unwrap();
+        std::fs::write(copied.0.root.join("game.rs"), "new source").unwrap();
+        std::fs::write(copied.0.root.join(&library), "compiled library").unwrap();
+        let artifacts = [GeneratedArtifact {
+            path: library.clone(),
+            sha256: crate::sha256_hex(b"compiled library"),
+        }];
+        let candidate_sha = crate::snapshot::fingerprint_all(&copied.0.root).unwrap();
+        let bad = [GeneratedArtifact {
+            path: library.clone(),
+            sha256: "0".repeat(64),
+        }];
+        assert!(publish_candidate_with_artifacts(
+            &original.0,
+            &copied.0,
+            &source_sha,
+            &candidate_sha,
+            &checked,
+            &bad
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read_to_string(original.0.root.join("game.rs")).unwrap(),
+            "old source"
+        );
+        let result = publish_candidate_with_artifacts(
+            &original.0,
+            &copied.0,
+            &source_sha,
+            &candidate_sha,
+            &checked,
+            &artifacts,
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(
+            std::fs::read_to_string(original.0.root.join("game.rs")).unwrap(),
+            "new source"
+        );
+        assert_eq!(
+            std::fs::read_to_string(original.0.root.join(&library)).unwrap(),
+            "working library"
+        );
+        undo(&original.0, result["revision_id"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(original.0.root.join("game.rs")).unwrap(),
+            "old source"
+        );
+        assert_eq!(
+            std::fs::read_to_string(original.0.root.join(&library)).unwrap(),
+            "working library"
+        );
+    }
+
+    #[test]
+    fn native_artifact_exemptions_are_confined_and_do_not_hide_other_changes() {
+        let original = Fixture::new();
+        let copied = Fixture::new();
+        let library = format!("native.{}", crate::build::dynamic_library_extension());
+        std::fs::write(original.0.root.join("game.rs"), "old source").unwrap();
+        std::fs::write(original.0.root.join("keep.gd"), "unchanged source").unwrap();
+        let source_sha = crate::snapshot::fingerprint_all(&original.0.root).unwrap();
+        let checked = crate::revisions::check(
+            &original.0.root,
+            &json!({"changes":[{"path":"game.rs","action":"replace",
+                "expected_sha256":crate::sha256_hex(b"old source"),"text":"new source"}]}),
+        )
+        .unwrap();
+        crate::snapshot::copy(&original.0.root, &copied.0.root).unwrap();
+        std::fs::write(copied.0.root.join("game.rs"), "new source").unwrap();
+        std::fs::write(copied.0.root.join("keep.gd"), "unexpected source edit").unwrap();
+        std::fs::write(copied.0.root.join(&library), "compiled library").unwrap();
+        let sha256 = crate::sha256_hex(b"compiled library");
+        for path in [
+            format!("res://{library}"),
+            format!("../{library}"),
+            format!("target/{library}"),
+            format!(".private/{library}"),
+            format!("./{library}"),
+            format!("folder/../{library}"),
+            format!("folder\\{library}"),
+        ] {
+            assert!(GeneratedArtifact {
+                path,
+                sha256: sha256.clone(),
+            }
+            .verified_path(&copied.0.root)
+            .is_err());
+        }
+        let artifacts = [GeneratedArtifact {
+            path: library.clone(),
+            sha256,
+        }];
+        let candidate_sha = crate::snapshot::fingerprint_all(&copied.0.root).unwrap();
+        assert!(publish_candidate_with_artifacts(
+            &original.0,
+            &copied.0,
+            &source_sha,
+            &candidate_sha,
+            &checked,
+            &artifacts,
+        )
+        .is_err());
+        assert_eq!(
+            crate::snapshot::fingerprint_all(&original.0.root).unwrap(),
+            source_sha
+        );
+        assert!(!original.0.root.join(&library).exists());
+        assert!(!original.0.root.join(".aurum/revisions").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_library_exemption_cannot_alias_a_requested_path_by_case() {
+        let original = Fixture::new();
+        let copied = Fixture::new();
+        std::fs::write(original.0.root.join("native.dll"), "old library").unwrap();
+        let source_sha = crate::snapshot::fingerprint_all(&original.0.root).unwrap();
+        let checked = crate::revisions::check(
+            &original.0.root,
+            &json!({"changes":[{"path":"native.dll","action":"replace",
+                "expected_sha256":crate::sha256_hex(b"old library"),"text":"new library"}]}),
+        )
+        .unwrap();
+        crate::snapshot::copy(&original.0.root, &copied.0.root).unwrap();
+        std::fs::write(copied.0.root.join("native.dll"), "new library").unwrap();
+        let candidate_sha = crate::snapshot::fingerprint_all(&copied.0.root).unwrap();
+        let artifacts = [GeneratedArtifact {
+            path: "NATIVE.DLL".into(),
+            sha256: crate::sha256_hex(b"new library"),
+        }];
+        assert!(publish_candidate_with_artifacts(
+            &original.0,
+            &copied.0,
+            &source_sha,
+            &candidate_sha,
+            &checked,
+            &artifacts,
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read(original.0.root.join("native.dll")).unwrap(),
+            b"old library"
+        );
+    }
+
     #[test]
     fn empty_history_is_read_only_and_does_not_require_valid_configuration() {
         let fixture = Fixture::new();

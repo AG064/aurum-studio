@@ -79,6 +79,12 @@ struct Accounting {
     active_processes: u32,
     terminated_processes: u32,
 }
+#[repr(C)]
+#[derive(Default)]
+struct FileTime {
+    low: u32,
+    high: u32,
+}
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -124,6 +130,13 @@ unsafe extern "system" {
     ) -> i32;
     fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
     fn GetExitCodeProcess(process: Handle, code: *mut u32) -> i32;
+    fn GetProcessTimes(
+        process: Handle,
+        created: *mut FileTime,
+        exited: *mut FileTime,
+        kernel: *mut FileTime,
+        user: *mut FileTime,
+    ) -> i32;
 }
 
 fn check(result: i32) -> io::Result<()> {
@@ -374,6 +387,25 @@ impl Worker {
     pub(super) fn pid(&self) -> u32 {
         self.pid
     }
+    pub(super) fn creation_time(&self) -> io::Result<String> {
+        let (mut created, mut exited, mut kernel, mut user) = (
+            FileTime::default(),
+            FileTime::default(),
+            FileTime::default(),
+            FileTime::default(),
+        );
+        unsafe {
+            check(GetProcessTimes(
+                self.process.as_raw_handle(),
+                &mut created,
+                &mut exited,
+                &mut kernel,
+                &mut user,
+            ))?;
+        }
+        let ticks = ((created.high as u64) << 32) | created.low as u64;
+        Ok(format!("windows-filetime:{ticks}"))
+    }
     pub(super) fn try_wait(&self) -> io::Result<Option<i32>> {
         unsafe {
             match WaitForSingleObject(self.process.as_raw_handle(), 0) {
@@ -383,27 +415,39 @@ impl Worker {
                     Ok(Some(code as i32))
                 }
                 258 => Ok(None),
-                _ => Err(io::Error::last_os_error()),
+                u32::MAX => Err(io::Error::last_os_error()),
+                _ => Err(io::Error::other("unexpected owned process wait status")),
             }
         }
     }
-    pub(super) fn terminate(&self) -> io::Result<()> {
+    pub(super) fn termination_confirmed(&self) -> io::Result<bool> {
+        let mut accounting: Accounting = unsafe { zeroed() };
         unsafe {
-            check(TerminateJobObject(self.job.as_raw_handle(), 1))?;
+            check(QueryInformationJobObject(
+                self.job.as_raw_handle(),
+                1,
+                (&mut accounting as *mut Accounting).cast(),
+                size_of::<Accounting>() as u32,
+                null_mut(),
+            ))?;
+        }
+        // Job accounting can reach zero before the process handle signals
+        // completed teardown. Both are required for confirmed retirement.
+        Ok(accounting.active_processes == 0 && self.try_wait()?.is_some())
+    }
+    pub(super) fn terminate(&self) -> io::Result<()> {
+        if let Err(error) = unsafe { check(TerminateJobObject(self.job.as_raw_handle(), 1)) } {
+            // A concurrent stop or natural exit can finish before this call.
+            // An OS failure is only harmless if the same handles prove exit.
+            return if self.termination_confirmed().unwrap_or(false) {
+                Ok(())
+            } else {
+                Err(error)
+            };
         }
         let started = std::time::Instant::now();
         loop {
-            let mut accounting: Accounting = unsafe { zeroed() };
-            unsafe {
-                check(QueryInformationJobObject(
-                    self.job.as_raw_handle(),
-                    1,
-                    (&mut accounting as *mut Accounting).cast(),
-                    size_of::<Accounting>() as u32,
-                    null_mut(),
-                ))?;
-            }
-            if accounting.active_processes == 0 {
+            if self.termination_confirmed()? {
                 return Ok(());
             }
             if started.elapsed() > std::time::Duration::from_secs(5) {
@@ -516,6 +560,51 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn confirmed_retirement_signals_the_original_process_handle() {
+        let path = fixture();
+        let executable = std::env::current_exe().unwrap();
+        let host = crate::ownership::inspect(std::process::id()).unwrap();
+        let (worker, _stdout, _stderr) = Worker::spawn(
+            &executable,
+            &["--exact".into(), HELPER.into(), "--nocapture".into()],
+            None,
+            &[
+                (
+                    "AURUM_WORKER_FIXTURE".into(),
+                    path.to_string_lossy().into_owned(),
+                ),
+                ("AURUM_WORKER_ROLE".into(), "root".into()),
+            ],
+        )
+        .unwrap();
+        let started = Instant::now();
+        while !path.join("ready").exists() {
+            assert!(worker.try_wait().unwrap().is_none());
+            assert!(started.elapsed() < Duration::from_secs(8));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let owner = crate::ownership::OwnershipRecord {
+            session: crate::random::session_id(),
+            executable,
+            pid: worker.pid(),
+            started: worker.creation_time().unwrap(),
+            project: path.clone(),
+            kind: crate::ownership::ProcessKind::Worker,
+        };
+        assert!(owner.describes(&crate::ownership::inspect(worker.pid()).unwrap()));
+        assert!(!worker.termination_confirmed().unwrap());
+        worker.terminate().unwrap();
+        // Keep both owned handles open while checking retirement. A retained
+        // process object is valid after exit and does not represent a live run.
+        assert!(worker.try_wait().unwrap().is_some());
+        assert!(worker.termination_confirmed().unwrap());
+        assert!(crate::ownership::recorded_process_gone(&owner));
+        assert_eq!(worker.creation_time().unwrap(), owner.started);
+        worker.terminate().unwrap();
+        assert_eq!(crate::ownership::inspect(std::process::id()).unwrap(), host);
+        gone(&path);
     }
     #[test]
     fn host_crash_terminates_worker_and_descendants() {

@@ -4,7 +4,9 @@ Status: preflight, disposable validation, journaled text publication, recovery
 and whole-revision undo are published on `main` and passed hosted CI. They are
 not in the 0.4.0 download. Candidate workspace recovery and worker lifecycle
 controls passed local Windows gates and all 13 hosted CI jobs. Native
-dependency staging remains planned.
+validation and source-only revisions for self-contained Rust/GDExtension
+projects are implemented in current development source. External workspaces,
+shared compilation caching and final release qualification remain open.
 
 This follows the [bounded diagnostics milestone](LOGGING.md) and is tracked in
 the [roadmap](ROADMAP.md). The implementation belongs in the shared Rust core,
@@ -64,13 +66,21 @@ permissions and can address absolute paths.
 {"op":"changes_validate","changes":[{"path":"scripts/player.gd","action":"create","expected_sha256":"","text":"extends Node3D\n"}]}
 ```
 
-The current slice supports self-contained script/resource projects. Native
-GDExtension manifests, Rust packages, external engine hints and custom validators
-are refused instead of being silently rebound or skipped. The snapshot budget
-is 512 MiB, including proposed text. Snapshot exclusions apply to change targets
-too: internal state, credentials, caches and excluded generated files cannot be
-treated as copied source. Other platforms need private-userdata acceptance
-before this runtime operation is enabled.
+The current Windows slice supports self-contained script/resource projects and
+local Rust/GDExtension projects. Configured Rust candidates compile privately
+with Cargo's `--frozen --offline` flags, an existing pinned lockfile and cached
+dependencies before Godot imports and validates their resources. Native
+manifest resolution uses Godot's parser and confines selected libraries and
+declared dependencies to the private source copy. External engine hints,
+workspaces and custom validators require separate staging support and are
+refused instead of being silently rebound or skipped.
+
+The snapshot budget is 512 MiB, including proposed text. Snapshot exclusions
+apply to change targets too: internal state, credentials, caches and excluded
+generated files cannot be treated as copied source. Compiler output and
+redirected application data share the observed workspace storage budget.
+Other platforms need private-userdata acceptance before this runtime operation
+is enabled.
 
 Construction takes a shared project-content lease. The common save/undo/scene
 commit path takes an exclusive lease, so participating saves cannot interleave
@@ -86,6 +96,12 @@ The response includes validation status, resource count, source/candidate hashes
 freshness at completion, proposal integrity, timings and cleanup status.
 `applied` and `gameplay_tested` remain false. A validated candidate is not a
 published revision or a played game.
+
+For Rust candidates, `native_build` reports whether compilation produced a
+selected library, and `native_artifacts` identifies its confined path and hash.
+The selected bytes are rechecked after runtime validation. A changed compiled
+library cannot qualify the candidate. `native_artifacts_published` remains
+false; validation leaves the working DLL, lockfile and import directory intact.
 
 Normal completion removes the private source/import/userdata copy. Only the last
 completed compact receipt is retained at `.aurum/checks/candidate-latest.json`,
@@ -154,6 +170,14 @@ project's exclusive content lease and rechecks both source and candidate hashes.
 Unrequested source changes are refused; supported generated UID sidecars are
 included in the revision and its undo records. This slice remains text-only and
 Windows-qualified through the actual validation runtime.
+
+Configured self-contained Rust candidates use the same validation and journal
+path. The one compiled candidate library is accepted only at its recorded
+confined path with matching bytes, then excluded from source replacements and
+undo records. Other unrequested or unsupported generated files remain refused.
+Source publication and undo preserve the installed working DLL and the running
+native game. Use the separate `build` or `native_replace` operation to install
+a normal build or prepare and activate a managed successor.
 
 Before any source replacement, original and proposed bytes are synced to private
 backups and a versioned journal/active pointer is atomically published. Each
@@ -245,14 +269,16 @@ remain before treating the entire roadmap as complete.
   tests; read-only planning must not create staging or state directories.
 - [x] Content-lock coordination and disposable candidate construction, with
   external-edit and source-identity regression tests.
-- [x] Bounded candidate validation and compact validation receipts for the current Windows script/resource slice.
+- [x] Bounded candidate validation and compact validation receipts for the current Windows script/resource and self-contained Rust/GDExtension slices.
 - [x] Durable journal, publication and interruption recovery for the text revision slice. Inject failures
   at every file boundary and verify originals/newer edits survive.
 - [x] Whole-revision undo with stale-hash refusal.
 - [x] Crash-released candidate leases, aggregate admission limits, observed
   storage budgets and owned-worker termination through real Godot acceptance.
 - [x] Shared discovery and actual CLI/HTTP/MCP acceptance for preflight and candidate validation.
-- [ ] Shared discovery and integration acceptance for publication/recovery/undo.
+- [x] Shared discovery and integration acceptance for script/resource publication/recovery/undo.
+- [x] Self-contained native candidate compilation and source-only publication/undo, with compiled-library hash checks and working-DLL preservation.
+- [ ] External workspace staging, shared compilation caching, background jobs/cancellation and device/release qualification.
 
 Use disposable copies for every mutation/failure-injection test. Exercise real
 Windows sharing locks, a second Aurum writer and an external file edit. Hosted

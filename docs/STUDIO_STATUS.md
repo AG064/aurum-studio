@@ -14,9 +14,12 @@ Windows native sessions, verified checkpoint replacement, retained save-data
 generations, host-crash recovery and a shared CLI/MCP/Studio controller. See
 [native session commands](HOT_RELOAD.md#managed-native-sessions). These are not
 part of the 0.4.0 download. Self-contained private Rust/GDExtension preparation
-is also implemented in development source. External dependencies, native
-revision publication, shared compilation caching, in-flight cancellation and
-device qualification remain open gates.
+and source-only revision publication/undo are also implemented in development
+source. Native candidates compile before validation; their generated DLLs are
+verified but excluded from source journals and undo, preserving working
+libraries and accepted gameplay. External workspace/dependency staging, shared
+compilation caching, background jobs, in-flight cancellation and device/release
+qualification remain open gates.
 
 - Browser interface with project creation/import/selection, files, scenes, agents, validation, development watching, and Windows packaging.
 - Development workbench with Scene/Source/Agents/Export tabs, a live inspector, source/draft status, Output/Checks dock, on-demand operation contracts and session execution receipts.

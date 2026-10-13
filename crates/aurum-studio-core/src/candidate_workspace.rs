@@ -8,6 +8,7 @@ pub(crate) const WORKSPACE_BYTES: u64 = 1024 * 1024 * 1024;
 pub(crate) const SLOTS: usize = 2;
 const MAX_POOL_ENTRIES: usize = 32;
 const MAX_TREE_ENTRIES: usize = 50_000;
+const INSPECTION_BUDGET: Duration = Duration::from_millis(250);
 const POOL_NAME: &str = "aurum-candidates-v1";
 
 #[derive(Serialize, Deserialize)]
@@ -218,8 +219,20 @@ pub(crate) fn usage(root: &Path, limit: u64) -> Result<u64, String> {
         };
         for entry in entries {
             count += 1;
-            if count > MAX_TREE_ENTRIES || started.elapsed() > Duration::from_millis(250) {
-                return Err("candidate storage exceeds its bounded inspection budget".into());
+            let elapsed = started.elapsed();
+            if count > MAX_TREE_ENTRIES {
+                return Err(format!(
+                    "candidate storage exceeds its entry inspection budget: inspected_entries={count} entry_limit={MAX_TREE_ENTRIES} elapsed_ms={} time_limit_ms={}",
+                    elapsed.as_millis(),
+                    INSPECTION_BUDGET.as_millis()
+                ));
+            }
+            if elapsed > INSPECTION_BUDGET {
+                return Err(format!(
+                    "candidate storage exceeds its elapsed inspection budget: inspected_entries={count} entry_limit={MAX_TREE_ENTRIES} elapsed_ms={} time_limit_ms={}",
+                    elapsed.as_millis(),
+                    INSPECTION_BUDGET.as_millis()
+                ));
             }
             let entry = entry.map_err(|error| error.to_string())?;
             let metadata = match std::fs::symlink_metadata(entry.path()) {
