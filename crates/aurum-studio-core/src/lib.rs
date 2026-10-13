@@ -39,6 +39,7 @@
 //! is small enough that a focused reader is both smaller and more explicit
 //! about what it refuses.
 
+pub mod agent_context;
 pub mod build;
 pub mod build_queue;
 mod candidate_workspace;

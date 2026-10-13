@@ -9,7 +9,7 @@ pub const MAX_CAPTURE_FRAMES: usize = 32;
 pub const MAX_EVENTS: usize = 1024;
 
 fn parameters() -> Value {
-    json!({
+    let mut result = json!({
         "op":{"type":"string"},
         "operation":{"type":"string","enum":OPERATIONS,"description":"Operation to describe, or diagnostic operation filter; omit for a compact catalog"},
         "path":{"type":"string","description":"Project-relative file path"},
@@ -23,7 +23,7 @@ fn parameters() -> Value {
         "include_state":{"type":"boolean","default":false},
         "input_actions":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"action":{"type":"string","maxLength":128},"pressed":{"type":"boolean"}},"required":["action","pressed"]},"description":"Registered Godot action events inside the owned game, not OS keyboard input"},
         "properties":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"path":{"type":"string","maxLength":512},"property":{"type":"string","maxLength":256},"value":{}},"required":["path","property","value"]}},
-        "limit":{"type":"integer","minimum":1,"maximum":200,"default":50,"description":"Maximum log records or revision detail rows; logs scan at most 256 KiB"},
+        "limit":{"type":"integer","minimum":1,"maximum":200,"default":50,"description":"Maximum log, revision detail or context delta rows; logs scan at most 256 KiB"},
         "failures_only":{"type":"boolean","default":false},
         "revision_id":{"type":"string","pattern":"^[a-fA-F0-9]{32}$","description":"Committed revision identity for guarded whole-revision undo"},
         "userdata_id":{"type":"string","pattern":"^[a-f0-9]{32}$","description":"Non-current, unowned saved-data generation selected for permanent deletion"},
@@ -51,13 +51,22 @@ fn parameters() -> Value {
         "platform":{"type":"string","enum":EXPORT_PLATFORMS,"description":"Export target; SDKs, signing and device testing are separate requirements"},
         "release":{"type":"boolean"},"debug":{"type":"boolean"},"pack":{"type":"boolean"},
         "preset":{"type":"string"},"output":{"type":"string","description":"New project-relative destination; existing outputs are refused"}
-    })
+    });
+    result["prefix"] = json!({"type":"string","maxLength":1024,"description":"Public project-relative context scope; omit for all public source"});
+    result["extensions"] = json!({"type":"array","maxItems":16,"items":{"type":"string","maxLength":33},"description":"Case-insensitive file extensions, for example gd, tscn or rs; omit for all"});
+    result["baseline_id"] = json!({"type":"string","pattern":"^[a-f0-9]{64}$","description":"Retained context baseline identity"});
+    result["current_id"] = json!({"type":"string","pattern":"^[a-f0-9]{64}$","description":"Content identity from the preceding delta page; required with after"});
+    result["after"] = json!({"type":"string","maxLength":1024,"description":"next_after from the preceding context page"});
+    result
 }
 
 fn fields(op: &str) -> &'static [&'static str] {
     match op {
         "describe" => &["operation"],
         "logs" => &["limit", "operation", "failures_only"],
+        "context_snapshot" => &["prefix", "extensions"],
+        "context_delta" => &["baseline_id", "current_id", "after", "limit"],
+        "context_forget" => &["baseline_id"],
         "changes_check" | "changes_validate" | "changes_apply" => &["changes"],
         "changes_undo" | "changes_forget" => &["revision_id"],
         "changes_history" => &["revision_id", "limit"],
@@ -99,6 +108,7 @@ fn fields(op: &str) -> &'static [&'static str] {
 
 fn required(op: &str) -> &'static [&'static str] {
     match op {
+        "context_delta" | "context_forget" => &["baseline_id"],
         "changes_check" | "changes_validate" | "changes_apply" => &["changes"],
         "changes_undo" | "changes_forget" => &["revision_id"],
         "native_apply" => &["properties"],
@@ -151,6 +161,13 @@ pub fn describe(operation: Option<&str>) -> Result<Value, String> {
     let mut required_fields = vec!["op"];
     required_fields.extend_from_slice(required(op));
     let mut result = json!({"contract_version":1,"op":op,"read_only":is_read_only(op),"input_schema":{"type":"object","properties":properties,"required":required_fields}});
+    if matches!(op, "context_snapshot" | "context_delta" | "context_forget") {
+        result["constraints"] = json!({"baseline_limit":crate::agent_context::BASELINES,"baseline_bytes_max":crate::agent_context::RECORD_BYTES,"scope_source_bytes_max":crate::agent_context::SOURCE_BYTES,
+            "files_max":20000,"page_limit_max":200,"content_in_results":false,"automatic_pruning":false,
+            "delta":"read-only; does not advance baseline; pagination requires unchanged current_id",
+            "scope":"content-hashed public source, not native runtime state or knowledge; external writers do not share an atomic filesystem snapshot",
+            "savings":"compact context is not a measured model-token saving"});
+    }
     if matches!(op, "changes_validate" | "changes_apply") {
         result["constraints"] = json!({"qualified_platforms":["Windows"],"script_projects_only":true,"source_bytes_max":crate::candidates::MAX_SOURCE_BYTES,
             "gameplay_tested":false,"execution_sandboxed":false,

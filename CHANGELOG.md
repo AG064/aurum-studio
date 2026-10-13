@@ -23,9 +23,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Headless native action input restricted to registered Godot actions, with real Relay Yard mission replacement acceptance.
 - Bounded native checkpoint and host-crash recovery records, with source/process-identity checks, restoration verification and safe refusal for live processes, newer source or corrupt journals.
 - One discoverable native controller per project shared by CLI, MCP and Studio. Reconnecting clients retain the same game; explicit host shutdown remains separate from game stop. Routing checks credentials, process/listener identity and the served project before forwarding.
+- Explicit scoped agent-context baselines and read-only paginated path/hash deltas, including same-size edits, reconnect, private-state omission and source-drift refusal between pages. Retention and cleanup are bounded and explicit; model-token savings have not been benchmarked.
 
 ### Fixed
 
+- Controller leases are explicitly unlocked before descriptor closure, avoiding delayed Unix lock release during concurrent process spawning.
+- Native-output suppression counts survive failed window-summary writes, and the final summary has a finite contention-only retry budget. This repairs missing accounting without logging every child line or retrying partial disk writes.
 - MCP tracing no longer echoes request/response payloads, IDs or unknown method names.
 - Native child output no longer bypasses session-log rotation through an inherited file handle.
 - Detached descendants no longer inherit the launching Windows CLI's original standard handles and keep its caller's pipes open.

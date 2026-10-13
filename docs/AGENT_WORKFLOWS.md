@@ -71,7 +71,41 @@ See [playtest requests and verdicts](AGENT_PLAYTESTS.md) and
 
 The game's version 3 checkpoints validate before changing the mission and reconstruct enemies, projectiles, hull, heat, ability cooldowns, cargo, mission progress and exact RNG state. Future-version or malformed checkpoints leave the previous state intact. Browser acceptance checks paused combat, enemy identities/health, player position and live tuning after replacement. The original fixture's version 2 saves are deliberately refused because they contain no combat state. A separate detached migration helper remains available for compatible game schemas.
 
-## Boundaries
+## Compact source context
+
+Development source adds `context_snapshot`, `context_delta` and `context_forget`.
+These are not included in the 0.4.0 download. They work through the same CLI,
+HTTP and MCP project contract without starting Godot. Create an explicit scoped
+baseline, then request only the changed paths and content hashes:
+
+```powershell
+$aurumContextBaseline = aurum project A:/Games/MyGame --request-json '{"op":"context_snapshot","prefix":"game","extensions":["gd","tscn","rs"]}' | ConvertFrom-Json
+$aurumContextRequest = @{op='context_delta'; baseline_id=$aurumContextBaseline.baseline_id; limit=50} | ConvertTo-Json -Compress
+aurum project A:/Games/MyGame --read-only --request-json $aurumContextRequest
+```
+
+The baseline contains paths, sizes and SHA-256 hashes, not file contents. A
+prefix narrows filesystem traversal; extension filters narrow content hashing.
+Deltas distinguish creates, same-size modifications and deletes. An agent can
+reconnect using the retained baseline ID, then read only the relevant files.
+Delta queries also work when a source edit has broken `aurum.toml`.
+
+Use `next_after` plus the returned `current_id` for another bounded page. Source
+drift between pages is refused, so restart the query rather than merging mixed
+revisions. Queries never advance a baseline; create another snapshot after
+processing the changes. Identical snapshots reuse their identity. Up to 16
+baselines of at most 4 MiB are retained. Cleanup with `context_forget` is explicit
+and permanent, and removes only the selected baseline metadata, not game files.
+Snapshot/forget require write permission; delta is read-only and creates no
+project state.
+
+Scopes hash at most 512 MiB of public source with bounded nesting/file counts.
+Two scans detect drift, but external editors do not participate in an atomic
+filesystem snapshot. These are compact source-context operations, not runtime
+state, dependency analysis or measured model-token savings. Background job
+progress/cancellation and token/latency benchmarks remain roadmap work.
+
+## Remaining boundaries
 
 The 0.4.0 package does not include journaled multi-file revisions or managed
 native-process checkpoint handoff. Development source adds those Windows

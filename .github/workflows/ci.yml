@@ -99,6 +99,8 @@ jobs:
           New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
           node ./scripts/tests/diagnostics-acceptance.mjs ./target/debug/aurum.exe
           if($LASTEXITCODE){throw 'Diagnostics/preflight acceptance failed'}
+          node ./scripts/tests/agent-context-acceptance.mjs ./target/debug/aurum.exe
+          if($LASTEXITCODE){throw 'Shared agent context acceptance failed'}
           node ./scripts/tests/candidates-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
           if($LASTEXITCODE){throw 'Disposable candidate acceptance failed'}
           ./scripts/tests/studio_project_acceptance.ps1 -AurumBinary ./target/debug/aurum.exe -GodotBinary $env:AURUM_GODOT -Package

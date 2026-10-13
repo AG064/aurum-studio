@@ -150,7 +150,11 @@ not arbitrary native memory migration or a promise of zero process restarts.
 
 ### 4. Efficient agent sessions and background jobs
 
-Status: planned.
+Status: in progress. Development source adds explicit scoped content-hash
+baselines, read-only bounded deltas, reconnect by baseline ID and
+content-identified pagination. These operations report paths/hashes rather than
+source text. Shared jobs, progress, cancellation, runtime/dependency context and
+model-token/latency benchmarks remain open. See [compact source context](AGENT_WORKFLOWS.md#compact-source-context).
 
 - Revision-based change queries, filtered dependency/context discovery and
   knowledge keyed to the installed runtime and operation contract.

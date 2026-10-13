@@ -8,6 +8,9 @@ pub const OPERATIONS: &[&str] = &[
     "describe",
     "status",
     "logs",
+    "context_snapshot",
+    "context_delta",
+    "context_forget",
     "changes_check",
     "changes_validate",
     "changes_last",
@@ -58,6 +61,7 @@ pub fn is_read_only(op: &str) -> bool {
         "describe"
             | "status"
             | "logs"
+            | "context_delta"
             | "changes_check"
             | "changes_last"
             | "changes_history"
@@ -124,6 +128,22 @@ fn execute_context(
     }
     if read_only && !is_read_only(op) {
         return Err(format!("'{op}' requires write permission"));
+    }
+    if op == "context_delta" {
+        return crate::agent_context::delta(root, input);
+    }
+    if matches!(op, "context_snapshot" | "context_forget") {
+        Project::open(root).map_err(|error| error.to_string())?;
+        let span = crate::diagnostics::Operation::start(root, op);
+        let result = if op == "context_snapshot" {
+            crate::agent_context::snapshot(root, input)
+        } else {
+            crate::agent_context::forget(root, input)
+        };
+        if let Some(span) = span {
+            span.finish(&result);
+        }
+        return result;
     }
     if op == "native_userdata_list" {
         return crate::native_userdata::list(root);

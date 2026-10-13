@@ -42,6 +42,29 @@ hardware rendering, mobile devices and headsets remain separate gates. Source
 copies are not security sandboxes, and a complete custom checkpoint is a
 declaration by the game's hooks, not independent proof of arbitrary memory.
 
+## Agent context and contention follow-up, 2026-10-13
+
+The scoped context implementation passed 18 compiled CLI/HTTP/MCP checks and
+eight core regressions. Cases include same-size edits, creates/deletes, exact
+file scopes, corrupt/foreign baselines, explicit cleanup, reconnect, permission
+refusal and content-identified pagination. Delta inspection remains available
+when the project configuration is invalid. The combined focused suite passed
+663 Rust/doc tests and strict Clippy.
+
+A logging concurrency failure retained seven complete records and suppression
+summaries for only 55 of the remaining 83 lines. The final summary could lose a
+lock race. Counts now survive failed window summaries; an EOF summary has a
+finite contention-only retry budget. The 90-line accounting assertion was not
+weakened. A deterministic lock-contention regression and all 25 compiled
+diagnostics/preflight checks passed after the fix.
+
+The [first native hosted run](https://github.com/AG064/aurum-studio/actions/runs/38329557365)
+passed 12 of 13 jobs, including all Windows runtime/browser gates, but failed a
+macOS immediate controller-lease reacquisition test. Explicit lease release and
+a retained-descriptor regression address that failure. Hosted confirmation of
+the follow-up is separate from these local results. Context payloads are
+compact paths/hashes; token and latency improvements have not been benchmarked.
+
 ## Development verification, 2026-10-07
 
 The redesigned Studio was checked against a freshly compiled Rust backend, not only Claude's stand-in server. Across the bounded browser runs, 12 distinct scenarios passed: isolated export, actual keyboard play/live edits, workshop behavior, responsive/fullscreen handling, source save/undo and failed-build preservation, hostile-origin/message refusal, keyboard Source navigation, standalone export, ordinary 2D projects, actual operation-contract rendering and headless execution receipts with malformed-input refusal.
