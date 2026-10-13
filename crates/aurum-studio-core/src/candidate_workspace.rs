@@ -220,6 +220,7 @@ impl Drop for Workspace {
 /// Observed-byte safeguard, not a hard filesystem quota. Bounded traversal
 /// refuses links, special files and oversized/complex trees without reading
 /// content. The process runner checks it periodically and before acceptance.
+#[cfg(any(windows, test))]
 pub(crate) fn usage(root: &Path, limit: u64) -> Result<u64, String> {
     usage_with_budget(root, limit, INSPECTION_BUDGET)
 }
