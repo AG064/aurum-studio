@@ -74,10 +74,13 @@ pub fn drain(mut reader: impl Read, session: &Session) {
         let now = Instant::now();
         if now.duration_since(window) >= Duration::from_secs(1) {
             if suppressed > 0 {
-                diagnostics::report(session.log(&format!(
+                let result = session.log(&format!(
                     "diagnostics: {suppressed} child lines suppressed by rate/storage limits"
-                )));
-                suppressed = 0;
+                ));
+                if result.is_ok() {
+                    suppressed = 0;
+                }
+                diagnostics::report(result);
             }
             window = now;
             emitted = 0;
@@ -129,9 +132,24 @@ pub fn drain(mut reader: impl Read, session: &Session) {
         emit(&line, oversized);
     }
     if suppressed > 0 {
-        diagnostics::report(session.log(&format!(
-            "diagnostics: {suppressed} child lines suppressed by rate/storage limits"
-        )));
+        diagnostics::report(final_suppression(session, suppressed));
+    }
+}
+
+fn final_suppression(session: &Session, suppressed: u64) -> io::Result<()> {
+    let line = format!("diagnostics: {suppressed} child lines suppressed by rate/storage limits");
+    let deadline = Instant::now() + Duration::from_millis(200);
+    loop {
+        match session.log(&line) {
+            // Lock contention happens before any record bytes are written.
+            // Retry only that error, never a possibly partial disk write.
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            result => return result,
+        }
     }
 }
 
@@ -261,6 +279,31 @@ mod tests {
         drain(input.as_bytes(), &session);
         let text = std::fs::read_to_string(session.log_path()).unwrap();
         assert!(text.len() < 100_000 && text.contains("suppressed by rate/storage limits"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn final_summary_survives_short_contention_without_duplicate_records() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-relay-summary-{}",
+            crate::random::session_id()
+        ));
+        let session = Session::create_in(&root, &root).unwrap();
+        let lock_path = session.log_path().with_file_name("session.log.lock");
+        let lease = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .unwrap();
+        lease.try_lock().unwrap();
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            lease.unlock().unwrap();
+        });
+        final_suppression(&session, 28).unwrap();
+        worker.join().unwrap();
+        let text = std::fs::read_to_string(session.log_path()).unwrap();
+        assert_eq!(text.matches("diagnostics: 28").count(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -51,6 +51,11 @@ The helper accepts at most 200 child lines per second, summarizes suppression,
 and backs off storage writes for one second after an error or after spending
 20 ms on logging I/O in a window, while continuing to
 drain. Lines without newlines remain memory-bounded. Windows CRLF is normalized.
+Unwritten suppression counts survive a failed window-summary write. At EOF,
+one final summary can retry pre-write lock contention for a 200 ms budget,
+plus the final bounded lock attempt. Possibly partial disk writes are never
+retried. Permanent storage failures remain best-effort and do not block the
+successful operation or turn its verdict into failure.
 Session output redacts the session token and omits common credential-bearing
 lines. Free-form tool output is not a guarantee of removing every private value;
 review session logs before sharing them. Protocol trace mode omits payloads,

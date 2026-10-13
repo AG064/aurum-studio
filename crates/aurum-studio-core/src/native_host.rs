@@ -222,6 +222,10 @@ impl Drop for Registration {
                 }
             }
         }
+        // Explicitly release the lease before closing the descriptor. Unix
+        // children can briefly retain its open file description while another
+        // thread is spawning, even though the descriptor is close-on-exec.
+        let _ = self._lease.unlock();
     }
 }
 pub fn route(root: &Path, input: &Value) -> Result<Value, String> {
@@ -498,6 +502,17 @@ mod tests {
         assert!(!fixture.metadata_path().exists());
         assert!(!fixture.0.join(".aurum/native/host.token").exists());
         assert!(Registration::create(&fixture.0, 23456, "another_secret").is_ok());
+    }
+
+    #[test]
+    fn closing_registration_releases_a_retained_descriptor_lease() {
+        let fixture = Fixture::new();
+        let registration = Registration::create(&fixture.0, 12345, "lease_test_secret").unwrap();
+        let retained = registration._lease.try_clone().unwrap();
+        drop(registration);
+        let next = Registration::create(&fixture.0, 23456, "next_secret").unwrap();
+        drop(next);
+        drop(retained);
     }
 
     #[test]
