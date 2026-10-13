@@ -228,7 +228,15 @@ presentation and failures, not just resource parsing.
 
 ### 6. Target preflight and device delivery
 
-Status: planned, target by target.
+Status: in progress, target by target. Development source adds shared read-only
+`target_preflight` metadata reports for runtime/templates, selected presets,
+SDK/JDK versions and signing-key presence. Explicit paths remain authoritative;
+unknown inputs, credentials and device/network actions are refused. The compiled
+CLI/HTTP/MCP parity and protected-state gate passed 96 checks, followed by
+22 native-session checks on the same immutable Windows binary. The SDK/JDK and
+template evidence is synthetic metadata; Godot 4.7 version-resource evidence is
+real. Hosted confirmation remains pending. Available metadata does not qualify
+export, signing, deployment or an actual device.
 
 Detect runtime/template/SDK/signing requirements, explain missing prerequisites,
 deploy and launch. First qualify Windows, Web and one actual Android device.

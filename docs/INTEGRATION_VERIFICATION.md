@@ -1,5 +1,62 @@
 # Integration verification
 
+## Read-only target-preflight gate, 2026-10-14
+
+The [preflight fixture](../scripts/tests/target-preflight-acceptance.mjs) prepares
+ephemeral complete, missing, mismatched and unknown SDK/JDK/template metadata
+trees. It uses the supplied Godot 4.7 Windows version resource and a fake
+unknown-version runtime to verify explicit-path authority, uncertainty and
+strict rejection of unknown flags, credentials and remote/device requests.
+Keystore and preset-credential sentinels must never appear in responses.
+
+Actual CLI `--read-only` reports must create no controller, diagnostic,
+baseline, import or private-workspace state. HTTP and read-only MCP must match
+the CLI reports exactly and preserve all bytes/directories after explicit
+transport-host setup. Entire protected project, SDK, JDK, template, key, user,
+state and temporary trees are fingerprinted around those queries.
+
+```powershell
+node scripts/tests/target-preflight-acceptance.mjs C:/Builds/aurum.exe C:/Aurum/runtime/Godot.exe
+```
+
+The compiled gate passed 96 checks through the actual read-only CLI, HTTP and
+MCP interfaces. The same immutable Windows binary then passed 22 native-session
+checks, including compatible replacement, checkpoint equality and confirmed
+retirement of the previous process. Its SHA256 is
+`0E1720D1563473A711DF551C61E9C488FB4B3A4046EA95C9DD3167F86999466F`.
+The integration source passed 773 focused Rust/doc tests before two loop-only
+PE-reader lint repairs; afterward, 18 metadata unit tests, strict Clippy and the
+CLI build passed before these compiled gates.
+
+Receipts are retained under `C:/Temp/aurum-roadmap-01a13506/`:
+
+- `target-preflight-native-tests-strict/aurum-target-preflight-1384yz/verification.json`
+- `target-preflight-native-session-tests/aurum-native-acceptance-6ba51k/verification.json`
+
+Two fixture failures remain preserved. The first stopped after three checks
+because the synthetic SDK omitted the required `android.jar`. The next passed
+53 CLI checks, then could not read Studio's exclusively held empty Windows
+lease while taking the transport baseline. The repaired inventory retains that
+entry, derives its empty SHA256 and verifies bigint file identity, size and
+timestamps before and after observation. Seven controlled lock checks prove
+that nonempty read errors, links and metadata drift remain failures. No trees
+or assertions were skipped.
+
+The [732befb hosted run](https://github.com/AG064/aurum-studio/actions/runs/38475108342)
+passed its other 12 jobs but failed the earlier compatible HTTP replacement
+assertion without retaining the returned response. Its original backend cause
+remains unavailable. Twelve controlled diagnostic-helper checks and a separate
+22-check EF2 native-session run qualify improved failure receipts; the new
+binary's 22-check pass does not establish the earlier failure's cause.
+
+A report can expose missing installed prerequisites while keeping export,
+signing, deployment, input/performance and physical-device readiness unverified.
+SDK/JDK/template trees in this gate were synthetic; only the supplied Godot 4.7
+Windows version resource was real runtime evidence. No SDK installation or
+device action belongs to preflight. The published job/package 746/158/31
+qualification below remains its own boundary. Hosted confirmation of this new
+target-report slice is pending.
+
 ## Shared background-job gate, 2026-10-13
 
 The [compiled jobs fixture](../scripts/tests/jobs-acceptance.mjs) uses an

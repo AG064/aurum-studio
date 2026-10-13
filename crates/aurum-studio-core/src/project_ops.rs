@@ -55,6 +55,7 @@ pub const OPERATIONS: &[&str] = &[
     "configure_export",
     "package",
     "runtime_info",
+    "target_preflight",
     "scene_inspect",
     "scene_create",
     "scene_edit",
@@ -86,6 +87,7 @@ pub fn is_read_only(op: &str) -> bool {
             | "class_info"
             | "presets"
             | "runtime_info"
+            | "target_preflight"
     )
 }
 fn field<'a>(input: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -164,6 +166,15 @@ fn execute_context(
     }
     if op == "context_delta" {
         return crate::agent_context::delta(root, input);
+    }
+    if op == "target_preflight" {
+        // Project selection belongs to the transport. Keep strict operation
+        // validation without creating locks, diagnostics or controller state.
+        let mut request = input.clone();
+        if let Some(object) = request.as_object_mut() {
+            object.remove("project");
+        }
+        return crate::target_preflight::inspect_root(root, &request);
     }
     if matches!(op, "context_snapshot" | "context_forget") {
         Project::open(root).map_err(|error| error.to_string())?;
@@ -1766,6 +1777,36 @@ fn ensure_imported(project: &Project) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn target_preflight_is_read_only_and_creates_no_project_state() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-preflight-route-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("aurum.toml"),
+            "schema_version=1\nname=\"preflight\"\nmodules=[]\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("project.godot"), "config_version=5\n").unwrap();
+        let report = execute(&root, &json!({"op":"target_preflight","platform":"Android","project":root,
+            "godot_path":root.join("missing-godot.exe"),"android_sdk_path":root.join("missing-sdk")}), true).unwrap();
+        assert_eq!(report["export_readiness"], "unverified");
+        assert_eq!(report["physical_readiness"], "unverified");
+        assert!(report["devices"].is_null());
+        assert!(!root.join(".aurum").exists());
+        assert!(!root.join("aurum.lock").exists());
+        assert!(!root.join(".godot").exists());
+        let refused = execute(
+            &root,
+            &json!({"op":"target_preflight","platform":"Android","install":true}),
+            true,
+        );
+        assert!(refused.is_err());
+        assert!(!root.join(".aurum").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn package_stage_refuses_missing_empty_and_oversized_artifacts() {
         let root = std::env::temp_dir().join(format!(

@@ -352,6 +352,11 @@ impl Project {
         })
     }
 
+    /// Bounded local discovery for target metadata, without Cargo or add-on inspection.
+    pub fn open_preflight(root: &Path, deadline: std::time::Instant) -> Result<Self, ConfigError> {
+        crate::target_preflight::open_project(root, deadline).map_err(ConfigError::Io)
+    }
+
     /// The directory Godot should be pointed at.
     pub fn godot_project_dir(&self) -> Option<&Path> {
         self.layout.godot_project.as_deref().and_then(Path::parent)

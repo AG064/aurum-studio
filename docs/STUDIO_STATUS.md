@@ -21,11 +21,19 @@ libraries and accepted gameplay. Contained relative Cargo workspace hints add
 a nested-layout integration gate for member libraries and local dependencies.
 Development source also adds shared background jobs with capability-scoped
 ownership, bounded queues/results, progress, deadlines, cancellation and
-interrupted-summary reconnect. The latest Windows qualification binary passed
+interrupted-summary reconnect. The package/storage qualification snapshot passed
 158 expanded job/Godot/package checks and 31 portable real Cargo
 cancellation/deadline/privacy checks, alongside 746 focused Rust/doc tests and
 strict Clippy. Package confinement/recovery/PCK and aggregate staging-storage
 checks plus bounded standalone packaged execution passed.
+Development source also adds read-only target prerequisite metadata reports.
+The compiled CLI/HTTP/MCP parity and protected-state gate passed 96 checks; the
+same immutable Windows binary passed 22 native-session checks. The integration
+source passed 773 focused Rust/doc tests before two PE-reader lint repairs;
+18 metadata unit tests, strict Clippy and CLI build passed after those repairs.
+See [qualification receipts](INTEGRATION_VERIFICATION.md#read-only-target-preflight-gate-2026-10-14).
+Synthetic SDK/JDK/template metadata and real Godot version-resource evidence
+keep export, signing and devices unverified. Hosted confirmation is pending.
 External workspace/dependency staging outside the imported root, shared
 compilation caching, runtime/dependency context, agent benchmarks and
 device/release qualification remain open gates.

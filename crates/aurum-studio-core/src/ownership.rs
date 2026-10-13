@@ -197,33 +197,93 @@ pub fn inspect(pid: u32) -> Option<LiveProcess> {
 pub(crate) fn recorded_process_gone(record: &OwnershipRecord) -> bool {
     use std::ffi::c_void;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    #[repr(C)]
+    #[derive(Default)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
         fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+        fn GetProcessTimes(
+            handle: *mut c_void,
+            created: *mut FileTime,
+            exited: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
     }
-    if !record
+    let Some(recorded_creation) = record
         .started
         .strip_prefix("windows-filetime:")
-        .is_some_and(|value| value.parse::<u64>().is_ok())
-    {
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
         return false;
-    }
+    };
     let raw = unsafe { OpenProcess(0x1000 | 0x0010_0000, 0, record.pid) };
     if raw.is_null() {
-        return matches!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(87 | 1168)
-        );
+        return windows_process_absence(std::io::Error::last_os_error().raw_os_error());
     }
     let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
-    match unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) } {
-        0 => true,
-        258 => inspect(record.pid).is_some_and(|live| {
-            live.started
-                .is_some_and(|started| started != record.started)
-        }),
-        _ => false,
+    // Keep identity and both exit samples on this retained object. A second
+    // PID lookup can observe a different process or lose a concurrent exit.
+    retained_process_gone(
+        recorded_creation,
+        || match unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) } {
+            0 => Ok(true),
+            258 => Ok(false),
+            u32::MAX => Err(std::io::Error::last_os_error()),
+            _ => Err(std::io::Error::other("unexpected process wait status")),
+        },
+        || {
+            let (mut created, mut exited, mut kernel, mut user) = (
+                FileTime::default(),
+                FileTime::default(),
+                FileTime::default(),
+                FileTime::default(),
+            );
+            if unsafe {
+                GetProcessTimes(
+                    handle.as_raw_handle(),
+                    &mut created,
+                    &mut exited,
+                    &mut kernel,
+                    &mut user,
+                )
+            } == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(((created.high as u64) << 32) | created.low as u64)
+        },
+    )
+}
+
+#[cfg(any(windows, test))]
+fn windows_process_absence(error: Option<i32>) -> bool {
+    matches!(error, Some(87 | 1168))
+}
+
+#[cfg(any(windows, test))]
+fn retained_process_gone(
+    recorded_creation: u64,
+    mut signaled: impl FnMut() -> std::io::Result<bool>,
+    creation: impl FnOnce() -> std::io::Result<u64>,
+) -> bool {
+    match signaled() {
+        Ok(true) => return true,
+        Ok(false) => {}
+        Err(_) => return false,
+    }
+    let Ok(observed_creation) = creation() else {
+        return false;
+    };
+    match signaled() {
+        Ok(true) => true,
+        Ok(false) => observed_creation != recorded_creation,
+        Err(_) => false,
     }
 }
 
@@ -420,6 +480,169 @@ fn resolve_to_a_file(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn access_and_query_errors_never_prove_windows_process_absence() {
+        for error in [None, Some(0), Some(5), Some(6), Some(50)] {
+            assert!(!windows_process_absence(error), "{error:?}");
+        }
+        assert!(windows_process_absence(Some(87)));
+        assert!(windows_process_absence(Some(1168)));
+        assert!(!retained_process_gone(
+            42,
+            || Err(std::io::Error::from_raw_os_error(5)),
+            || panic!("failed wait must not become identity evidence"),
+        ));
+        assert!(!retained_process_gone(
+            42,
+            || Ok(false),
+            || Err(std::io::Error::from_raw_os_error(5)),
+        ));
+        let mut waits = [Ok(false), Err(std::io::Error::from_raw_os_error(6))].into_iter();
+        assert!(!retained_process_gone(
+            42,
+            || waits.next().unwrap(),
+            || Ok(43),
+        ));
+    }
+
+    #[test]
+    fn retained_identity_requires_completed_exit_or_verified_creation_mismatch() {
+        assert!(!retained_process_gone(42, || Ok(false), || Ok(42)));
+        assert!(retained_process_gone(42, || Ok(false), || Ok(43)));
+        assert!(retained_process_gone(
+            42,
+            || Ok(true),
+            || panic!("signaled handle is complete exit evidence"),
+        ));
+    }
+
+    #[test]
+    fn exit_during_the_retained_identity_query_is_sampled_again() {
+        let exited = std::cell::Cell::new(false);
+        assert!(retained_process_gone(
+            42,
+            || Ok(exited.get()),
+            || {
+                exited.set(true);
+                Ok(42)
+            },
+        ));
+        let queried = std::cell::Cell::new(false);
+        assert!(!retained_process_gone(
+            42,
+            || Ok(queried.get()),
+            || {
+                queried.set(true);
+                Err(std::io::Error::from_raw_os_error(5))
+            },
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retirement_query_fixture_child() {
+        let Some(root) = std::env::var_os("AURUM_OWNERSHIP_RETIREMENT_FIXTURE") else {
+            return;
+        };
+        std::fs::write(PathBuf::from(root).join("ready"), "ready").unwrap();
+        let mut byte = [0];
+        std::io::Read::read(&mut std::io::stdin(), &mut byte).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn real_retirement_queries_preserve_running_processes_and_recognize_verified_exit() {
+        use std::os::windows::io::{AsHandle, AsRawHandle};
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn WaitForSingleObject(handle: *mut std::ffi::c_void, milliseconds: u32) -> u32;
+        }
+        struct FixtureChild(std::process::Child);
+        impl Drop for FixtureChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let root = std::env::temp_dir().join(format!(
+            "aurum-retirement-query-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let witness = LiveProcess::current().unwrap();
+        let mut child = FixtureChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "ownership::tests::retirement_query_fixture_child",
+                    "--nocapture",
+                ])
+                .env("AURUM_OWNERSHIP_RETIREMENT_FIXTURE", &root)
+                .creation_flags(0x08000000)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let original = child.0.as_handle().try_clone_to_owned().unwrap();
+        let started = Instant::now();
+        while !root.join("ready").exists() {
+            assert!(child.0.try_wait().unwrap().is_none());
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let live = inspect(child.0.id()).unwrap();
+        let record = OwnershipRecord {
+            session: crate::random::session_id(),
+            executable: live.executable.clone(),
+            pid: live.pid,
+            started: live.started.clone().unwrap(),
+            project: root.clone(),
+            kind: ProcessKind::Worker,
+        };
+        let ticks = record
+            .started
+            .strip_prefix("windows-filetime:")
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert!(!recorded_process_gone(&record));
+        let mut different_path = record.clone();
+        different_path.executable = root.join("different-program.exe");
+        assert!(!recorded_process_gone(&different_path));
+        let mut same_time = record.clone();
+        same_time.started = format!("windows-filetime:0{ticks}");
+        assert!(!recorded_process_gone(&same_time));
+        let mut stale = record.clone();
+        stale.started = format!("windows-filetime:{}", ticks ^ 1);
+        assert!(recorded_process_gone(&stale));
+        assert_eq!(inspect(child.0.id()), Some(live));
+        assert_eq!(
+            unsafe { WaitForSingleObject(original.as_raw_handle(), 0) },
+            258
+        );
+        let mut invalid = record.clone();
+        invalid.started = "windows-filetime:invalid".into();
+        assert!(!recorded_process_gone(&invalid));
+        // EOF releases only this fixture, preserving the original query handle.
+        drop(child.0.stdin.take());
+        assert!(child.0.wait().unwrap().success());
+        assert_eq!(
+            unsafe { WaitForSingleObject(original.as_raw_handle(), 0) },
+            0
+        );
+        assert!(recorded_process_gone(&record));
+        assert!(!recorded_process_gone(&invalid));
+        assert_eq!(LiveProcess::current().unwrap(), witness);
+        drop(original);
+        drop(child);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn record(pid: u32, executable: &str, started: &str) -> OwnershipRecord {
         OwnershipRecord {

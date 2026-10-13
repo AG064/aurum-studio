@@ -81,6 +81,7 @@ pub mod session;
 pub mod snapshot;
 pub mod supervise;
 pub mod supervisor;
+pub mod target_preflight;
 pub mod templates;
 pub mod toml;
 pub mod toolchain;

@@ -105,6 +105,8 @@ jobs:
           $env:TEMP="$env:RUNNER_TEMP/aurum-runtime-tests"
           $env:TMP=$env:TEMP
           New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
+          node ./scripts/tests/target-preflight-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
+          if($LASTEXITCODE){throw 'Read-only target prerequisite metadata acceptance failed'}
           node ./scripts/tests/diagnostics-acceptance.mjs ./target/debug/aurum.exe
           if($LASTEXITCODE){throw 'Diagnostics/preflight acceptance failed'}
           node ./scripts/tests/agent-context-acceptance.mjs ./target/debug/aurum.exe

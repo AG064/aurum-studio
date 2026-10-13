@@ -177,6 +177,36 @@ Runtime/dependency
 context plus real model-token, latency and authoring-success benchmarks remain
 required before the efficient-agent milestone is complete.
 
+## Read-only target preflight
+
+Development source adds `target_preflight` through the read-only CLI, HTTP and
+MCP project interfaces. It inspects bounded local runtime, template, selected
+preset, SDK/JDK and keystore-presence metadata without starting tools, installing
+components, using the network or querying devices. Explicit paths are
+authoritative even when missing. Unknown fields, credentials, device actions,
+non-boolean flags and remote paths are refused.
+
+```powershell
+aurum project A:/Games/MyGame --read-only --request-json '{"op":"target_preflight","platform":"Android","godot_path":"A:/Tools/Godot.exe","android_sdk_path":"A:/Android/Sdk","java_sdk_path":"A:/Android/Jdk17"}'
+```
+
+Checks distinguish `available`, `missing`, `mismatch` and `unverified`, with
+path/provenance and observed metadata. Windows runtime version resources provide
+version evidence; a filename or configured project requirement does not.
+Custom templates and unknown versions retain compatibility uncertainty.
+Keystore contents, passwords and key aliases are not returned or tested.
+`prerequisites_detected` means only that required metadata checks were available;
+export, signing and physical readiness remain explicitly unverified.
+
+The [preflight fixture](../scripts/tests/target-preflight-acceptance.mjs) uses
+ephemeral synthetic SDK/JDK/template trees and real Godot version metadata to
+check interface parity, strict requests and unchanged protected state. It passed
+96 compiled checks; the same immutable Windows binary passed 22 native-session
+checks afterward. See the [qualified receipts and limits](INTEGRATION_VERIFICATION.md#read-only-target-preflight-gate-2026-10-14).
+The SDK/JDK/template evidence is synthetic metadata, with a real Godot 4.7
+Windows version resource. Published job/package qualification 746/158/31 remains
+separate from this target-report slice and from actual platform builds or devices.
+
 ## Remaining boundaries
 
 The 0.4.0 package does not include journaled multi-file revisions or managed

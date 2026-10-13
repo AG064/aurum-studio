@@ -61,7 +61,39 @@ fn parameters() -> Value {
     result["owner_capability"] = json!({"type":"string","pattern":"^[a-f0-9]{64}$","description":"Private owner capability returned by the first submission; required for reconnect, results and cancellation"});
     result["after_sequence"] = json!({"type":"integer","minimum":0,"description":"Last observed monotonic job progress sequence"});
     result["request"] = json!({"type":"object","required":["op"],"description":"One supported project operation; nested jobs, project scope overrides and controller shutdown are refused. Detailed schemas remain available through describe."});
+    result["gradle"] = json!({"type":"boolean","description":"Inspect Gradle prerequisite metadata; omit to use the selected preset setting"});
+    for key in [
+        "godot_path",
+        "templates_path",
+        "android_sdk_path",
+        "java_sdk_path",
+        "keystore_path",
+    ] {
+        let mut schema = bounded_metadata_string();
+        schema["not"] = json!({"pattern":r"(^[\\/]{2}|://)"});
+        schema["description"] = json!("Optional local filesystem path, 1..4096 UTF-8 bytes without control characters; presence and metadata only");
+        if key == "keystore_path" {
+            schema["description"] = json!("Optional local keystore path, 1..4096 UTF-8 bytes without control characters; file presence only, contents and signing credentials are not read");
+        }
+        result[key] = schema;
+    }
     result
+}
+
+fn bounded_metadata_string() -> Value {
+    json!({"type":"string","minLength":1,"maxLength":4096,"pattern":r"^[^\u0000-\u001f\u007f-\u009f]+$(?![\s\S])"})
+}
+
+fn parameter(op: &str, key: &str, all: &Value) -> Value {
+    if op == "target_preflight" && key == "preset" {
+        let mut schema = bounded_metadata_string();
+        schema["description"] = json!("Optional preset name, 1..4096 UTF-8 bytes without control characters; omit to select by target platform");
+        schema
+    } else if op == "target_preflight" && key == "debug" {
+        json!({"type":"boolean","default":true,"description":"Inspect prerequisites for the selected debug or release profile"})
+    } else {
+        all[key].clone()
+    }
 }
 
 fn fields(op: &str) -> &'static [&'static str] {
@@ -103,6 +135,17 @@ fn fields(op: &str) -> &'static [&'static str] {
             "events",
         ],
         "configure_export" => &["platform"],
+        "target_preflight" => &[
+            "platform",
+            "preset",
+            "debug",
+            "gradle",
+            "godot_path",
+            "templates_path",
+            "android_sdk_path",
+            "java_sdk_path",
+            "keystore_path",
+        ],
         "export" => &["preset", "output", "debug", "pack"],
         "package" => &["output"],
         "scene_inspect" | "set_main_scene" => &["scene", "expected_sha256"],
@@ -132,6 +175,7 @@ fn required(op: &str) -> &'static [&'static str] {
         "write" => &["path", "text"],
         "draft_save" => &["path", "text", "draft_id"],
         "export" => &["preset", "output"],
+        "target_preflight" => &["platform"],
         "scene_inspect" | "scene_create" | "set_main_scene" => &["scene"],
         "scene_edit" => &["scene", "operations"],
         _ => &[],
@@ -150,10 +194,32 @@ pub fn input_schema(read_only: bool) -> Value {
     properties.insert("op".into(), json!({"type":"string","enum":supported}));
     for op in &supported {
         for key in fields(op) {
-            properties.insert((*key).into(), all[*key].clone());
+            properties.insert((*key).into(), parameter(op, key, &all));
         }
     }
-    json!({"type":"object","properties":properties,"required":["op"]})
+    let mut schema = json!({"type":"object","properties":properties,"required":["op"]});
+    if supported.contains(&"target_preflight") {
+        schema["allOf"] = json!([{
+            "if":{"properties":{"op":{"const":"target_preflight"}},"required":["op"]},
+            "then":operation_schema("target_preflight", &all)
+        }]);
+    }
+    schema
+}
+
+fn operation_schema(op: &str, all: &Value) -> Value {
+    let mut properties = Map::new();
+    properties.insert("op".into(), json!({"type":"string","enum":[op]}));
+    for key in fields(op) {
+        properties.insert((*key).into(), parameter(op, key, all));
+    }
+    let mut required_fields = vec!["op"];
+    required_fields.extend_from_slice(required(op));
+    let mut schema = json!({"type":"object","properties":properties,"required":required_fields});
+    if op == "target_preflight" {
+        schema["additionalProperties"] = json!(false);
+    }
+    schema
 }
 
 pub fn describe(operation: Option<&str>) -> Result<Value, String> {
@@ -166,14 +232,19 @@ pub fn describe(operation: Option<&str>) -> Result<Value, String> {
         return Err(format!("unknown operation '{op}'"));
     }
     let all = parameters();
-    let mut properties = Map::new();
-    properties.insert("op".into(), json!({"type":"string","enum":[op]}));
-    for key in fields(op) {
-        properties.insert((*key).into(), all[*key].clone());
+    let mut result = json!({"contract_version":1,"op":op,"read_only":is_read_only(op),"input_schema":operation_schema(op, &all)});
+    if op == "target_preflight" {
+        result["description"] = json!("Inspect bounded local metadata for export prerequisites. Available paths do not verify export, signing or physical device readiness.");
+        result["constraints"] = json!({
+            "metadata_only":true,"tools_invoked":false,"network_used":false,"device_query_performed":false,
+            "installed":false,"keystore_contents_read":false,"metadata_bytes_max":65536,"preset_bytes_max":262144,
+            "directory_entries_max":64,"deadline_seconds_max":2,
+            "paths":"local filesystem paths only; 1..4096 UTF-8 bytes without control characters",
+            "runtime_policy":"version-pinned Android requirements apply only to observed stable Godot 4.7; other versions remain unverified",
+            "export_readiness":"unverified","signing_verified":false,"physical_readiness":"unverified",
+            "freshness":"point-in-time metadata; no atomic filesystem snapshot or executable validation"
+        });
     }
-    let mut required_fields = vec!["op"];
-    required_fields.extend_from_slice(required(op));
-    let mut result = json!({"contract_version":1,"op":op,"read_only":is_read_only(op),"input_schema":{"type":"object","properties":properties,"required":required_fields}});
     if crate::project_jobs::supported(op) {
         result["constraints"] = json!({"active_max":crate::jobs::MAX_ACTIVE,"queued_max":crate::jobs::MAX_QUEUED,"terminal_receipts_max":crate::jobs::MAX_TERMINAL,
             "request_bytes_max":crate::jobs::MAX_REQUEST_BYTES,"retained_result_bytes_max":crate::jobs::MAX_RESULT_BYTES,"default_timeout_seconds":120,
@@ -239,6 +310,105 @@ pub fn describe(operation: Option<&str>) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn target_preflight_is_read_only_with_curated_bounded_metadata_paths() {
+        let details = describe(Some("target_preflight")).unwrap();
+        assert_eq!(details["read_only"], true);
+        assert_eq!(
+            details["input_schema"]["required"],
+            json!(["op", "platform"])
+        );
+        let query = input_schema(true);
+        let action = input_schema(false);
+        assert!(query["properties"]["op"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("target_preflight")));
+        assert!(!action["properties"]["op"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("target_preflight")));
+        for key in [
+            "godot_path",
+            "templates_path",
+            "android_sdk_path",
+            "java_sdk_path",
+            "keystore_path",
+        ] {
+            let schema = &details["input_schema"]["properties"][key];
+            assert_eq!(schema["type"], "string", "{key}");
+            assert_eq!(schema["minLength"], 1, "{key}");
+            assert_eq!(schema["maxLength"], 4096, "{key}");
+            assert_eq!(
+                schema["pattern"],
+                bounded_metadata_string()["pattern"],
+                "{key}"
+            );
+            assert!(schema["not"]["pattern"].as_str().unwrap().contains("://"));
+            assert_eq!(query["properties"][key], *schema);
+            assert!(action["properties"].get(key).is_none());
+        }
+        let preset = &details["input_schema"]["properties"]["preset"];
+        assert_eq!(preset["minLength"], 1);
+        assert_eq!(preset["maxLength"], 4096);
+        assert_eq!(
+            details["input_schema"]["properties"]["debug"]["default"],
+            true
+        );
+    }
+    #[test]
+    fn compact_target_preflight_schema_preserves_operation_specific_refusals() {
+        let details = describe(Some("target_preflight")).unwrap();
+        let strict = &details["input_schema"];
+        assert_eq!(strict["additionalProperties"], false);
+        assert_eq!(strict["properties"].as_object().unwrap().len(), 10);
+        for forbidden in [
+            "password",
+            "key_alias",
+            "credentials",
+            "probe",
+            "install",
+            "device",
+            "devices",
+            "limit",
+            "path",
+            "request",
+        ] {
+            assert!(strict["properties"].get(forbidden).is_none(), "{forbidden}");
+        }
+        let compact = input_schema(true);
+        assert_eq!(
+            compact["allOf"][0]["if"]["properties"]["op"]["const"],
+            "target_preflight"
+        );
+        assert_eq!(compact["allOf"][0]["then"], *strict);
+    }
+    #[test]
+    fn target_preflight_discovery_separates_metadata_from_export_and_device_proof() {
+        let details = describe(Some("target_preflight")).unwrap();
+        let constraints = &details["constraints"];
+        assert_eq!(constraints["metadata_only"], true);
+        for key in [
+            "tools_invoked",
+            "network_used",
+            "device_query_performed",
+            "installed",
+            "keystore_contents_read",
+            "signing_verified",
+        ] {
+            assert_eq!(constraints[key], false, "{key}");
+        }
+        assert_eq!(constraints["metadata_bytes_max"], 64 * 1024);
+        assert_eq!(constraints["preset_bytes_max"], 256 * 1024);
+        assert_eq!(constraints["directory_entries_max"], 64);
+        assert_eq!(constraints["deadline_seconds_max"], 2);
+        assert_eq!(constraints["export_readiness"], "unverified");
+        assert_eq!(constraints["physical_readiness"], "unverified");
+        assert!(constraints["runtime_policy"]
+            .as_str()
+            .unwrap()
+            .contains("observed stable Godot 4.7"));
+    }
     #[test]
     fn candidate_discovery_distinguishes_publication_and_observed_storage() {
         let validate = describe(Some("changes_validate")).unwrap();
