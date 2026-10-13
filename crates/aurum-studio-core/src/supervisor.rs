@@ -574,6 +574,18 @@ fn run(mut config: SupervisorConfig, inbox: Receiver<Command>, events: &Queue, b
                     continue;
                 };
 
+                let request = match request {
+                    Ok(request) => request,
+                    Err(error) => {
+                        events.push(Event::BuildFinished {
+                            ok: false,
+                            summary: error,
+                            installed_sha256: None,
+                        });
+                        continue;
+                    }
+                };
+
                 // The lock is what actually enforces "one build writes the
                 // artifact at a time". The worker thread only serializes the
                 // commands inside *this* process, and a person can easily have
@@ -737,18 +749,19 @@ fn restart_preview(config: &SupervisorConfig, session: &Option<crate::Session>, 
     events.push(Event::Log(result.describe()));
 }
 
-fn build_request(project: &Project, release: bool) -> Option<BuildRequest> {
+fn build_request(project: &Project, release: bool) -> Option<Result<BuildRequest, String>> {
     let package = project.config.rust_package.clone()?;
-    let addon = project.layout.addon_directory.clone()?;
+    project.layout.addon_directory.as_ref()?;
     let cargo = crate::toolchain::find_on_path("cargo")?;
     let profile = if release {
         Profile::Release
     } else {
         Profile::Debug
     };
-    let destination = addon
-        .join("bin")
-        .join(profile.installed_filename(&crate::build::library_name(&package)));
+    let destination = match project.library_destination(release) {
+        Ok(destination) => destination,
+        Err(error) => return Some(Err(error)),
+    };
     let mut request = BuildRequest::new(
         project.build_workspace(),
         package,
@@ -757,7 +770,7 @@ fn build_request(project: &Project, release: bool) -> Option<BuildRequest> {
         cargo,
     );
     request.locked = project.build_workspace().join("Cargo.lock").is_file();
-    Some(request)
+    Some(Ok(request))
 }
 
 fn push_build_success(events: &Queue, report: &BuildReport) {
@@ -1051,6 +1064,19 @@ mod tests {
             .expect("write project.godot");
         std::fs::create_dir_all(root.join("godot").join("addons").join("aurum").join("bin"))
             .expect("create the add-on directory");
+        let system = if cfg!(windows) {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        };
+        let architecture = if std::env::consts::ARCH == "aarch64" {
+            "arm64"
+        } else {
+            std::env::consts::ARCH
+        };
+        std::fs::write(root.join("godot/addons/aurum/bin/aurum.gdextension"),format!("[libraries]\n{system}.debug.{architecture}=\"res://godot/addons/aurum/bin/active.{}\"\n",crate::build::dynamic_library_extension())).unwrap();
         Project::open(&root).expect("the temporary project should open")
     }
 

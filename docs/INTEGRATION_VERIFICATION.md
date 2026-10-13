@@ -1,5 +1,31 @@
 # Integration verification
 
+## Normal native builds and portable package profile, 2026-10-13
+
+The development build path now identifies the configured package and library
+target from Cargo metadata and accepts only matching compiler artifact reports.
+The manifest determines installation, not a guessed package-derived filename.
+Both normal build and development supervision use the same bounded host/profile
+resolver. The focused suite passed 671 Rust/doc tests and strict Clippy.
+
+Expanded actual Rust acceptance verifies normal build into a custom manifest
+filename, fresh gameplay through that library and standalone package execution.
+An initial package run returned `build_revision:2`, `debug_library:true`,
+`ok:false`: the full bundled runtime selected the debug mapping despite a
+release build. Private package validation/export now places selected release
+bytes at the runtime-selected paths. The next run passed 17 checks and executed
+the release native library. The strengthened run passed all 18 checks,
+including working debug-DLL preservation and private-source cleanup. Script-only
+project/package acceptance passed 41 checks. This is headless Windows native behavior, not rendered
+graphics or device acceptance.
+
+The [first native Rust hosted run](https://github.com/AG064/aurum-studio/actions/runs/38337102459)
+failed before private compilation while its fixture tried to generate a new
+lockfile offline: a fresh cache lacked an unpinned Git branch reference. Setup
+now seeds Aurum's pinned lockfile and resolves the fixture's package change
+offline while asserting that the gdext revision remains pinned. Production
+private compilation remains frozen/offline; no failed job was blindly retried.
+
 ## Private Rust native preparation, 2026-10-13
 
 The [published lease/context source](https://github.com/AG064/aurum-studio/actions/runs/38332879800)

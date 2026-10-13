@@ -28,6 +28,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Normal native builds resolve package/library identities from Cargo metadata and reported artifacts, with no stale filename fallback. Build actions and the development supervisor install at the declared host/profile manifest path, including renamed targets and relative paths.
+- Portable Windows packages now validate/export a private source snapshot with selected release bytes at paths used by the bundled full runtime. A real Rust fixture exposed debug-library selection in a release package; the executing library profile is now checked. Working debug libraries remain untouched by package overlays.
+- Rust acceptance setup preserves repository-pinned Git revisions when resolving its temporary lockfile offline, instead of requiring uncached branch references on a fresh CI runner.
 - Managed start refuses source drift before activation, under the participating content-writer lease.
 - Controller leases are explicitly unlocked before descriptor closure, avoiding delayed Unix lock release during concurrent process spawning.
 - Candidate pool and workspace leases now explicitly release retained descriptors, with regression coverage for immediate allocation/reclamation. Active workspace protection and storage admission remain unchanged.

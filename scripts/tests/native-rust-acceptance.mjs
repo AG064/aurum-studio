@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import {spawn,spawnSync} from "node:child_process";
 import {mkdtemp,mkdir,writeFile,readFile,readdir} from "node:fs/promises";
+import {createHash} from "node:crypto";
 import {tmpdir} from "node:os";
 import {join,resolve,dirname} from "node:path";
 import {fileURLToPath} from "node:url";
@@ -12,19 +13,22 @@ const revision=locked.match(/name = "godot"[\s\S]*?source = "git\+https:\/\/gith
 const root=await mkdtemp(join(tmpdir(),"aurum-native-rust-")),project=join(root,"project");
 await mkdir(join(project,"src"),{recursive:true});await mkdir(join(project,"addons/native/bin"),{recursive:true});
 await writeFile(join(project,"aurum.toml"),'schema_version=1\nname="native-rust-fixture"\nrust_package="aurum-native-fixture"\naddon_destination="addons/native"\nmodules=[]\n');
-await writeFile(join(project,"Cargo.toml"),`[package]\nname="aurum-native-fixture"\nversion="0.1.0"\nedition="2021"\n[lib]\nname="native_game_logic"\ncrate-type=["cdylib"]\n[dependencies]\ngodot={git="https://github.com/godot-rust/gdext",rev="${revision}",default-features=false,features=["api-4-7"]}\n`);
-const rust='use godot::prelude::*;\nuse godot::classes::Node;\n#[derive(GodotClass)]\n#[class(base=Node)]\nstruct RustState { #[export] counter:i64, #[export] cooldown:f64, #[export] mission_step:i64, #[export] build_revision:i64, base:Base<Node> }\n#[godot_api]\nimpl INode for RustState { fn init(base:Base<Node>)->Self { Self {counter:41,cooldown:3.5,mission_step:3,build_revision:1,base} } }\n#[godot_api]\nimpl RustState { #[func] fn boost(&mut self) { self.counter += self.build_revision; } }\nstruct NativeGame;\n#[gdextension]\nunsafe impl ExtensionLibrary for NativeGame {}\n';
+await writeFile(join(project,"Cargo.toml"),`[package]\nname="aurum-native-fixture"\nversion="0.1.0"\nedition="2021"\n[lib]\nname="native_game_logic"\ncrate-type=["cdylib"]\n[dependencies]\ngodot={git="https://github.com/godot-rust/gdext",branch="master",default-features=false,features=["api-4-7"]}\n[profile.dev]\ndebug=0\nincremental=false\ncodegen-units=1\n`);
+await writeFile(join(project,"Cargo.lock"),locked);
+const rust='use godot::prelude::*;\nuse godot::classes::Node;\n#[derive(GodotClass)]\n#[class(base=Node)]\nstruct RustState { #[export] counter:i64, #[export] cooldown:f64, #[export] mission_step:i64, #[export] build_revision:i64, #[export] debug_library:bool, base:Base<Node> }\n#[godot_api]\nimpl INode for RustState { fn init(base:Base<Node>)->Self { Self {counter:41,cooldown:3.5,mission_step:3,build_revision:1,debug_library:cfg!(debug_assertions),base} } }\n#[godot_api]\nimpl RustState { #[func] fn boost(&mut self) { self.counter += self.build_revision; } }\nstruct NativeGame;\n#[gdextension]\nunsafe impl ExtensionLibrary for NativeGame {}\n';
 await writeFile(join(project,"src/lib.rs"),rust);
-await writeFile(join(project,"addons/native/bin/native.gdextension"),'[configuration]\nentry_symbol="gdext_rust_init"\ncompatibility_minimum="4.7"\n[libraries]\nwindows.debug.x86_64="./active.dll"\n');
+await writeFile(join(project,"addons/native/bin/native.gdextension"),'[configuration]\nentry_symbol="gdext_rust_init"\ncompatibility_minimum="4.7"\n[libraries]\nwindows.debug.x86_64="./active.dll"\nwindows.release.x86_64="./release.dll"\n');
 const staleDll="not a working native library";
 await writeFile(join(project,"addons/native/bin/active.dll"),staleDll);
 await writeFile(join(project,"project.godot"),'config_version=5\n[application]\nrun/main_scene="res://main.tscn"\n[input]\nmove_right={"deadzone":0.2,"events":[]}\ndash={"deadzone":0.2,"events":[]}\npause={"deadzone":0.2,"events":[]}\n[rendering]\nrenderer/rendering_method="gl_compatibility"\n');
 const script='extends Node3D\nvar inventory=["cell","cargo"]\nvar enemies=["guard-4","guard-9"]\nfunc _ready():\n\tprocess_mode=Node.PROCESS_MODE_ALWAYS\nfunc _physics_process(delta):\n\tif get_tree().paused: return\n\tif Input.is_action_pressed("move_right"): position.x+=5.0*delta\nfunc _input(event):\n\tif event.is_action_pressed("pause"): get_tree().paused=not get_tree().paused\n\tif event.is_action_pressed("dash") and not get_tree().paused: $RustState.boost()\nfunc aurum_capture_state():\n\treturn {"schema":1,"position":position,"inventory":inventory,"enemies":enemies,"counter":$RustState.counter,"cooldown":$RustState.cooldown,"mission_step":$RustState.mission_step}\nfunc aurum_restore_state(state):\n\tif not state is Dictionary or state.get("schema")!=1 or not state.get("position") is Vector3: return false\n\tposition=state.position\n\tinventory=state.inventory.duplicate()\n\tenemies=state.enemies.duplicate()\n\t$RustState.counter=int(state.counter)\n\t$RustState.cooldown=float(state.cooldown)\n\t$RustState.mission_step=int(state.mission_step)\n\treturn true\n';
-await writeFile(join(project,"main.gd"),script);
+const checkedScript=script.replace('process_mode=Node.PROCESS_MODE_ALWAYS\n','process_mode=Node.PROCESS_MODE_ALWAYS\n\tvar args=OS.get_cmdline_user_args()\n\tif "--normal-build-check" in args or "--package-build-check" in args:\n\t\tvar expected_debug="--normal-build-check" in args\n\t\tvar index=args.find("--aurum-report")\n\t\tif index<0 or index+1>=args.size(): get_tree().quit(2); return\n\t\t$RustState.boost()\n\t\tvar result={"ok":$RustState.build_revision==2 and $RustState.counter==43 and $RustState.debug_library==expected_debug,"build_revision":$RustState.build_revision,"debug_library":$RustState.debug_library}\n\t\tvar report=FileAccess.open(args[index+1],FileAccess.WRITE)\n\t\treport.store_string(JSON.stringify(result))\n\t\treport.close()\n\t\tget_tree().quit(0 if result.ok else 1)\n');
+await writeFile(join(project,"main.gd"),checkedScript);
 await writeFile(join(project,"main.tscn"),'[gd_scene load_steps=2 format=3]\n[ext_resource type="Script" path="res://main.gd" id="1"]\n[node name="Mission" type="Node3D"]\nscript=ExtResource("1")\n[node name="RustState" type="RustState" parent="."]\n');
-const environment={...process.env,AURUM_GODOT:resolve(godot),AURUM_STUDIO_HOME:join(root,"state"),APPDATA:join(root,"user"),LOCALAPPDATA:join(root,"user")};
-const generated=spawnSync("cargo",["generate-lockfile","--offline"],{cwd:project,env:environment,windowsHide:true,encoding:"utf8",timeout:60000});assert.ifError(generated.error);assert.equal(generated.status,0,generated.stderr);
+const environment={...process.env,AURUM_GODOT:resolve(godot),AURUM_STUDIO_HOME:join(root,"state"),APPDATA:join(root,"user"),LOCALAPPDATA:join(root,"user"),CARGO_TARGET_DIR:join(root,"regular-target")};
+const generated=spawnSync("cargo",["metadata","--offline","--format-version","1"],{cwd:project,env:environment,windowsHide:true,encoding:"utf8",timeout:60000});assert.ifError(generated.error);assert.equal(generated.status,0,generated.stderr);
 const lock=await readFile(join(project,"Cargo.lock"),"utf8");
+assert.ok(lock.includes(`git+https://github.com/godot-rust/gdext?branch=master#${revision}`),"fixture setup preserves the repository's pinned gdext revision");
 const server=spawn(resolve(binary),["studio",project,"--no-open","--json","--port","0"],{env:environment,windowsHide:true});
 const done=new Promise((resolve,reject)=>{server.once("error",reject);server.once("exit",resolve);});server.stderr.on("data",()=>{});
 const bound=(promise,ms,label)=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error(`${label} deadline exceeded`)),ms);promise.then(value=>{clearTimeout(timer);resolve(value);},error=>{clearTimeout(timer);reject(error);});});
@@ -59,8 +63,18 @@ try {
     check((await request({op:"native_replace"})).status===400,"external library paths are refused before loading");
     check((await action({op:"native_status"})).pid===replaced.pid,"dependency refusal preserves accepted game");
     await writeFile(manifest,originalManifest);
-    check((await readFile(join(project,"Cargo.lock"),"utf8"))===lock && (await readFile(join(project,"main.gd"),"utf8"))===script,"private compilation preserves working lockfile and game script");
+    check((await readFile(join(project,"Cargo.lock"),"utf8"))===lock && (await readFile(join(project,"main.gd"),"utf8"))===checkedScript,"private compilation preserves working lockfile and game script");
     await action({op:"native_stop"});
+    const built=await action({op:"build",release:false});
+    const installed=await readFile(join(project,"addons/native/bin/active.dll"));
+    check(installed.length>1000 && createHash("sha256").update(installed).digest("hex")===built.sha256,"normal build installs the reported renamed library at its declared path");
+    const played=await action({op:"play",frames:30,report:true,user_args:["--normal-build-check"]});
+    check(played.ok,"normal build runs the actual native implementation through the declared manifest");
+    const packaged=await action({op:"package",output:"dist/rust-package"});
+    const packageReport=join(root,"package-report.json");
+    const launched=spawnSync(packaged.executable,["--headless","--path",packaged.directory,"--main-pack",join(packaged.directory,"game.pck"),"--","--package-build-check","--aurum-report",packageReport],{env:environment,windowsHide:true,encoding:"utf8",timeout:30000});
+    assert.ifError(launched.error);check(launched.status===0 && JSON.parse(await readFile(packageReport,"utf8")).ok,"portable package executes the release native library, not a stale debug build");
+    check(createHash("sha256").update(await readFile(join(project,"addons/native/bin/active.dll"))).digest("hex")===built.sha256 && packaged.private_source_cleaned,"packaging preserves the working debug library and removes its private source");
     await writeFile(join(root,"verification.json"),JSON.stringify({ok:true,checks,started,replaced,before:before.checkpoint,after:after.checkpoint,scope:"actual self-contained offline Rust native build/handoff; not graphics or device qualification"},null,2));
 } finally {
     if(address){const url=new URL(address.url);try{await fetch(`${url.origin}/api/stop`,{method:"POST",headers:{"X-Aurum-Token":url.searchParams.get("t")},signal:AbortSignal.timeout(5000)});}catch{}}

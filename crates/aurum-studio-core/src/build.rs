@@ -427,9 +427,38 @@ pub fn run(
     _force: bool,
     cargo_timeout: Duration,
 ) -> Result<BuildReport, BuildError> {
+    // Package names and library target names are independent. Cargo's opaque
+    // package identity also distinguishes dependency artifacts from this build.
+    let started = std::time::Instant::now();
+    let mut metadata = Command::new(&request.cargo)
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--color",
+            "never",
+        ])
+        .directory(&request.workspace);
+    if request.locked {
+        metadata = metadata.arg("--locked");
+    }
+    let metadata = run_cargo_with_retry(&metadata, cargo_timeout.min(Duration::from_secs(30)))?;
+    if !metadata.success() {
+        return Err(BuildError::Cargo(metadata.failure_detail()));
+    }
+    let metadata: serde_json::Value = serde_json::from_str(&metadata.stdout)
+        .map_err(|_| BuildError::Cargo("Cargo metadata is invalid or truncated".into()))?;
+    let (package_id, target_name) = library_identity(&metadata, &request.package)?;
+    let remaining = cargo_timeout.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        return Err(BuildError::Cargo(
+            "Build deadline expired during Cargo metadata".into(),
+        ));
+    }
     // Only Cargo knows whether dependencies or source files changed.
     let command = request.command();
-    let outcome: Outcome = run_cargo_with_retry(&command, cargo_timeout)?;
+    let outcome: Outcome = run_cargo_with_retry(&command, remaining)?;
     let mut diagnostics = outcome.stderr.clone();
     for line in outcome.stdout.lines() {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
@@ -453,29 +482,7 @@ pub fn run(
         }));
     }
 
-    let source = outcome
-        .stdout
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|value| {
-            value["reason"] == "compiler-artifact"
-                && value["target"]["name"] == request.package.replace('-', "_")
-        })
-        .filter_map(|value| {
-            value["filenames"].as_array().and_then(|files| {
-                files
-                    .iter()
-                    .filter_map(|v| v.as_str())
-                    .find(|file| {
-                        Path::new(file)
-                            .extension()
-                            .is_some_and(|extension| extension == dynamic_library_extension())
-                    })
-                    .map(PathBuf::from)
-            })
-        })
-        .next_back()
-        .unwrap_or_else(|| request.source_artifact());
+    let source = reported_library(&outcome.stdout, &package_id, &target_name)?;
 
     if !source.is_file() {
         return Err(BuildError::NoArtifact(source));
@@ -509,6 +516,92 @@ pub fn run(
         built: true,
         output,
     })
+}
+
+fn library_identity(
+    metadata: &serde_json::Value,
+    package: &str,
+) -> Result<(String, String), BuildError> {
+    if metadata["version"] != 1 {
+        return Err(BuildError::Cargo(
+            "Unsupported Cargo metadata version".into(),
+        ));
+    }
+    let packages = metadata["packages"]
+        .as_array()
+        .filter(|packages| packages.len() <= 4096)
+        .ok_or_else(|| {
+            BuildError::Cargo("Cargo package graph is missing or exceeds its bound".into())
+        })?;
+    let selected: Vec<_> = packages
+        .iter()
+        .filter(|entry| entry["name"] == package)
+        .collect();
+    if selected.len() != 1 {
+        return Err(BuildError::Cargo(
+            "Configured Rust package is not unique in this workspace".into(),
+        ));
+    }
+    let entry = selected[0];
+    let targets: Vec<_> = entry["targets"]
+        .as_array()
+        .ok_or_else(|| BuildError::Cargo("Cargo targets are missing".into()))?
+        .iter()
+        .filter(|target| {
+            target["kind"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "cdylib"))
+        })
+        .collect();
+    if targets.len() != 1 {
+        return Err(BuildError::Cargo(
+            "Configured package must provide one cdylib library target".into(),
+        ));
+    }
+    Ok((
+        entry["id"]
+            .as_str()
+            .ok_or_else(|| BuildError::Cargo("Cargo package identity is missing".into()))?
+            .into(),
+        targets[0]["name"]
+            .as_str()
+            .ok_or_else(|| BuildError::Cargo("Cargo library target name is missing".into()))?
+            .into(),
+    ))
+}
+fn reported_library(stdout: &str, package: &str, target: &str) -> Result<PathBuf, BuildError> {
+    let mut selected = None;
+    for line in stdout.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value["reason"] != "compiler-artifact"
+            || value["package_id"] != package
+            || value["target"]["name"] != target
+        {
+            continue;
+        }
+        for filename in value["filenames"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_str())
+        {
+            let path = PathBuf::from(filename);
+            if path
+                .extension()
+                .is_some_and(|extension| extension == dynamic_library_extension())
+            {
+                if selected.as_ref().is_some_and(|previous| previous != &path) {
+                    return Err(BuildError::Cargo(
+                        "Cargo reported multiple libraries for the selected target".into(),
+                    ));
+                }
+                selected = Some(path);
+            }
+        }
+    }
+    selected.ok_or_else(||BuildError::Cargo("Cargo succeeded without reporting the selected native library; no stale artifact fallback is permitted".into()))
 }
 
 fn publish_reload_marker(destination: &Path, hash: &str) -> std::io::Result<()> {
@@ -546,6 +639,23 @@ fn artifact_of(path: &Path) -> Result<Artifact, BuildError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn renamed_library_requires_matching_package_and_reported_artifact() {
+        let metadata = serde_json::json!({"version":1,"packages":[{"name":"game-package","id":"opaque-game-id","targets":[{"name":"custom_library","kind":["cdylib"]}]}]});
+        assert_eq!(
+            library_identity(&metadata, "game-package").unwrap(),
+            ("opaque-game-id".into(), "custom_library".into())
+        );
+        let path = format!("custom_library.{}", dynamic_library_extension());
+        let message=serde_json::json!({"reason":"compiler-artifact","package_id":"opaque-game-id","target":{"name":"custom_library"},"filenames":[path]}).to_string();
+        assert_eq!(
+            reported_library(&message, "opaque-game-id", "custom_library").unwrap(),
+            PathBuf::from(&path)
+        );
+        assert!(reported_library(&message, "another-package", "custom_library").is_err());
+        assert!(reported_library("", "opaque-game-id", "custom_library").is_err());
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "aurum-build-{tag}-{}-{:?}",
@@ -561,7 +671,8 @@ mod tests {
     #[cfg(windows)]
     fn fake_cargo(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("fake-cargo.cmd");
-        std::fs::write(&path, format!("@echo off\r\n{body}\r\n")).unwrap();
+        let (metadata, artifact) = fake_messages(dir);
+        std::fs::write(&path, format!("@echo off\r\nif \"%~1\"==\"metadata\" (type \"{}\" & exit /b 0)\r\ntype \"{}\"\r\n{body}\r\n",metadata.display(),artifact.display())).unwrap();
         path
     }
 
@@ -570,13 +681,25 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let path = dir.join("fake-cargo.sh");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let (metadata, artifact) = fake_messages(dir);
+        std::fs::write(&path, format!("#!/bin/sh\nif [ \"$1\" = metadata ]; then cat '{}'; exit 0; fi\ncat '{}'\n{body}\n",metadata.display(),artifact.display())).unwrap();
         // Unix will not run a script that is not executable, and a new file is
         // 0644. Without this every build test fails with "could not run cargo:
         // Permission denied", which reads as a fault in the build code rather
         // than in the fixture standing in for it.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    fn fake_messages(dir: &Path) -> (PathBuf, PathBuf) {
+        let metadata = dir.join("fake-metadata.json");
+        let artifact = dir.join("fake-artifact.json");
+        let path = dir
+            .join("workspace/target/debug")
+            .join(format!("aurum_godot.{}", dynamic_library_extension()));
+        std::fs::write(&metadata,serde_json::json!({"version":1,"packages":[{"name":"aurum-godot","id":"fixture-package-id","targets":[{"name":"aurum_godot","kind":["cdylib"]}]}]}).to_string()+"\n").unwrap();
+        std::fs::write(&artifact,serde_json::json!({"reason":"compiler-artifact","package_id":"fixture-package-id","target":{"name":"aurum_godot"},"filenames":[path]}).to_string()+"\n").unwrap();
+        (metadata, artifact)
     }
 
     /// The line ending of whichever shell the fixtures below are written for.

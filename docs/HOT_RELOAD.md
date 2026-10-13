@@ -4,15 +4,22 @@ Studio and `aurum dev` share one supervisor. Default development runs without a 
 
 ## Native build path
 
-1. Cargo checks the source and dependency graph.
-2. Studio reads the produced artifact from Cargo's structured output.
-3. The library is hashed and staged beside its destination.
-4. An atomic replacement commits the verified library.
-5. A debug hash marker is published under `.godot/aurum/`.
-6. The editor plugin observes the marker and reloads the extension.
-7. The live fingerprint reports which build is executing.
+1. Cargo metadata identifies the configured package and its declared `cdylib` target, which need not share the package name.
+2. Cargo checks the source and dependency graph and reports the selected artifact.
+3. Studio resolves the ordered host/profile mapping in the GDExtension manifest. Relative and `res://` file paths stay inside the project; missing or unsupported mappings are refused.
+4. The reported library is hashed and staged beside that declared destination.
+5. An atomic replacement commits the verified library.
+6. A debug hash marker is published under `.godot/aurum/`.
+7. The editor plugin observes the marker and reloads the extension.
+8. The live fingerprint reports which build is executing.
 
 Matching an old build artifact with an installed library never bypasses Cargo's source check. Identical new bytes avoid an unnecessary replacement. A failed build leaves the last working library installed. A failed reload notification reports that installation succeeded but reload has not been confirmed.
+
+Cargo success without a matching package/target artifact is not accepted, even
+if a guessed old DLL exists. Normal build and the development supervisor share
+the manifest destination resolver. It deliberately supports bounded quoted
+library file paths and standard host/profile tags; custom feature expressions,
+framework bundles and cross-target delivery need separate qualification.
 
 ## Restart boundaries
 

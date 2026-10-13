@@ -42,3 +42,10 @@ The release is built from its tagged source, not from an untracked local executa
 Windows x64 and Chromium are the distribution acceptance targets. Linux/macOS builds are checked in CI but are not packaged desktop releases. Physical mobile devices, VR headsets, signing, notarization and app stores are not certified by this release. Live values apply without a game restart; changed code is loaded through checkpoint rebuilding. Native registration changes retain their controlled restart boundary.
 
 Source-built packaging is available through `scripts/package-release.ps1`. It refuses an existing output directory and does not overwrite user projects or state.
+
+Unreleased development source also corrects project `op=package` native-profile
+selection. The bundled full runtime advertises debug features, so packaging
+validates/exports a private source copy with release-library bytes at its
+runtime-selected paths. This does not overwrite the working debug DLL. A real
+Rust fixture checks the executing library's profile in the standalone package,
+not only that a release DLL was produced. The 0.4.0 downloads predate this fix.

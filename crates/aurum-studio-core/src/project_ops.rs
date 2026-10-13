@@ -520,27 +520,94 @@ fn package_windows(project: &Project, input: &Value) -> Result<Value, String> {
     if project.config.rust_package.is_some() {
         build_project(project, true)?;
     }
-    let check = validate(project)?;
+    let preset = ensure_export_preset(project, "Windows Desktop")?;
+    let mut workspace = crate::candidate_workspace::Workspace::create()?;
+    let source = workspace.path.join("source");
+    {
+        let _content = crate::content_lock::ContentLock::shared(&project.root)?;
+        crate::transactions::ensure_writable(&project.root)?;
+        let entries = crate::snapshot::inventory(&project.root)?;
+        if entries.iter().map(|(_, bytes)| bytes).sum::<u64>() > crate::candidates::MAX_SOURCE_BYTES
+        {
+            return Err("package source exceeds the private snapshot budget".into());
+        }
+        let fingerprint = crate::snapshot::fingerprint_all(&project.root)?;
+        crate::snapshot::copy(&project.root, &source)?;
+        if crate::snapshot::fingerprint_all(&source)? != fingerprint
+            || crate::snapshot::fingerprint_all(&project.root)? != fingerprint
+        {
+            return Err("source changed while preparing package; working files preserved".into());
+        }
+    }
+    let private = Project::open(&source).map_err(|error| error.to_string())?;
+    // The supplied full runtime advertises debug features. Its debug-selected
+    // paths must carry the chosen release bytes in this package only.
+    for (relative, _) in crate::snapshot::inventory(godot_root(&private)?)?
+        .into_iter()
+        .filter(|(path, _)| path.ends_with(".gdextension"))
+    {
+        let manifest = godot_root(&private)?.join(relative);
+        let release_library = private.library_destination_for(&manifest, true)?;
+        let runtime_library = private.library_destination_for(&manifest, false)?;
+        if !release_library.is_file() {
+            return Err("selected release library is missing; package was not published".into());
+        }
+        if release_library != runtime_library {
+            crate::build::install(&release_library, &runtime_library)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    let userdata = workspace.path.join("userdata");
+    std::fs::create_dir(&userdata).map_err(|error| error.to_string())?;
+    let context = RuntimeContext {
+        engine: engine_binary(project)?,
+        userdata,
+    };
+    let check = validate_with_context(&private, Some(&context))?;
     if check["ok"] != true {
         return Ok(check);
     }
-    let preset = ensure_export_preset(project, "Windows Desktop")?;
     let stage = files::confined(
         &project.root,
         &format!(".aurum/packages/{}", crate::random::session_id()),
     )?;
-    std::fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
-    let packed = engine_run(
-        project,
+    std::fs::create_dir_all(
+        stage
+            .parent()
+            .ok_or("package stage parent is unavailable")?,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::create_dir(&stage).map_err(|e| e.to_string())?;
+    struct PackageStage(PathBuf, bool);
+    impl Drop for PackageStage {
+        fn drop(&mut self) {
+            if !self.1
+                && crate::diagnostics::checked_path(&self.0).is_ok()
+                && self
+                    .0
+                    .canonicalize()
+                    .map(crate::project::clean_path)
+                    .is_ok_and(|path| path == self.0)
+            {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+    // This guard owns only the fresh, confined stage created above. It never
+    // deletes the requested destination or any earlier package.
+    let mut staged = PackageStage(stage.clone(), false);
+    let packed = engine_run_with_context(
+        &private,
         &[
             "--headless".into(),
             "--path".into(),
-            godot_root(project)?.display().to_string(),
+            godot_root(&private)?.display().to_string(),
             "--export-pack".into(),
             preset,
             stage.join("game.pck").display().to_string(),
         ],
         Duration::from_secs(600),
+        Some(&context),
     )?;
     if packed["ok"] != true {
         return Ok(packed);
@@ -551,8 +618,9 @@ fn package_windows(project: &Project, input: &Value) -> Result<Value, String> {
     if crate::sha256_file(&stage.join("game.exe")).map_err(|e| e.to_string())? != runtime_hash {
         return Err("runtime copy failed hash verification".into());
     }
-    copy_native_libraries(godot_root(project)?, godot_root(project)?, &stage, 0)?;
-    let licenses = headless_operation(project, &json!({"op":"runtime_info"}))?;
+    copy_native_libraries(godot_root(&private)?, godot_root(&private)?, &stage, 0)?;
+    let licenses =
+        headless_operation_with_context(&private, &json!({"op":"runtime_info"}), Some(&context))?;
     let license = licenses
         .get("license")
         .and_then(Value::as_str)
@@ -572,8 +640,10 @@ fn package_windows(project: &Project, input: &Value) -> Result<Value, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     std::fs::rename(&stage, &output).map_err(|e| e.to_string())?;
+    staged.1 = true;
+    let cleaned = workspace.clean().is_ok();
     Ok(
-        json!({"ok":true,"directory":output,"executable":output.join("game.exe"),"runtime_sha256":runtime_hash,"requires_separate_godot":false}),
+        json!({"ok":true,"directory":output,"executable":output.join("game.exe"),"runtime_sha256":runtime_hash,"requires_separate_godot":false,"native_profile":"release","private_source_cleaned":cleaned}),
     )
 }
 
@@ -595,9 +665,7 @@ fn copy_native_libraries(
         }
         if kind.is_dir() {
             copy_native_libraries(root, &entry.path(), output, depth + 1)?;
-        } else if entry.path().extension().is_some_and(|ext| ext == "dll")
-            && !name.ends_with(".debug.dll")
-        {
+        } else if entry.path().extension().is_some_and(|ext| ext == "dll") {
             let path = output.join(entry.path().strip_prefix(root).map_err(|e| e.to_string())?);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -895,11 +963,6 @@ pub fn build_project(project: &Project, release: bool) -> Result<Value, String> 
         );
     };
     let cargo = crate::toolchain::find_on_path("cargo").ok_or("Cargo was not found")?;
-    let addon = project
-        .layout
-        .addon_directory
-        .as_ref()
-        .ok_or("configured native add-on directory was not found")?;
     let profile = if release {
         crate::Profile::Release
     } else {
@@ -909,9 +972,7 @@ pub fn build_project(project: &Project, release: bool) -> Result<Value, String> 
         project.build_workspace(),
         package,
         profile,
-        addon
-            .join("bin")
-            .join(profile.installed_filename(&crate::build::library_name(package))),
+        project.library_destination(release)?,
         cargo,
     );
     request.locked = project.build_workspace().join("Cargo.lock").is_file();

@@ -364,6 +364,150 @@ impl Project {
             .and_then(Path::parent)
             .unwrap_or(&self.root)
     }
+
+    /// Resolve the declared host library, including a not-yet-built destination.
+    /// This portable subset accepts quoted library paths, not arbitrary Variant
+    /// expressions. Private runtime staging additionally uses Godot ConfigFile.
+    pub fn library_destination(&self, release: bool) -> Result<PathBuf, String> {
+        let manifest = self
+            .layout
+            .gdextension
+            .as_ref()
+            .ok_or("configured GDExtension manifest was not found")?;
+        self.library_destination_for(manifest, release)
+    }
+    pub(crate) fn library_destination_for(
+        &self,
+        manifest: &Path,
+        release: bool,
+    ) -> Result<PathBuf, String> {
+        let mut bytes = Vec::new();
+        use std::io::Read;
+        std::fs::File::open(manifest)
+            .map_err(|error| error.to_string())?
+            .take(65537)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() > 65536 {
+            return Err("GDExtension manifest exceeds 64 KiB".into());
+        }
+        let text = std::str::from_utf8(&bytes).map_err(|_| "GDExtension manifest must be UTF-8")?;
+        let system = if cfg!(windows) {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        };
+        let architecture = match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            "x86" => "x86_32",
+            value => value,
+        };
+        let profile = if release { "release" } else { "debug" };
+        let mut section = "";
+        for raw in text.lines() {
+            let mut quoted = false;
+            let mut escaped = false;
+            let mut end = raw.len();
+            for (index, character) in raw.char_indices() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                if quoted && character == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if character == '"' {
+                    quoted = !quoted;
+                }
+                if !quoted && character == ';' {
+                    end = index;
+                    break;
+                }
+            }
+            let line = raw[..end].trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line.starts_with('[') && line.ends_with(']') {
+                section = &line[1..line.len() - 1];
+                continue;
+            }
+            if section != "libraries" {
+                continue;
+            }
+            let (flags, value) = line
+                .split_once('=')
+                .ok_or("invalid GDExtension library assignment")?;
+            let flags = flags.trim();
+            let flags = if flags.starts_with('"') {
+                serde_json::from_str::<String>(flags)
+                    .map_err(|_| "unsupported native feature key")?
+            } else {
+                flags.into()
+            };
+            let bits = if usize::BITS == 64 { "64" } else { "32" };
+            if !flags.split('.').all(|flag| {
+                [system, architecture, profile, "single", bits].contains(&flag)
+                    || (!release && flag == "editor")
+            }) {
+                continue;
+            }
+            let value = serde_json::from_str::<String>(value.trim())
+                .map_err(|_| "native library paths must be quoted strings")?;
+            if value.is_empty() || value.contains('\\') || value.chars().any(char::is_control) {
+                return Err("invalid native library path".into());
+            }
+            let candidate = if let Some(relative) = value.strip_prefix("res://") {
+                self.godot_project_dir()
+                    .ok_or("native manifest requires project.godot")?
+                    .join(relative)
+            } else {
+                if Path::new(&value).is_absolute() || value.contains(':') {
+                    return Err("native build destination must stay inside the project".into());
+                }
+                manifest
+                    .parent()
+                    .ok_or("manifest parent is unavailable")?
+                    .join(value)
+            };
+            let relative = candidate
+                .strip_prefix(&self.root)
+                .map_err(|_| "native destination escaped the project")?;
+            let mut normalized = PathBuf::new();
+            for part in relative.components() {
+                match part {
+                    std::path::Component::Normal(name) => normalized.push(name),
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        if !normalized.pop() {
+                            return Err("native destination escaped the project".into());
+                        }
+                    }
+                    _ => return Err("invalid native destination components".into()),
+                }
+            }
+            let result = crate::files::confined(
+                &self.root,
+                normalized
+                    .to_str()
+                    .ok_or("native destination must be UTF-8")?,
+            )?;
+            crate::diagnostics::checked_path(&result).map_err(|error| error.to_string())?;
+            if !result
+                .extension()
+                .is_some_and(|extension| extension == crate::build::dynamic_library_extension())
+            {
+                return Err("native manifest target is not a supported host library file; framework and cross-target packaging require separate staging".into());
+            }
+            return Ok(result);
+        }
+        Err(format!(
+            "native manifest has no supported {system}.{profile}.{architecture} library mapping"
+        ))
+    }
 }
 
 /// Find the parts of a project, read-only.
@@ -494,6 +638,52 @@ path_hint = "."
 [validation]
 command = "pwsh scripts/tests/phase0_contract.ps1"
 "#;
+
+    #[test]
+    fn build_destination_uses_ordered_host_mapping_and_preserves_relative_paths() {
+        let root = temp_dir("manifest-destination");
+        std::fs::write(
+            root.join("aurum.toml"),
+            "schema_version=1\nname=\"manifest\"\naddon_destination=\"addons/native\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("project.godot"), "config_version=5\n").unwrap();
+        let bin = root.join("addons/native/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let manifest = bin.join("game.gdextension");
+        let system = if cfg!(windows) {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        };
+        let arch = if std::env::consts::ARCH == "aarch64" {
+            "arm64"
+        } else {
+            std::env::consts::ARCH
+        };
+        let extension = crate::build::dynamic_library_extension();
+        std::fs::write(&manifest,format!("[libraries]\nweb.debug=\"res://unrelated.wasm\"\n{system}.debug.{arch}=\"../runtime/custom.{extension}\" ; host mapping\n{system}.release.{arch}=\"res://release/packaged.{extension}\"\n")).unwrap();
+        let project = Project::open(&root).unwrap();
+        assert_eq!(
+            project.library_destination(false).unwrap(),
+            project
+                .root
+                .join(format!("addons/native/runtime/custom.{extension}"))
+        );
+        assert_eq!(
+            project.library_destination(true).unwrap(),
+            project.root.join(format!("release/packaged.{extension}"))
+        );
+        std::fs::write(
+            &manifest,
+            format!("[libraries]\n{system}.debug.{arch}=\"../../../../outside.{extension}\"\n"),
+        )
+        .unwrap();
+        assert!(project.library_destination(false).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn parses_a_complete_configuration() {
