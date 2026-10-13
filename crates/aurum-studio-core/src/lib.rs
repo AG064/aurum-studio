@@ -52,8 +52,13 @@ pub mod files;
 pub mod gameplay;
 pub mod hash;
 pub mod modules;
+pub mod native_host;
+pub mod native_operations;
+#[cfg(windows)]
+pub mod native_preview;
 pub mod native_runtime;
 pub mod native_schema;
+pub mod native_userdata;
 pub mod ownership;
 pub mod playtest;
 pub mod presets;

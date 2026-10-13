@@ -429,6 +429,26 @@ func aurum_restore_state(state):
             .unwrap();
         assert_eq!(captured["ok"], true);
         assert_eq!(captured["mode"], "custom");
+        assert_eq!(
+            first
+                .channel
+                .request(
+                    &json!({"op":"release_freeze","freeze_id":"0".repeat(32)}),
+                    budget
+                )
+                .unwrap()["ok"],
+            false
+        );
+        assert_eq!(
+            first
+                .channel
+                .request(
+                    &json!({"op":"checkpoint","freeze":true,"freeze_id":"0".repeat(32)}),
+                    budget
+                )
+                .unwrap()["ok"],
+            false
+        );
         let second = start(&engine);
         let restored = second
             .channel
@@ -473,7 +493,10 @@ func aurum_restore_state(state):
         assert_eq!(
             first
                 .channel
-                .request(&json!({"op":"resume"}), budget)
+                .request(
+                    &json!({"op":"resume","freeze_id":captured["freeze_id"]}),
+                    budget
+                )
                 .unwrap()["paused"],
             false
         );

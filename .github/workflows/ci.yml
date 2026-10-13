@@ -109,6 +109,18 @@ jobs:
           if($LASTEXITCODE){throw 'Runtime checkpoint acceptance failed'}
           cargo test -p aurum-studio-core --locked runtime_channel::tests::actual_godot_native_channel -- --ignored --exact --nocapture
           if($LASTEXITCODE){throw 'Native runtime channel acceptance failed'}
+          cargo test -p aurum-studio-core --locked native_preview::tests::actual_private_native_preparation -- --ignored --exact --nocapture
+          if($LASTEXITCODE){throw 'Private native replacement acceptance failed'}
+          node ./scripts/tests/native-sessions-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
+          if($LASTEXITCODE){throw 'Native HTTP/MCP session acceptance failed'}
+          node ./scripts/tests/native-routing-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
+          if($LASTEXITCODE){throw 'Shared CLI/MCP/Studio native routing failed'}
+          node ./scripts/tests/native-mission-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
+          if($LASTEXITCODE){throw 'Real native mission replacement acceptance failed'}
+          node ./scripts/tests/native-recovery-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
+          if($LASTEXITCODE){throw 'Native handoff crash recovery failed'}
+          node ./scripts/tests/native-recovery-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT --checkpoint-only
+          if($LASTEXITCODE){throw 'Native initial checkpoint recovery failed'}
           ./examples/orbit-break/tools/verify.ps1 -AurumBinary ./target/debug/aurum.exe -GodotBinary $env:AURUM_GODOT -Package
           if($LASTEXITCODE){throw 'Game acceptance failed'}
           ./examples/relay-yard/tools/verify.ps1 -AurumBinary ./target/debug/aurum.exe -GodotBinary $env:AURUM_GODOT -Package

@@ -18,6 +18,15 @@ Headless scene operations start bounded runtime workers with a JSON request. The
 
 Studio's supervisor serializes commands and reports events to the interface. A project build lock coordinates callers. Native artifacts are verified before atomic replacement. The watcher remembers previous source declarations and reports the reason for reload or restart.
 
+In development source, managed native games use one discoverable Studio
+controller per project. CLI and MCP route to it over authenticated loopback
+HTTP after verifying host identity, Windows listener ownership and project
+scope. Client disconnect does not own game lifetime. Private preparation,
+checkpoint verification and owned Windows jobs protect the previous game on
+failed replacement. Recovery records and retained save generations are
+independent of disposable source snapshots. See [native session behavior](HOT_RELOAD.md#managed-native-sessions)
+for limits and explicit shutdown.
+
 ## Optional live editor
 
 `aurum-editor` supplies the native bridge. Its GDScript adapter supplies the current editor scene and records mutations in `EditorUndoRedoManager`. Nodes receive scene ownership so they survive serialization. Requests and responses are published atomically; claimed requests are not blindly replayed. A recent heartbeat distinguishes a configured directory from a responsive editor.

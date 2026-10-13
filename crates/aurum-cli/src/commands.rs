@@ -217,6 +217,24 @@ pub fn studio(args: &[String]) -> ExitCode {
         }
     };
 
+    match aurum_studio_core::native_host::existing_url(&project.root) {
+        Ok(Some(url)) => {
+            if options.json {
+                println!("{}", serde_json::json!({"url":url,"reused":true}));
+            } else {
+                println!("Aurum Studio is already running at {url}");
+                if !options.no_open {
+                    open_browser(&url);
+                }
+            }
+            return ExitCode::from(exit::OK);
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("aurum: {error}");
+            return ExitCode::from(exit::FAILED);
+        }
+    }
     let mut config = ServerConfig::new(project);
     config.port = options.port;
     config.godot_hint = options.godot.clone();

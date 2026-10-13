@@ -191,6 +191,42 @@ pub fn inspect(pid: u32) -> Option<LiveProcess> {
     }
 }
 
+/// Read-only crash-recovery evidence. An inaccessible process is not treated as
+/// absent. PID reuse proves the recorded launch ended but never permits a signal.
+#[cfg(windows)]
+pub(crate) fn recorded_process_gone(record: &OwnershipRecord) -> bool {
+    use std::ffi::c_void;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+    }
+    if !record
+        .started
+        .strip_prefix("windows-filetime:")
+        .is_some_and(|value| value.parse::<u64>().is_ok())
+    {
+        return false;
+    }
+    let raw = unsafe { OpenProcess(0x1000 | 0x0010_0000, 0, record.pid) };
+    if raw.is_null() {
+        return matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(87 | 1168)
+        );
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+    match unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) } {
+        0 => true,
+        258 => inspect(record.pid).is_some_and(|live| {
+            live.started
+                .is_some_and(|started| started != record.started)
+        }),
+        _ => false,
+    }
+}
+
 #[cfg(windows)]
 fn inspect_windows(pid: u32) -> Option<LiveProcess> {
     use std::ffi::{c_void, OsString};

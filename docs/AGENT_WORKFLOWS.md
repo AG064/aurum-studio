@@ -73,6 +73,15 @@ The game's version 3 checkpoints validate before changing the mission and recons
 
 ## Boundaries
 
-This does not implement multi-file atomic change sets, a malicious-code sandbox, a generic native-process checkpoint handoff, mobile SDK provisioning or headset certification. Project code runs with the user's permissions. Run tests in disposable copies. Android/iOS/VR capability must be qualified on the relevant toolchains and actual devices.
+The 0.4.0 package does not include journaled multi-file revisions or managed
+native-process checkpoint handoff. Development source adds those Windows
+script/resource workflows and [shared native sessions](HOT_RELOAD.md#managed-native-sessions).
+Neither version provides a malicious-code sandbox, mobile SDK provisioning or
+headset certification. Project code runs with the user's permissions. Run tests
+in disposable copies. Android/iOS/VR capability must be qualified on the
+relevant toolchains and actual devices.
 
-The next practical gates are native checkpoint handoff, representative asset/material/animation workflows, target-specific preflight, and independent device tests. They should be tracked separately from this contract and 3D reference milestone.
+Remaining gates include native dependency staging, cancellable background jobs,
+representative asset/material/animation workflows, target-specific preflight
+and independent device tests. Track these separately from the 0.4.0 contract
+and the 3D reference milestone.

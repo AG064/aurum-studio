@@ -97,6 +97,10 @@ impl Workspace {
     pub(crate) fn create() -> Result<Self, String> {
         Self::in_pool(&std::env::temp_dir().join(POOL_NAME))
     }
+    #[cfg(windows)]
+    pub(crate) fn create_native() -> Result<Self, String> {
+        Self::in_pool_with_slots(&std::env::temp_dir().join("aurum-native-previews-v1"), 4)
+    }
     #[cfg(test)]
     pub(crate) fn for_test_project(project: &Path) -> Result<Self, String> {
         Self::in_pool(&std::env::temp_dir().join(format!(
@@ -105,6 +109,9 @@ impl Workspace {
         )))
     }
     fn in_pool(pool: &Path) -> Result<Self, String> {
+        Self::in_pool_with_slots(pool, SLOTS)
+    }
+    fn in_pool_with_slots(pool: &Path, slots: usize) -> Result<Self, String> {
         let _manager = manager(pool)?;
         let pool =
             crate::project::clean_path(pool.canonicalize().map_err(|error| error.to_string())?);
@@ -138,8 +145,8 @@ impl Workspace {
                 Err(error) => return Err(error.to_string()),
             }
         }
-        if active >= SLOTS {
-            return Err("candidate storage reservations are full (two 1 GiB slots); retry after a validation completes".into());
+        if active >= slots {
+            return Err(format!("private storage reservations are full ({slots} slots of 1 GiB); retry after an owned operation completes"));
         }
         let id = crate::random::session_id();
         let path = pool.join(format!("candidate-{id}"));

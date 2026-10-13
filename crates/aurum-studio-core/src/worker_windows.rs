@@ -248,6 +248,7 @@ fn pipe(parent_reads: bool) -> io::Result<(OwnedHandle, OwnedHandle)> {
 pub(super) struct Worker {
     process: OwnedHandle,
     job: OwnedHandle,
+    pid: u32,
 }
 impl Worker {
     pub(super) fn spawn(
@@ -359,8 +360,19 @@ impl Worker {
             drop(stdin);
             drop(output);
             drop(errors);
-            Ok((Self { process, job }, stdout.into(), stderr.into()))
+            Ok((
+                Self {
+                    process,
+                    job,
+                    pid: information.pid,
+                },
+                stdout.into(),
+                stderr.into(),
+            ))
         }
+    }
+    pub(super) fn pid(&self) -> u32 {
+        self.pid
     }
     pub(super) fn try_wait(&self) -> io::Result<Option<i32>> {
         unsafe {

@@ -173,7 +173,7 @@ impl Session {
 
     /// Write the token separately, so it can be given narrow permissions
     /// without restricting the metadata file.
-    fn write_token(&self) -> std::io::Result<()> {
+    pub(crate) fn write_token(&self) -> std::io::Result<()> {
         let path = self.directory.join("token");
         std::fs::write(&path, &self.token)?;
         restrict_to_owner(&path);

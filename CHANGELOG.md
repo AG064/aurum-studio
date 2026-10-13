@@ -18,6 +18,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Crash-released candidate workspace leases, two shared 1 GiB storage reservations, recognized orphan cleanup and observed cache/userdata budgets. These are not hard filesystem quotas or security isolation.
 - Opt-in authenticated native runtime transport with bounded framing/deadlines, process/reply identity checks and an expiring freeze lease. This is the checkpoint-channel foundation, not complete supervisor-managed replacement.
 - Read-only bounded revision history discovery and recorded path/hash inspection, including interrupted revisions and projects with invalid configuration. Historical metadata does not assert live undo readiness.
+- Private Windows native-session preparation and state-verified replacement through persistent hosts, with rejected-restoration fallback and operation-owned freeze leases. Native dependencies and final release qualification remain development gates.
+- Recoverable bounded native saved-data generations that survive replacement and stop, with explicit cleanup and protection for current/active generations.
+- Headless native action input restricted to registered Godot actions, with real Relay Yard mission replacement acceptance.
+- Bounded native checkpoint and host-crash recovery records, with source/process-identity checks, restoration verification and safe refusal for live processes, newer source or corrupt journals.
+- One discoverable native controller per project shared by CLI, MCP and Studio. Reconnecting clients retain the same game; explicit host shutdown remains separate from game stop. Routing checks credentials, process/listener identity and the served project before forwarding.
 
 ### Fixed
 
@@ -26,6 +31,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Detached descendants no longer inherit the launching Windows CLI's original standard handles and keep its caller's pipes open.
 - Candidate Godot workers and their descendants now terminate on host exit, deadlines, observed storage violations or normal worker completion through an atomically assigned Windows job. Ordinary native games keep their existing lifecycle.
 - Browser tuning acknowledgements are replayed without duplicate application, so an early game acknowledgement cannot be lost behind its save response. Pending saves cannot be mislabeled applied, and identical status text does not repeatedly mutate the live region.
+- Relay Yard checkpoints now preserve camera pose/focus/shake, accept older v3 snapshots, reject malformed camera data and keep the camera still during pause. Ready enemy cooldowns have a canonical capture representation.
 
 These development changes are not included in the published 0.4.0 package.
 

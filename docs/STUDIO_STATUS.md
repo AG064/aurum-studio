@@ -9,6 +9,13 @@ The supported workflow is Windows Studio plus local MCP and CLI access, using th
 For planned work and unreleased development milestones, see the [roadmap](ROADMAP.md)
 and [bounded logging contract](LOGGING.md). The list below describes the 0.4.0 baseline.
 
+Development source also contains journaled script/resource revisions, private
+Windows native sessions, verified checkpoint replacement, retained save-data
+generations, host-crash recovery and a shared CLI/MCP/Studio controller. See
+[native session commands](HOT_RELOAD.md#managed-native-sessions). These are not
+part of the 0.4.0 download. Native dependencies, in-flight cancellation and
+device qualification remain open gates.
+
 - Browser interface with project creation/import/selection, files, scenes, agents, validation, development watching, and Windows packaging.
 - Development workbench with Scene/Source/Agents/Export tabs, a live inspector, source/draft status, Output/Checks dock, on-demand operation contracts and session execution receipts.
 - Shared Rust project operations for CLI, HTTP, and MCP.

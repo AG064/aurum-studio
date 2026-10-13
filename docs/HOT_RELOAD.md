@@ -27,7 +27,49 @@ Declarations are compared against the previous source snapshot so changing an or
 
 Browser previews now expose typed live properties and optional automatic checkpoint-based rebuilding. Code and scene edits boot a new runtime while preserving compatible state, with rollback when the replacement fails. This does not migrate arbitrary native memory. See [runtime editing and agent verification](INTEGRATION.md) and [Rust Web builds](RUST_WEB.md).
 
-## Prove the real workflow
+## Managed native sessions
+
+Current development source adds Windows-qualified managed native games. These
+commands are not in the published 0.4.0 download. Run a built `aurum` executable
+against a trusted project:
+
+```powershell
+aurum project A:/Games/MyGame --request-json '{"op":"native_start","rendered":true}'
+aurum project A:/Games/MyGame --request-json '{"op":"native_status"}' --read-only
+aurum project A:/Games/MyGame --request-json '{"op":"native_checkpoint"}'
+aurum project A:/Games/MyGame --request-json '{"op":"native_replace"}'
+aurum project A:/Games/MyGame --request-json '{"op":"native_stop"}'
+aurum project A:/Games/MyGame --request-json '{"op":"native_host_stop"}'
+```
+
+CLI, Studio's project endpoint and MCP's `aurum_project_action` share the same
+project controller. Start can launch a hidden Studio host. Opening Studio later
+reuses it. Read-only status does not start a host or modify the project. MCP
+disconnect and reconnect leave the game running. `native_stop` stops the owned
+game; `native_host_stop` also shuts down the controller. Explicitly stop hosts
+at the end of automated fixtures.
+
+Preparation validates a private copy and keeps the working source untouched.
+Compatible replacement captures a complete checkpoint, restores a paused
+successor, recaptures and verifies it, then retires the old owned process. A
+failed replacement retains the old game. Use `aurum_capture_state()` and
+`aurum_restore_state(state)` for game-specific state. This is managed process
+replacement, not arbitrary native memory migration. Scripts and native code
+still execute with your account permissions.
+
+`native_checkpoint` saves a bounded recovery record. After host termination,
+`native_recover` verifies recorded process identities and the source hash before
+restoring that checkpoint. Newer source, live or inaccessible recorded
+processes, and corrupt journals are refused. Progress since the saved checkpoint
+is not recovered. Save files have independent retained generations; discover
+them with `native_userdata_list`, and remove only an inactive, non-current
+generation with `native_userdata_forget`. Removal is permanent, never automatic.
+
+Native dependency staging, concurrent save writers and cancellation of an
+in-flight preparation still need qualification. Rendered Windows play, headset
+and physical mobile acceptance are separate from headless mission tests.
+
+## Verify native extension reload
 
 ```powershell
 pwsh scripts/tests/verify_studio.ps1 -GodotBinary A:/Tools/Godot_v4.7-stable_win64.exe -Offline -NativeReload

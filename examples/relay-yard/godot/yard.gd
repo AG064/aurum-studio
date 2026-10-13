@@ -141,7 +141,7 @@ func _physics_process(delta: float) -> void:
 	if phase not in ["play", "extract"] or paused:
 		world.update_state(powered, carried, powered.count(true), delta * 0.25, reduced_motion)
 		hud.update(delta)
-		_update_camera(delta)
+		if not paused: _update_camera(delta)
 		return
 	elapsed += delta
 	var command: Dictionary = _bot_command(delta) if autoplay else _human_command()
@@ -433,6 +433,7 @@ func aurum_capture_state() -> Dictionary:
 		"elapsed": elapsed, "charge_progress": charge_progress, "extraction": extraction, "extraction_waves": extraction_waves, "kills": kills, "interactions": interaction_count,
 		"boss_defeated": boss_defeated, "next_uid": next_uid, "rng_state": str(rng.state), "player": player.snapshot(), "position": [player.position.x, player.position.y, player.position.z],
 		"enemies": actors, "projectiles": bolts, "view": {"width": get_viewport().get_visible_rect().size.x, "height": get_viewport().get_visible_rect().size.y, "aim_points": aim_points},
+		"camera_state": {"focus": [camera_focus.x, camera_focus.y, camera_focus.z], "position": [camera.position.x, camera.position.y, camera.position.z], "rotation": [camera.rotation.x, camera.rotation.y, camera.rotation.z], "shake": shake},
 		"tuning": {"move_speed": move_speed, "interaction_radius": interaction_radius, "camera_distance": camera_distance, "reduced_motion": reduced_motion, "volume": sound.volume}}
 
 func _number(value: Variant, low: float, high: float) -> bool:
@@ -460,6 +461,9 @@ func _valid_rng(value: Variant) -> bool:
 
 func _valid_state(state: Dictionary) -> bool:
 	if state.get("version") != 3 or state.get("phase") not in ["menu", "play", "extract", "won", "lost"]: return false
+	if state.has("camera_state"):
+		var saved_camera = state.camera_state
+		if not saved_camera is Dictionary or not _vector(saved_camera.get("focus"), 100) or not _vector(saved_camera.get("position"), 100) or not _vector(saved_camera.get("rotation"), 7) or not _number(saved_camera.get("shake"), 0, 10): return false
 	if not state.get("paused") is bool or not state.get("won") is bool or not state.get("boss_defeated") is bool: return false
 	if not state.get("powered") is Array or state.powered.size() != 3: return false
 	var false_seen := false
@@ -534,6 +538,16 @@ func aurum_restore_state(input: Dictionary) -> bool:
 	rng.state = int(state.rng_state)
 	_bot_path_clock = 0
 	camera_focus = player.position
+	if state.has("camera_state"):
+		var saved_camera: Dictionary = state.camera_state
+		camera_focus = Vector3(saved_camera.focus[0], saved_camera.focus[1], saved_camera.focus[2])
+		camera.position = Vector3(saved_camera.position[0], saved_camera.position[1], saved_camera.position[2])
+		camera.rotation = Vector3(saved_camera.rotation[0], saved_camera.rotation[1], saved_camera.rotation[2])
+		shake = float(saved_camera.shake)
+	else:
+		# Older v3 saves did not record camera continuity. Recompute immediately
+		# rather than displaying the replacement's initial camera for a frame.
+		_update_camera(0)
 	world.update_state(powered, carried, powered.count(true), 0, reduced_motion)
 	player.cargo.visible = carried >= 0
 	sound.set_volume(state.tuning.get("volume", sound.volume))

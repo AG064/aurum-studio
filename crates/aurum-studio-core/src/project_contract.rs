@@ -19,9 +19,14 @@ fn parameters() -> Value {
         "draft_id":{"type":"string"},"base_sha256":{"type":"string"},
         "root_type":{"type":"string"},"name":{"type":"string"},
         "class":{"type":"string"},"query":{"type":"string"},
+        "node_path":{"type":"string","maxLength":512,"default":".","description":"Path within the current native scene, not a filesystem path"},
+        "include_state":{"type":"boolean","default":false},
+        "input_actions":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"action":{"type":"string","maxLength":128},"pressed":{"type":"boolean"}},"required":["action","pressed"]},"description":"Registered Godot action events inside the owned game, not OS keyboard input"},
+        "properties":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"path":{"type":"string","maxLength":512},"property":{"type":"string","maxLength":256},"value":{}},"required":["path","property","value"]}},
         "limit":{"type":"integer","minimum":1,"maximum":200,"default":50,"description":"Maximum log records or revision detail rows; logs scan at most 256 KiB"},
         "failures_only":{"type":"boolean","default":false},
         "revision_id":{"type":"string","pattern":"^[a-fA-F0-9]{32}$","description":"Committed revision identity for guarded whole-revision undo"},
+        "userdata_id":{"type":"string","pattern":"^[a-f0-9]{32}$","description":"Non-current, unowned saved-data generation selected for permanent deletion"},
         "changes":{"type":"array","minItems":1,"maxItems":64,"description":"Text change set for preflight, disposable validation or validated journaled publication. At most 8 MiB aggregate text; transport body limits also apply.","items":{"type":"object","additionalProperties":false,"properties":{
             "path":{"type":"string","minLength":1,"maxLength":4096},
             "action":{"type":"string","enum":["create","replace","delete"]},
@@ -56,6 +61,11 @@ fn fields(op: &str) -> &'static [&'static str] {
         "changes_check" | "changes_validate" | "changes_apply" => &["changes"],
         "changes_undo" | "changes_forget" => &["revision_id"],
         "changes_history" => &["revision_id", "limit"],
+        "native_start" => &["rendered"],
+        "native_inspect" => &["node_path", "include_state"],
+        "native_apply" => &["properties"],
+        "native_input" => &["input_actions"],
+        "native_userdata_forget" => &["userdata_id"],
         "read" | "draft_read" => &["path"],
         "write" => &["path", "text", "expected_sha256"],
         "draft_save" => &["path", "text", "base_sha256", "draft_id"],
@@ -91,6 +101,9 @@ fn required(op: &str) -> &'static [&'static str] {
     match op {
         "changes_check" | "changes_validate" | "changes_apply" => &["changes"],
         "changes_undo" | "changes_forget" => &["revision_id"],
+        "native_apply" => &["properties"],
+        "native_input" => &["input_actions"],
+        "native_userdata_forget" => &["userdata_id"],
         "read" | "draft_read" | "undo" => &["path"],
         "draft_clear" => &["path", "draft_id"],
         "write" => &["path", "text"],
@@ -157,6 +170,18 @@ pub fn describe(operation: Option<&str>) -> Result<Value, String> {
             "details":"revision_id selects bounded path/hash records; omit for compact summaries",
             "ordering":"revision ID, not chronology","live_source_checked":false,"undo_preconditions_checked":false,
             "scope":"retained journaled revisions, not every project mutation"});
+    }
+    if crate::native_operations::supported(op) {
+        result["constraints"] = json!({"qualified_platforms":["Windows"],"persistent_host_required":true,"host_routing":"CLI/MCP discover and share Studio controller; start/recover can launch it headlessly",
+            "script_projects_only":true,"host_lifetime":"host exit terminates owned games",
+            "execution_sandboxed":false,"native_slots":4,"validation_slots_separate":true,
+            "property_values":"JSON primitives/arrays/maps or __aurum_type tags for Vector2, Vector3, Color and int64",
+            "replacement":"private validated boot, complete restoration and verification before retiring old; custom hooks declare completeness"});
+    }
+    if matches!(op, "native_userdata_list" | "native_userdata_forget") {
+        result["constraints"] = json!({"generation_limit":16,"retained_bytes_limit":crate::native_userdata::TOTAL_BYTES,
+            "generation_bytes_limit":crate::native_userdata::RUN_BYTES,"automatic_pruning":false,
+            "forget":"permanent removal of a selected non-current, unowned generation; source is unchanged"});
     }
     if matches!(op, "play" | "capture") {
         result["event_types"] = json!({

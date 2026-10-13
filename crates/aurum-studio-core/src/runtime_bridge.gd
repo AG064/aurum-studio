@@ -17,6 +17,7 @@ var _native_attempted = false
 var _native_peers: Array = []
 var _native_freeze_recovery: Dictionary = {}
 var _native_freeze_ms = 30000
+var _native_window_mode = -1
 const NATIVE_CHUNK = 16384
 const NATIVE_PEERS = 4
 const NATIVE_DEADLINE_MS = 5000
@@ -89,6 +90,7 @@ func _native_tick():
 	if not _native_freeze_recovery.is_empty() and Time.get_ticks_msec() > _native_freeze_recovery.deadline:
 		get_tree().paused = _native_freeze_recovery.paused
 		_resume_rendering()
+		RenderingServer.set_render_loop_enabled(_native_freeze_recovery.render_loop_enabled)
 		_native_freeze_recovery.clear()
 	# One accept per frame, four peers, bounded non-blocking reads/writes. A slow
 	# or unauthenticated client cannot allocate an unbounded queue or block a frame.
@@ -134,7 +136,7 @@ func _native_peer(peer: Dictionary) -> bool:
 	if not input is Dictionary or input.size() != 4 or input.get("version") != 1 or not input.get("id") is String or not _hex(input.id, 32): return false
 	var result = {"ok": false, "error": "Native runtime authentication refused"}
 	if input.get("token") is String and input.token == _native_token and input.get("request") is Dictionary:
-		result = _native_request(input.request)
+		result = _native_request(input.request, input.id)
 	var body = JSON.stringify({"version": 1, "id": input.id, "pid": OS.get_process_id(), "result": result}).to_utf8_buffer()
 	if body.size() > MAX_BYTES:
 		body = JSON.stringify({"version": 1, "id": input.id, "pid": OS.get_process_id(), "result": {"ok": false, "error": "Native reply exceeds 1 MiB"}}).to_utf8_buffer()
@@ -145,12 +147,47 @@ func _native_peer(peer: Dictionary) -> bool:
 	peer.output.append_array(body)
 	return true
 
-func _native_request(input: Dictionary) -> Dictionary:
+func _native_request(input: Dictionary, request_id: String) -> Dictionary:
 	var operation = str(input.get("op", ""))
+	var freeze_id = input.get("freeze_id", request_id)
+	if not freeze_id is String or not _hex(freeze_id, 32):
+		return {"ok": false, "error": "Invalid native freeze identity"}
+	if not _native_freeze_recovery.is_empty() and operation in ["release_freeze", "resume", "restore", "apply", "input"]:
+		if freeze_id != _native_freeze_recovery.owner:
+			return {"ok": false, "error": "Native freeze lease belongs to another operation"}
+	if operation == "release_freeze":
+		var released = not _native_freeze_recovery.is_empty()
+		if released:
+			get_tree().paused = _native_freeze_recovery.paused
+			_resume_rendering()
+			RenderingServer.set_render_loop_enabled(_native_freeze_recovery.render_loop_enabled)
+			_native_freeze_recovery.clear()
+		return {"ok": true, "released": released, "paused": get_tree().paused}
+	if operation == "input":
+		var events = input.get("events")
+		if not events is Array or events.is_empty() or events.size() > 32:
+			return {"ok": false, "error": "Native input requires 1 to 32 action events"}
+		for event in events:
+			if not event is Dictionary or not event.get("action") is String or event.action.length() > 128 or not InputMap.has_action(event.action) or not event.get("pressed") is bool:
+				return {"ok": false, "error": "Native input action is invalid or unregistered"}
+		for event in events:
+			var action = InputEventAction.new()
+			action.action = event.action
+			action.pressed = event.pressed
+			action.strength = 1.0 if event.pressed else 0.0
+			Input.parse_input_event(action)
+		return {"ok": true, "events": events.size(), "scope": "owned Godot input only, not OS input"}
 	if operation == "checkpoint" and input.has("freeze") and not input.freeze is bool:
 		return {"ok": false, "error": "Native freeze must be a boolean"}
+	if operation == "checkpoint" and input.get("freeze", false) and not _native_freeze_recovery.is_empty():
+		if freeze_id != _native_freeze_recovery.owner:
+			return {"ok": false, "error": "Native freeze lease belongs to another operation"}
 	if operation == "resume" and input.has("paused") and not input.paused is bool:
 		return {"ok": false, "error": "Native paused state must be a boolean"}
+	if operation == "resume":
+		for key in ["render_loop_enabled", "show_window"]:
+			if input.has(key) and not input[key] is bool:
+				return {"ok": false, "error": "Native resume flags must be boolean"}
 	var result = request(input)
 	if result.get("ok", false):
 		if operation == "checkpoint" and input.get("freeze", false):
@@ -158,10 +195,21 @@ func _native_request(input: Dictionary) -> Dictionary:
 			# Renewals retain the original pre-freeze pause/render state.
 			if _native_freeze_recovery.is_empty():
 				_native_freeze_recovery["paused"] = result.checkpoint.paused
+				_native_freeze_recovery["render_loop_enabled"] = result.checkpoint.render_loop_enabled
+				_native_freeze_recovery["owner"] = freeze_id
 			_native_freeze_recovery["deadline"] = Time.get_ticks_msec() + _native_freeze_ms
+			result.checkpoint.paused = _native_freeze_recovery.paused
+			result.checkpoint.render_loop_enabled = _native_freeze_recovery.render_loop_enabled
 			result["freeze_lease_ms"] = _native_freeze_ms
+			result["freeze_id"] = freeze_id
 		elif operation in ["resume", "restore"]:
 			_native_freeze_recovery.clear()
+		if operation == "resume":
+			if input.has("render_loop_enabled"):
+				RenderingServer.set_render_loop_enabled(input.render_loop_enabled)
+			if input.get("show_window", false) and _native_window_mode != -1:
+				DisplayServer.window_set_mode(_native_window_mode)
+				_native_window_mode = -1
 	return result
 
 func _ensure_baseline():
@@ -189,6 +237,13 @@ func _ready():
 		if _window != null and JavaScriptBridge.eval("window.aurumManagedPreview === true"):
 			_callback = JavaScriptBridge.create_callback(_javascript_request)
 			_window.aurumRuntimeRequest = _callback
+	elif _hex(OS.get_environment("AURUM_NATIVE_TOKEN"), 64):
+		if OS.get_environment("AURUM_NATIVE_BOOT_PAUSED") == "1":
+			get_tree().paused = true
+			_suspend_rendering()
+		if OS.get_environment("AURUM_NATIVE_BOOT_HIDDEN") == "1" and DisplayServer.get_name().to_lower() != "headless":
+			_native_window_mode = DisplayServer.window_get_mode()
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MINIMIZED)
 
 func _javascript_request(arguments):
 	if arguments.size() != 1:

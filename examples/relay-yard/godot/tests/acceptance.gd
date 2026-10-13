@@ -178,6 +178,19 @@ func _run() -> void:
 	add_child(replacement)
 	replacement.set_physics_process(false)
 	check("checkpoint restored", replacement.aurum_restore_state(saved))
+	check("camera focus preserved", replacement.camera_focus.is_equal_approx(yard.camera_focus))
+	check("camera position preserved", replacement.camera.position.is_equal_approx(yard.camera.position))
+	check("camera rotation preserved", replacement.camera.rotation.is_equal_approx(yard.camera.rotation))
+	var legacy := saved.duplicate(true)
+	legacy.erase("camera_state")
+	check("older v3 camera checkpoint accepted", replacement.aurum_restore_state(legacy))
+	check("current camera checkpoint restored after legacy", replacement.aurum_restore_state(saved))
+	replacement.paused = true
+	var paused_camera_position: Vector3 = replacement.camera.position
+	var paused_camera_focus: Vector3 = replacement.camera_focus
+	replacement._physics_process(1.0)
+	check("paused camera does not drift", replacement.camera.position == paused_camera_position and replacement.camera_focus == paused_camera_focus)
+	replacement.paused = bool(saved.paused)
 	check("inventory preserved", replacement.carried == 1)
 	check("progress preserved", replacement.powered == yard.powered)
 	check("physical position preserved", replacement.player.position.is_equal_approx(yard.player.position))
@@ -191,6 +204,9 @@ func _run() -> void:
 	check("carried core visual restored", replacement.player.cargo.visible)
 	var before := JSON.stringify(replacement.aurum_capture_state())
 	var invalid: Array[Dictionary] = []
+	var bad_camera := saved.duplicate(true)
+	bad_camera.camera_state.position = [INF, 0, 0]
+	invalid.append(bad_camera)
 	for entry in [["version", 2], ["version", 4], ["phase", "unknown"], ["powered", [false, true, false]], ["carried", 2], ["interactions", 1], ["elapsed", -1], ["won", true], ["rng_state", "99999999999999999999"], ["next_uid", 1], ["tuning", {"move_speed": 200}]]:
 		var bad := saved.duplicate(true)
 		bad[entry[0]] = entry[1]

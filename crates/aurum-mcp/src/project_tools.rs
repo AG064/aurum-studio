@@ -2,17 +2,19 @@ use crate::tools::{Tool, ToolContext, ToolError, ToolResult};
 use serde_json::Value;
 
 fn query(context: &mut ToolContext<'_>, input: &Value) -> ToolResult {
-    finish(aurum_studio_core::project_ops::execute(
+    finish(aurum_studio_core::project_ops::execute_in_runtime(
         context.paths.root(),
         input,
         true,
+        &context.engine.native_runtime,
     ))
 }
 fn action(context: &mut ToolContext<'_>, input: &Value) -> ToolResult {
-    finish(aurum_studio_core::project_ops::execute(
+    finish(aurum_studio_core::project_ops::execute_in_runtime(
         context.paths.root(),
         input,
         context.read_only,
+        &context.engine.native_runtime,
     ))
 }
 

@@ -127,7 +127,7 @@ func _show_intent(game) -> void:
 
 func snapshot() -> Dictionary:
 	return {"uid": uid, "kind": kind, "position": [position.x, position.y, position.z], "velocity": [velocity.x, velocity.y, velocity.z],
-		"health": health, "cooldown": cooldown, "charge": charge, "stunned": stunned,
+		"health": health, "cooldown": maxf(0, cooldown), "charge": charge, "stunned": stunned,
 		"anchor": [anchor.x, anchor.y, anchor.z], "target_at": [target_at.x, target_at.y, target_at.z], "time": time}
 
 func restore(data: Dictionary) -> void:

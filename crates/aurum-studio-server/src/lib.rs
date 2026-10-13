@@ -95,6 +95,7 @@ impl ServerConfig {
 
 /// A running shell server.
 pub struct Server {
+    _native_registration: aurum_studio_core::native_host::Registration,
     listener: TcpListener,
     shell: Arc<Shell>,
     address: SocketAddr,
@@ -106,6 +107,7 @@ pub struct Server {
 /// because each one is an `Arc` bump.
 #[derive(Clone)]
 struct Shell {
+    native_runtime: Arc<aurum_studio_core::native_operations::NativeRuntime>,
     token: String,
     project_name: String,
     project_root: String,
@@ -175,6 +177,15 @@ impl Server {
         let project_name = config.project.config.name.clone();
         let project_root = config.project.root.display().to_string();
         let selected_root = Arc::new(Mutex::new(config.project.root.clone()));
+        let native_registration = aurum_studio_core::native_host::Registration::create(
+            &config.project.root,
+            address.port(),
+            &token,
+        )
+        .map_err(std::io::Error::other)?;
+        let native_runtime = Arc::new(
+            aurum_studio_core::native_operations::NativeRuntime::controller(&config.project.root),
+        );
 
         let supervisor = Arc::new(Supervisor::start(SupervisorConfig::new(
             config.project,
@@ -195,8 +206,10 @@ impl Server {
         );
 
         Ok(Self {
+            _native_registration: native_registration,
             listener,
             shell: Arc::new(Shell {
+                native_runtime,
                 token,
                 project_name,
                 project_root,
@@ -290,12 +303,14 @@ impl Server {
     ///
     /// Safe to call from another thread, and safe to call more than once.
     pub fn stop(&self) {
+        self.shell.native_runtime.close();
         self.shell.running.store(false, Ordering::SeqCst);
     }
 
     /// A handle that can stop the server from another thread.
     pub fn stopper(&self) -> Stopper {
         Stopper {
+            native_runtime: Arc::clone(&self.shell.native_runtime),
             running: Arc::clone(&self.shell.running),
         }
     }
@@ -304,11 +319,13 @@ impl Server {
 /// Stops a server from another thread.
 #[derive(Clone)]
 pub struct Stopper {
+    native_runtime: Arc<aurum_studio_core::native_operations::NativeRuntime>,
     running: Arc<AtomicBool>,
 }
 
 impl Stopper {
     pub fn stop(&self) {
+        self.native_runtime.close();
         self.running.store(false, Ordering::SeqCst);
     }
 }
@@ -772,7 +789,12 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
                         .and_then(serde_json::Value::as_str)
                         .map(PathBuf::from)
                         .unwrap_or_else(|| selected_root(shell));
-                    aurum_studio_core::project_ops::execute(&root, &input, false)
+                    aurum_studio_core::project_ops::execute_in_runtime(
+                        &root,
+                        &input,
+                        false,
+                        &shell.native_runtime,
+                    )
                 });
             Routed::Once(match result {
                 Ok(value) => Response::json(200, &value),
@@ -781,6 +803,10 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
                 }
             })
         }
+        ("GET", "/api/native_host") => Routed::Once(Response::json(
+            200,
+            &serde_json::json!({"protocol":"aurum-native-host/1","pid":std::process::id(),"project":shell.project_root,"port":shell.port}),
+        )),
         ("GET", "/api/agent") => {
             let command = std::env::current_exe()
                 .map(|path| path.display().to_string())
@@ -805,6 +831,7 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
                     "An operation is still running. Wait for it to finish before closing Studio.",
                 ));
             }
+            shell.native_runtime.close();
             shell.running.store(false, Ordering::SeqCst);
             Routed::Once(Response::json(200, &serde_json::json!({"stopped": true})))
         }

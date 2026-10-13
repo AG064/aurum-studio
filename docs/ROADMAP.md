@@ -70,9 +70,13 @@ filesystem renames are not globally atomic.
 
 ### 3. State-preserving native replacement
 
-Status: in progress; browser checkpoint replacement already exists. The native
-transport foundation passed local Godot 4.7 tests. Supervisor replacement,
-failure fallback and durable handoff recovery are not implemented yet.
+Status: in progress; browser checkpoint replacement already exists. Current
+development source includes private Windows native preparation, verified
+replacement, failure fallback and persistent HTTP/MCP session operations.
+Checkpoint/host-crash recovery and shared CLI/MCP/Studio controller routing are
+implemented in development source. Busy-operation cancellation, native
+dependencies and final release qualification remain open. This work is not in
+the 0.4.0 download.
 
 The opt-in private runtime bridge binds loopback on an ephemeral port and uses
 a per-launch token, versioned JSON framing, a 1 MiB request/reply bound, four
@@ -91,8 +95,47 @@ A real two-process 3D fixture transferred position, inventory, enemy identities,
 cooldowns and mission progress through custom checkpoint hooks. It rejected bad
 authentication, oversized framing and a future checkpoint without changing the
 accepted state, and verified automatic unfreezing. This is transport/checkpoint
-evidence, not a completed native launch/replacement agent operation or game
-quality acceptance. The Godot-equipped CI gate runs the same fixture explicitly.
+evidence, not general game-quality acceptance. The Godot-equipped CI gate runs
+the same fixture explicitly.
+
+The native session implementation validates a private source copy, boots it
+paused, restores and recaptures the checkpoint, and proves compatibility before
+retiring the original owned process. Rejected restoration resumes the old game.
+Operation-owned freeze leases prevent another operation from accidentally
+releasing or modifying a suspended run. `native_input` delivers registered
+Godot actions inside the owned game, never OS keyboard input.
+
+Complete explicit checkpoints and verified handoffs persist bounded recovery
+records without Aurum transport tokens. `native_recover` checks recorded host/game creation
+identities, refuses live or inaccessible processes, validates the working source
+hash, and proves restoration in a fresh private process before activation. It
+never signals a recorded PID or overwrites newer working edits. Actual host
+termination, checkpoint-only recovery, newer-source refusal and corrupt-journal
+refusal are executable gates; recovery resumes stored checkpoint state, not
+arbitrary memory or progress since that checkpoint.
+
+Save data has a separate recoverable generation store. Replacement stages a
+stable copy and changes the current generation only after verified activation.
+Stop removes the temporary source/import copy, not user saves. Current or
+actively leased save generations cannot be forgotten. Retention is bounded and
+cleanup is explicit; it is observed/admission control, not a hard disk quota.
+Drift checks can refuse active save writers, but do not provide an atomic
+snapshot of arbitrary external writers. Previous generations remain retained.
+
+CLI and MCP discover the same project-scoped Studio controller instead of
+launching separate games. Starting or recovering a native session can start a
+hidden controller; status queries never do. Routing validates process creation
+identity, Windows listener ownership, authentication and the served project.
+Client disconnect does not stop the game. `native_stop` stops gameplay, while
+`native_host_stop` shuts down the controller and its owned game. See
+[native session commands](HOT_RELOAD.md#managed-native-sessions).
+
+Actual Relay Yard native mission tests exercise ordinary start, movement, dash
+and pause input, then a compatible code edit and replacement. They check player,
+enemy identity/state, cooldowns, RNG, inventory, progression, camera pose and
+projected view. This exposed and fixed missing camera checkpoint state and
+camera drift during mission pause. Headless mission proof does not qualify a
+graphical window, headset, mobile device or arbitrary third-party game.
 
 - Extend versioned capture/restore hooks to supervised native games.
 - Prepare a replacement privately, validate state compatibility, then hand

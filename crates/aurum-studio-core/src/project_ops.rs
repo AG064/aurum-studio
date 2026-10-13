@@ -16,6 +16,18 @@ pub const OPERATIONS: &[&str] = &[
     "changes_recover",
     "changes_undo",
     "changes_forget",
+    "native_start",
+    "native_recover",
+    "native_status",
+    "native_inspect",
+    "native_apply",
+    "native_input",
+    "native_checkpoint",
+    "native_replace",
+    "native_stop",
+    "native_host_stop",
+    "native_userdata_list",
+    "native_userdata_forget",
     "files",
     "read",
     "write",
@@ -49,6 +61,9 @@ pub fn is_read_only(op: &str) -> bool {
             | "changes_check"
             | "changes_last"
             | "changes_history"
+            | "native_status"
+            | "native_inspect"
+            | "native_userdata_list"
             | "files"
             | "read"
             | "draft_read"
@@ -87,12 +102,56 @@ pub(crate) fn managed_path(root: &Path, relative: &str) -> Result<PathBuf, Strin
 }
 
 pub fn execute(root: &Path, input: &Value, read_only: bool) -> Result<Value, String> {
+    execute_context(root, input, read_only, None)
+}
+pub fn execute_in_runtime(
+    root: &Path,
+    input: &Value,
+    read_only: bool,
+    runtime: &crate::native_operations::NativeRuntime,
+) -> Result<Value, String> {
+    execute_context(root, input, read_only, Some(runtime))
+}
+fn execute_context(
+    root: &Path,
+    input: &Value,
+    read_only: bool,
+    runtime: Option<&crate::native_operations::NativeRuntime>,
+) -> Result<Value, String> {
     let op = field(input, "op")?;
     if !OPERATIONS.contains(&op) {
         return Err(format!("unknown operation '{op}'"));
     }
     if read_only && !is_read_only(op) {
         return Err(format!("'{op}' requires write permission"));
+    }
+    if op == "native_userdata_list" {
+        return crate::native_userdata::list(root);
+    }
+    if op == "native_host_stop" {
+        return crate::native_host::route(root, input);
+    }
+    if op == "native_userdata_forget" {
+        return crate::native_userdata::forget(root, field(input, "userdata_id")?);
+    }
+    if crate::native_operations::supported(op) {
+        if !runtime.is_some_and(|runtime| runtime.is_controller_for(root)) {
+            return crate::native_host::route(root, input);
+        }
+        let runtime = runtime.ok_or("native controller context is unavailable")?;
+        if op != "native_status" && !runtime.knows_project(root) {
+            Project::open(root).map_err(|error| error.to_string())?;
+        }
+        let span = if is_read_only(op) {
+            None
+        } else {
+            crate::diagnostics::Operation::start(root, op)
+        };
+        let result = runtime.execute(root, input, read_only);
+        if let Some(span) = span {
+            span.finish(&result);
+        }
+        return result;
     }
     // Metadata must remain inspectable when configuration or content recovery
     // is blocked. This query creates no project state or diagnostic journal.

@@ -1,5 +1,47 @@
 # Integration verification
 
+## Managed native sessions, 2026-10-13
+
+Windows development source passed 653 focused Rust/doc tests and strict Clippy.
+The two actual-Godot fixtures, ignored by default, were also invoked and passed:
+authenticated native transport/freeze ownership and private preparation with
+verified saved-data replacement. This is not a claim about the full workspace
+on other operating systems.
+
+Five executable native suites passed 75 checks through the compiled CLI, HTTP
+and MCP interfaces:
+
+- [Shared controller routing](../scripts/tests/native-routing-acceptance.mjs): 16,
+  including the same PID across clients, reconnect, read-only refusal and
+  explicit controller shutdown.
+- [Persistent sessions](../scripts/tests/native-sessions-acceptance.mjs): 22,
+  including source preservation, rejected-restore fallback, verified
+  replacement and saved-data retention.
+- [Real Relay Yard mission](../scripts/tests/native-mission-acceptance.mjs): 16,
+  using ordinary start, movement, dash and pause input before replacement.
+- [Host-crash recovery](../scripts/tests/native-recovery-acceptance.mjs): 11
+  handoff-path and 10 checkpoint-only checks, including newer-source and
+  corrupt-journal refusal.
+
+Mission acceptance compares enemy identities/state, cooldowns, inventory,
+progression, RNG, camera pose and projected view. Its failures exposed missing
+camera checkpoint fields and paused-camera drift; both were fixed without
+weakening those comparisons. Evidence is retained in disposable run directories.
+
+The existing workbench and Relay Yard browser suites passed all 15 cases in one
+zero-retry Chromium run, plus 13 HTTP/control helper checks. They cover real
+inputs, live tuning, checkpoint rebuilding, invalid-build retention,
+responsive/fullscreen layouts, standalone export, origin/message refusal and
+actual agent contracts/receipts. Gameplay and pause screenshots were inspected.
+Rendering used software Chromium; this does not qualify native graphics or
+physical devices.
+
+These are development-source results, not a new binary release. Native/Rust
+dependency staging, in-flight cancellation, arbitrary concurrent save writers,
+hardware rendering, mobile devices and headsets remain separate gates. Source
+copies are not security sandboxes, and a complete custom checkpoint is a
+declaration by the game's hooks, not independent proof of arbitrary memory.
+
 ## Development verification, 2026-10-07
 
 The redesigned Studio was checked against a freshly compiled Rust backend, not only Claude's stand-in server. Across the bounded browser runs, 12 distinct scenarios passed: isolated export, actual keyboard play/live edits, workshop behavior, responsive/fullscreen handling, source save/undo and failed-build preservation, hostile-origin/message refusal, keyboard Source navigation, standalone export, ordinary 2D projects, actual operation-contract rendering and headless execution receipts with malformed-input refusal.

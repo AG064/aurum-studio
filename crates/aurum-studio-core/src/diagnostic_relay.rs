@@ -14,7 +14,7 @@ pub const LINES_PER_SECOND: u64 = 200;
 // EOF after the CLI exits. Explicit child Stdio handles are duplicated by
 // Command; the launching process's original standard handles need not inherit.
 #[cfg(windows)]
-fn confine_standard_handles() -> io::Result<()> {
+pub(crate) fn confine_standard_handles() -> io::Result<()> {
     use std::ffi::c_void;
     #[link(name = "kernel32")]
     unsafe extern "system" {
