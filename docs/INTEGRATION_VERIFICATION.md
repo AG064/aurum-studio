@@ -1,5 +1,31 @@
 # Integration verification
 
+## Private Rust native preparation, 2026-10-13
+
+The [published lease/context source](https://github.com/AG064/aurum-studio/actions/runs/38332879800)
+passed all 13 hosted jobs on `d7d2afb`, including three-OS tests/builds and all
+runtime/browser gates. This does not publish a new binary release.
+
+The next development slice passed 14 actual Rust native checks using the pinned
+godot-rust dependency and a custom `cdylib` target name. The fixture starts with
+an invalid working DLL, compiles privately, uses normal action input to invoke
+a Rust method, pauses, changes Rust implementation, verifies checkpoint
+continuity, observes the new constructor and invokes the changed method. A
+compiler error and an external DLL path retain the accepted PID and state.
+Working imports, DLL bytes, game script and Cargo.lock remain unchanged.
+
+The first run exposed forward-slash versus backslash manifest comparison on
+Windows. Resolution now uses confined canonical paths, with a regression that
+also checks local Cargo source confinement. Library verification compares the
+running game's loaded-manifest state and selected DLL/dependency hashes, rather
+than treating a compiler exit as evidence of the executing build.
+
+Existing native lifecycle (22), routing (16), recovery (11) and actual private
+script preparation also passed. External workspaces, native revision
+publication, shared build caching, cancellation and rendered/device proof
+remain separate. Each native compiler has a finite deadline and an owned
+Windows job; trusted build scripts/native code still use the user's permissions.
+
 ## Managed native sessions, 2026-10-13
 
 Windows development source passed 653 focused Rust/doc tests and strict Clippy.

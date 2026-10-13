@@ -53,6 +53,8 @@ pub mod files;
 pub mod gameplay;
 pub mod hash;
 pub mod modules;
+#[cfg(windows)]
+pub(crate) mod native_dependencies;
 pub mod native_host;
 pub mod native_operations;
 #[cfg(windows)]

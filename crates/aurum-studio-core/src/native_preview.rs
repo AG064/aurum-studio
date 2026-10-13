@@ -65,10 +65,11 @@ pub struct NativePreview {
     session: Session,
     source: PathBuf,
     userdata: crate::native_userdata::UserdataRun,
+    dependencies: Value,
 }
 impl NativePreview {
     /// Stage, import and boot while paused, without changing working content.
-    /// Self-contained script projects only until native dependency staging lands.
+    /// Self-contained scripts and privately staged Rust/GDExtension projects.
     pub fn prepare(project: &Project, headless: bool) -> Result<Self, String> {
         Self::prepare_from(project, headless, None)
     }
@@ -82,14 +83,10 @@ impl NativePreview {
             crate::transactions::ensure_writable(&project.root)?;
             let project = Project::open(&project.root).map_err(|error| error.to_string())?;
             let inventory = snapshot::inventory(&project.root)?;
-            if project.config.rust_package.is_some()
-                || project.config.engine_path_hint.is_some()
+            if project.config.engine_path_hint.is_some()
                 || project.config.validation_command.is_some()
-                || inventory
-                    .iter()
-                    .any(|(path, _)| path.to_ascii_lowercase().ends_with(".gdextension"))
             {
-                return Err("private native preview dependency staging is not yet available for native/external projects".into());
+                return Err("private native preview does not yet stage external engine sources or custom validators".into());
             }
             if inventory.iter().map(|(_, bytes)| bytes).sum::<u64>()
                 > crate::candidates::MAX_SOURCE_BYTES
@@ -126,11 +123,22 @@ impl NativePreview {
             include_bytes!("runtime_bridge.gd"),
         )
         .map_err(|error| error.to_string())?;
+        files::write_atomic(
+            &godot.join("addons/aurum_live/native_dependency_plan.gd"),
+            include_bytes!("native_dependency_plan.gd"),
+        )
+        .map_err(|error| error.to_string())?;
         let setup = workspace.path.join("setup.gd");
         files::write_atomic(&setup, include_bytes!("native_preview_setup.gd"))
             .map_err(|error| error.to_string())?;
         let validation_data = workspace.path.join("validation-userdata");
         std::fs::create_dir(&validation_data).map_err(|error| error.to_string())?;
+        let dependencies = crate::native_dependencies::prepare(
+            &candidate,
+            &workspace.path,
+            &engine,
+            &validation_data,
+        )?;
         let environment: Vec<(String, String)> = [
             "APPDATA",
             "LOCALAPPDATA",
@@ -198,6 +206,10 @@ impl NativePreview {
         .map(|key| (key.into(), userdata.path.to_string_lossy().into_owned()))
         .collect();
         overrides.extend([
+            (
+                "AURUM_NATIVE_PROJECT_ROOT".into(),
+                candidate.root.to_string_lossy().replace('\\', "/"),
+            ),
             ("AURUM_NATIVE_TOKEN".into(), token.clone()),
             (
                 "AURUM_NATIVE_READY".into(),
@@ -279,6 +291,19 @@ impl NativePreview {
             if checkpoint["ok"] != true || checkpoint["checkpoint"]["paused"] != true {
                 return Err("prepared native game did not boot paused".into());
             }
+            if dependencies["native"] == true {
+                let manifests: Vec<_> = dependencies["manifests"]
+                    .as_array()
+                    .ok_or("missing prepared dependency manifests")?
+                    .iter()
+                    .map(|row| row["manifest"].clone())
+                    .collect();
+                let actual = channel.request(
+                    &json!({"op":"dependencies","manifests":manifests}),
+                    Duration::from_secs(5),
+                )?;
+                crate::native_dependencies::verify(&dependencies, &actual)?;
+            }
             owner
                 .write(&session.ownership_directory())
                 .map_err(|error| error.to_string())?;
@@ -322,6 +347,7 @@ impl NativePreview {
                     owner,
                     session,
                     userdata,
+                    dependencies,
                 })
             }
             Err(error) => {
@@ -337,7 +363,7 @@ impl NativePreview {
     }
     pub fn status(&self) -> Value {
         json!({"pid":self.owner.pid,"running":self.worker.try_wait().is_ok_and(|status|status.is_none()),"source_sha256":self.source_sha256,
-            "source_private":true,"source":self.source,"session":self.session.id,"host_owned":true,"execution_sandboxed":false})
+            "source_private":true,"source":self.source,"session":self.session.id,"host_owned":true,"execution_sandboxed":false,"native_dependencies":self.dependencies})
     }
     pub(crate) fn owner(&self) -> OwnershipRecord {
         self.owner.clone()

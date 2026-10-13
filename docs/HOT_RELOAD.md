@@ -65,9 +65,27 @@ is not recovered. Save files have independent retained generations; discover
 them with `native_userdata_list`, and remove only an inactive, non-current
 generation with `native_userdata_forget`. Removal is permanent, never automatic.
 
-Native dependency staging, concurrent save writers and cancellation of an
-in-flight preparation still need qualification. Rendered Windows play, headset
-and physical mobile acceptance are separate from headless mission tests.
+Development source also stages self-contained GDExtension manifests and builds
+a configured local Rust `cdylib` privately. Cargo runs with `--frozen --offline`
+against an existing lockfile and cached dependencies. Target/output directories
+stay inside the owned workspace; compiler descendants are terminated on host
+exit or timeout. Build selection uses Cargo package/artifact identities, not a
+guessed DLL filename, including custom library target names. The working DLL,
+Cargo.lock and import directory are untouched.
+
+Before activation, the game must report the expected manifest loaded and match
+the prepared selected-library and declared-dependency hashes. External paths,
+missing dependencies, stale artifact reports, changed private source and
+compiler failures refuse the replacement. Discovery uses Godot's actual
+ConfigFile parser and runtime feature tags. This covers declared extension
+paths, not every system DLL or arbitrary code performing dynamic loads.
+
+Current bounds: 16 manifests of at most 64 KiB each, 128 MiB per compiled Rust
+library, a 120-second compiler deadline and the existing private-source/storage
+budgets. Cold builds can hit these limits. A shared compile cache, external
+workspace staging, custom validators, concurrent save writers and cancellation
+of an in-flight preparation still need qualification. Rendered Windows play,
+headset and physical mobile acceptance remain separate from headless tests.
 
 ## Verify native extension reload
 

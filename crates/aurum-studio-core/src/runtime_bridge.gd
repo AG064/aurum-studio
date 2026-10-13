@@ -149,6 +149,13 @@ func _native_peer(peer: Dictionary) -> bool:
 
 func _native_request(input: Dictionary, request_id: String) -> Dictionary:
 	var operation = str(input.get("op", ""))
+	if operation == "dependencies":
+		var root = OS.get_environment("AURUM_NATIVE_PROJECT_ROOT")
+		if root.is_empty(): return {"ok":false,"error":"Managed native source identity is unavailable"}
+		var manifests = input.get("manifests", [])
+		if not manifests is Array: return {"ok":false,"error":"Invalid native manifest list"}
+		var helper = load("res://addons/aurum_live/native_dependency_plan.gd").new()
+		return helper.plan(root, ProjectSettings.globalize_path("res://").trim_suffix("/"), manifests, true)
 	var freeze_id = input.get("freeze_id", request_id)
 	if not freeze_id is String or not _hex(freeze_id, 32):
 		return {"ok": false, "error": "Invalid native freeze identity"}

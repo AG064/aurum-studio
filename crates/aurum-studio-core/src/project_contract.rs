@@ -190,8 +190,9 @@ pub fn describe(operation: Option<&str>) -> Result<Value, String> {
     }
     if crate::native_operations::supported(op) {
         result["constraints"] = json!({"qualified_platforms":["Windows"],"persistent_host_required":true,"host_routing":"CLI/MCP discover and share Studio controller; start/recover can launch it headlessly",
-            "script_projects_only":true,"host_lifetime":"host exit terminates owned games",
-            "execution_sandboxed":false,"native_slots":4,"validation_slots_separate":true,
+            "script_projects_only":false,"native_dependencies":"self-contained precompiled GDExtensions or a local Rust cdylib with pinned offline dependencies; external engine/workspace sources and custom validators remain unsupported",
+            "compiler_seconds_max":120,"native_manifest_limit":16,"native_manifest_bytes_max":65536,"host_lifetime":"host exit terminates owned games",
+            "execution_sandboxed":false,"native_slots":4,"native_slots_scope":"per temporary pool","validation_slots_separate":true,
             "property_values":"JSON primitives/arrays/maps or __aurum_type tags for Vector2, Vector3, Color and int64",
             "replacement":"private validated boot, complete restoration and verification before retiring old; custom hooks declare completeness"});
     }

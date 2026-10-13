@@ -74,7 +74,8 @@ Status: in progress; browser checkpoint replacement already exists. Current
 development source includes private Windows native preparation, verified
 replacement, failure fallback and persistent HTTP/MCP session operations.
 Checkpoint/host-crash recovery and shared CLI/MCP/Studio controller routing are
-implemented in development source. Busy-operation cancellation, native
+implemented in development source. Self-contained native dependency staging is
+also in development source. Busy-operation cancellation, external native
 dependencies and final release qualification remain open. This work is not in
 the 0.4.0 download.
 
@@ -136,6 +137,16 @@ enemy identity/state, cooldowns, RNG, inventory, progression, camera pose and
 projected view. This exposed and fixed missing camera checkpoint state and
 camera drift during mission pause. Headless mission proof does not qualify a
 graphical window, headset, mobile device or arbitrary third-party game.
+
+Self-contained Rust native preparation now runs Cargo privately with an existing
+lockfile, offline dependencies and owned compiler processes. It selects the
+declared `cdylib` from package/artifact metadata, including renamed library
+targets. Godot parses manifests in a blank probe project; before activation the
+actual game reports loaded manifests and verifies selected-library/dependency
+hashes. A real Rust fixture covers code replacement, native method behavior,
+checkpoint continuity, stale working DLLs, compiler failure and external-path
+refusal. Original DLLs, imports and lockfiles remain untouched. External
+workspaces, private compile caching and native revision publication remain open.
 
 - Extend versioned capture/restore hooks to supervised native games.
 - Prepare a replacement privately, validate state compatibility, then hand

@@ -13,7 +13,9 @@ Development source also contains journaled script/resource revisions, private
 Windows native sessions, verified checkpoint replacement, retained save-data
 generations, host-crash recovery and a shared CLI/MCP/Studio controller. See
 [native session commands](HOT_RELOAD.md#managed-native-sessions). These are not
-part of the 0.4.0 download. Native dependencies, in-flight cancellation and
+part of the 0.4.0 download. Self-contained private Rust/GDExtension preparation
+is also implemented in development source. External dependencies, native
+revision publication, shared compilation caching, in-flight cancellation and
 device qualification remain open gates.
 
 - Browser interface with project creation/import/selection, files, scenes, agents, validation, development watching, and Windows packaging.

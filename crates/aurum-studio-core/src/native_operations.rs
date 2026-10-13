@@ -198,6 +198,13 @@ impl NativeRuntime {
                         if self.closed.load(Ordering::Acquire) {
                             return Err("native host closed during preparation".into());
                         }
+                        let _content = crate::content_lock::ContentLock::shared(&root)?;
+                        if !preview.source_still_current(&project) {
+                            return Err(
+                                "source changed during preparation; private run was not activated"
+                                    .into(),
+                            );
+                        }
                         let activated = preview.activate()?;
                         if activated["ok"] != true {
                             return Err("native preview activation failed".into());

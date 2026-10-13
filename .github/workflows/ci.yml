@@ -117,6 +117,8 @@ jobs:
           if($LASTEXITCODE){throw 'Native HTTP/MCP session acceptance failed'}
           node ./scripts/tests/native-routing-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
           if($LASTEXITCODE){throw 'Shared CLI/MCP/Studio native routing failed'}
+          node ./scripts/tests/native-rust-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
+          if($LASTEXITCODE){throw 'Private Rust native build and handoff failed'}
           node ./scripts/tests/native-mission-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
           if($LASTEXITCODE){throw 'Real native mission replacement acceptance failed'}
           node ./scripts/tests/native-recovery-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT

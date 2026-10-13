@@ -23,10 +23,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Headless native action input restricted to registered Godot actions, with real Relay Yard mission replacement acceptance.
 - Bounded native checkpoint and host-crash recovery records, with source/process-identity checks, restoration verification and safe refusal for live processes, newer source or corrupt journals.
 - One discoverable native controller per project shared by CLI, MCP and Studio. Reconnecting clients retain the same game; explicit host shutdown remains separate from game stop. Routing checks credentials, process/listener identity and the served project before forwarding.
+- Private self-contained Rust/GDExtension native preparation using pinned offline Cargo metadata/artifacts, custom library target names and Godot-parsed manifest feature selection. The running game verifies loaded manifest/library identities before activation; compiler errors, external paths and stale artifacts preserve the accepted run. External workspaces and shared compile caching remain separate work.
 - Explicit scoped agent-context baselines and read-only paginated path/hash deltas, including same-size edits, reconnect, private-state omission and source-drift refusal between pages. Retention and cleanup are bounded and explicit; model-token savings have not been benchmarked.
 
 ### Fixed
 
+- Managed start refuses source drift before activation, under the participating content-writer lease.
 - Controller leases are explicitly unlocked before descriptor closure, avoiding delayed Unix lock release during concurrent process spawning.
 - Candidate pool and workspace leases now explicitly release retained descriptors, with regression coverage for immediate allocation/reclamation. Active workspace protection and storage admission remain unchanged.
 - Native saved-data and diagnostic file leases use the same explicit-release lifetime pattern, including shared monitoring locks and failure-path cleanup. Retained-descriptor regressions preserve current/active saved-data protection.
