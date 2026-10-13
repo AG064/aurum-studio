@@ -151,6 +151,7 @@ impl Command {
     /// child exits deadlocks as soon as a build produces more than a pipe
     /// buffer, which a real Cargo invocation always does.
     pub fn run(&self, timeout: Duration) -> std::io::Result<Outcome> {
+        let deadline = Instant::now() + timeout;
         let mut command = StdCommand::new(&self.program);
         #[cfg(windows)]
         {
@@ -242,10 +243,14 @@ impl Command {
         collect(stdout, true);
         collect(stderr, false);
 
-        let deadline = Instant::now() + timeout;
         let mut storage_check = Instant::now();
         let mut timed_out = false;
         let status = loop {
+            if Instant::now() >= deadline {
+                child.stop()?;
+                timed_out = true;
+                break None;
+            }
             match child.try_wait()? {
                 Some(status) => break Some(status),
                 None => {
@@ -256,17 +261,32 @@ impl Command {
                     }
                     if Instant::now() >= storage_check {
                         if let Some(workspace) = &self.storage_budget {
-                            if let Err(error) = crate::candidate_workspace::usage(
+                            if let Err(error) = crate::candidate_workspace::usage_with_budget(
                                 workspace,
                                 crate::candidate_workspace::WORKSPACE_BYTES,
+                                deadline.saturating_duration_since(Instant::now()),
                             ) {
                                 child.stop()?;
+                                if Instant::now() >= deadline
+                                    && error.contains("elapsed inspection budget")
+                                {
+                                    timed_out = true;
+                                    break None;
+                                }
                                 return Err(std::io::Error::other(error));
                             }
                         }
+                        if Instant::now() >= deadline {
+                            child.stop()?;
+                            timed_out = true;
+                            break None;
+                        }
                         storage_check = Instant::now() + Duration::from_secs(1);
                     }
-                    std::thread::sleep(Duration::from_millis(15));
+                    std::thread::sleep(
+                        Duration::from_millis(15)
+                            .min(deadline.saturating_duration_since(Instant::now())),
+                    );
                 }
             }
         };

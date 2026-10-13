@@ -77,7 +77,7 @@ jobs:
   runtime-windows:
     name: Godot project and packaged-game acceptance
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -127,6 +127,8 @@ jobs:
           if($LASTEXITCODE){throw 'Shared CLI/MCP/Studio native routing failed'}
           node ./scripts/tests/native-rust-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
           if($LASTEXITCODE){throw 'Private Rust native build and handoff failed'}
+          node ./scripts/tests/native-workspace-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
+          if($LASTEXITCODE){throw 'Contained native Cargo workspace acceptance failed'}
           node ./scripts/tests/native-mission-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT
           if($LASTEXITCODE){throw 'Real native mission replacement acceptance failed'}
           node ./scripts/tests/native-recovery-acceptance.mjs ./target/debug/aurum.exe $env:AURUM_GODOT

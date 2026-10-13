@@ -8,7 +8,7 @@ pub(crate) const WORKSPACE_BYTES: u64 = 1024 * 1024 * 1024;
 pub(crate) const SLOTS: usize = 2;
 const MAX_POOL_ENTRIES: usize = 32;
 const MAX_TREE_ENTRIES: usize = 50_000;
-const INSPECTION_BUDGET: Duration = Duration::from_millis(250);
+const INSPECTION_BUDGET: Duration = Duration::from_secs(2);
 const POOL_NAME: &str = "aurum-candidates-v1";
 
 #[derive(Serialize, Deserialize)]
@@ -203,12 +203,37 @@ impl Drop for Workspace {
 /// refuses links, special files and oversized/complex trees without reading
 /// content. The process runner checks it periodically and before acceptance.
 pub(crate) fn usage(root: &Path, limit: u64) -> Result<u64, String> {
+    usage_with_budget(root, limit, INSPECTION_BUDGET)
+}
+
+fn inspection_limits(count: usize, started: Instant, budget: Duration) -> Result<(), String> {
+    let elapsed = started.elapsed();
+    if count > MAX_TREE_ENTRIES {
+        return Err(format!(
+            "candidate storage exceeds its entry inspection budget: inspected_entries={count} entry_limit={MAX_TREE_ENTRIES} elapsed_ms={} time_limit_ms={}",
+            elapsed.as_millis(), budget.as_millis()
+        ));
+    }
+    if budget.is_zero() || elapsed > budget {
+        return Err(format!(
+            "candidate storage exceeds its elapsed inspection budget: inspected_entries={count} entry_limit={MAX_TREE_ENTRIES} elapsed_ms={} time_limit_ms={}",
+            elapsed.as_millis(), budget.as_millis()
+        ));
+    }
+    Ok(())
+}
+
+/// Never allocate a scan more time than the enclosing operation still has.
+pub(crate) fn usage_with_budget(root: &Path, limit: u64, budget: Duration) -> Result<u64, String> {
     let started = Instant::now();
+    let budget = budget.min(INSPECTION_BUDGET);
+    inspection_limits(0, started, budget)?;
     crate::diagnostics::checked_path(root).map_err(|error| error.to_string())?;
     let mut pending = vec![(root.to_path_buf(), 0usize)];
     let mut count = 0;
     let mut bytes = 0u64;
     while let Some((directory, depth)) = pending.pop() {
+        inspection_limits(count, started, budget)?;
         if depth > 32 {
             return Err("candidate storage nesting exceeds its inspection budget".into());
         }
@@ -217,29 +242,17 @@ pub(crate) fn usage(root: &Path, limit: u64) -> Result<u64, String> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error.to_string()),
         };
+        inspection_limits(count, started, budget)?;
         for entry in entries {
             count += 1;
-            let elapsed = started.elapsed();
-            if count > MAX_TREE_ENTRIES {
-                return Err(format!(
-                    "candidate storage exceeds its entry inspection budget: inspected_entries={count} entry_limit={MAX_TREE_ENTRIES} elapsed_ms={} time_limit_ms={}",
-                    elapsed.as_millis(),
-                    INSPECTION_BUDGET.as_millis()
-                ));
-            }
-            if elapsed > INSPECTION_BUDGET {
-                return Err(format!(
-                    "candidate storage exceeds its elapsed inspection budget: inspected_entries={count} entry_limit={MAX_TREE_ENTRIES} elapsed_ms={} time_limit_ms={}",
-                    elapsed.as_millis(),
-                    INSPECTION_BUDGET.as_millis()
-                ));
-            }
+            inspection_limits(count, started, budget)?;
             let entry = entry.map_err(|error| error.to_string())?;
             let metadata = match std::fs::symlink_metadata(entry.path()) {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.to_string()),
             };
+            inspection_limits(count, started, budget)?;
             if metadata.file_type().is_symlink() {
                 return Err("candidate storage contains an unsupported link".into());
             }
@@ -255,6 +268,7 @@ pub(crate) fn usage(root: &Path, limit: u64) -> Result<u64, String> {
             }
         }
     }
+    inspection_limits(count, started, budget)?;
     Ok(bytes)
 }
 
@@ -416,5 +430,58 @@ mod tests {
         std::fs::write(workspace.path.join(".godot/cache"), vec![0; 2048]).unwrap();
         assert!(usage(&workspace.path, 1024).is_err());
         assert!(usage(&workspace.path, 4096).unwrap() >= 2048);
+    }
+    #[test]
+    fn expired_scan_budget_refuses_even_absent_or_empty_trees() {
+        let pool = Pool::new();
+        for root in [pool.0.clone(), pool.0.join("absent")] {
+            let error = usage_with_budget(&root, WORKSPACE_BYTES, Duration::ZERO).unwrap_err();
+            assert!(error.contains("elapsed inspection budget"), "{error}");
+            assert!(error.contains("inspected_entries=0"), "{error}");
+            assert!(error.contains("time_limit_ms=0"), "{error}");
+        }
+        assert!(!pool.0.join("absent").exists());
+    }
+    #[test]
+    fn entry_and_elapsed_refusals_remain_distinct_and_bounded() {
+        let started = Instant::now();
+        let error =
+            inspection_limits(MAX_TREE_ENTRIES + 1, started, INSPECTION_BUDGET).unwrap_err();
+        assert!(error.contains("entry inspection budget"), "{error}");
+        assert!(error.contains("entry_limit=50000"), "{error}");
+        let error =
+            inspection_limits(85, started - Duration::from_secs(3), INSPECTION_BUDGET).unwrap_err();
+        assert!(error.contains("elapsed inspection budget"), "{error}");
+        assert!(error.contains("inspected_entries=85"), "{error}");
+        assert!(error.contains("time_limit_ms=2000"), "{error}");
+    }
+    #[test]
+    fn storage_inspection_still_refuses_directory_links() {
+        let pool = Pool::new();
+        let workspace = Workspace::in_pool(&pool.0).unwrap();
+        let target = pool.0.join("outside-source");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("keep"), "untouched").unwrap();
+        let link = workspace.path.join("redirected");
+        #[cfg(windows)]
+        {
+            let created = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(&link)
+                .arg(&target)
+                .output()
+                .unwrap();
+            assert!(created.status.success());
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(usage(&workspace.path, WORKSPACE_BYTES)
+            .unwrap_err()
+            .contains("link"));
+        drop(workspace);
+        assert_eq!(
+            std::fs::read_to_string(target.join("keep")).unwrap(),
+            "untouched"
+        );
     }
 }

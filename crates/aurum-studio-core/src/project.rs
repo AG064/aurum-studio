@@ -71,7 +71,7 @@ pub struct ProjectConfig {
     /// Where the Aurum add-on lives, relative to the project root.
     pub addon_destination: Option<String>,
     pub modules: Vec<String>,
-    /// A relative hint to the engine checkout, for projects that live beside it.
+    /// A relative Cargo workspace hint. Private staging requires it inside the project.
     pub engine_path_hint: Option<String>,
     /// A project-specific validation command, run by `doctor`.
     pub validation_command: Option<String>,
@@ -363,6 +363,66 @@ impl Project {
             .as_deref()
             .and_then(Path::parent)
             .unwrap_or(&self.root)
+    }
+
+    /// Resolve copied Cargo source without rebinding an external checkout.
+    /// Root Cargo discovery keeps precedence over a valid contained hint.
+    pub(crate) fn confined_build_workspace(&self) -> Result<PathBuf, String> {
+        let manifest = |path: &Path| -> Result<PathBuf, String> {
+            let relative = path
+                .strip_prefix(&self.root)
+                .map_err(|_| "Cargo workspace escaped the imported project")?
+                .to_str()
+                .ok_or("Cargo workspace paths must be UTF-8")?;
+            let confined = crate::files::confined(&self.root, relative)?;
+            crate::diagnostics::checked_path(path).map_err(|error| error.to_string())?;
+            let relative = confined
+                .strip_prefix(&self.root)
+                .map_err(|_| "Cargo workspace escaped the imported project")?
+                .to_str()
+                .ok_or("Cargo workspace paths must be UTF-8")?;
+            if !crate::snapshot::includes(relative)
+                || !std::fs::metadata(&confined)
+                    .map_err(|error| error.to_string())?
+                    .is_file()
+            {
+                return Err(
+                    "Cargo manifest must be a regular file in copied project source".into(),
+                );
+            }
+            Ok(confined)
+        };
+        if let Some(hint) = &self.config.engine_path_hint {
+            if hint.is_empty() || hint.len() > 4096 || hint.contains(':') {
+                return Err(
+                    "engine.path_hint must name a relative contained Cargo workspace".into(),
+                );
+            }
+            let directory = crate::files::confined(&self.root, hint)?;
+            crate::diagnostics::checked_path(&self.root.join(hint))
+                .map_err(|error| error.to_string())?;
+            if !directory.is_dir() {
+                return Err(
+                    "engine.path_hint must name an existing contained Cargo directory".into(),
+                );
+            }
+            manifest(&directory.join("Cargo.toml"))?;
+        }
+        if discover_layout(&self.root, &self.config).cargo_manifest != self.layout.cargo_manifest {
+            return Err(
+                "Cargo layout changed since project discovery; reopen before staging".into(),
+            );
+        }
+        match &self.layout.cargo_manifest {
+            Some(path) => manifest(path)?
+                .parent()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| "Cargo manifest has no workspace directory".into()),
+            None if self.config.rust_package.is_some() => {
+                Err("configured Rust project has no contained Cargo manifest".into())
+            }
+            None => Ok(self.root.clone()),
+        }
     }
 
     /// Resolve the declared host library, including a not-yet-built destination.
@@ -811,6 +871,138 @@ command = "pwsh scripts/tests/phase0_contract.ps1"
             Some(root.join("godot").as_path())
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn contained_cargo_hints_preserve_discovery_and_private_copy_mapping() {
+        let root = temp_dir("contained-cargo-hint");
+        let copied = temp_dir("contained-cargo-hint-copy");
+        std::fs::create_dir(root.join("rust")).unwrap();
+        std::fs::write(root.join("rust/Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(root.join("project.godot"), "config_version=5\n").unwrap();
+        let config = ProjectConfig {
+            rust_package: Some("nested-game".into()),
+            engine_path_hint: Some("rust".into()),
+            ..Default::default()
+        };
+        std::fs::write(root.join("aurum.toml"), config.to_toml()).unwrap();
+        let project = Project::open(&root).unwrap();
+        assert_eq!(
+            project.confined_build_workspace().unwrap(),
+            project.root.join("rust")
+        );
+        crate::snapshot::copy(&project.root, &copied).unwrap();
+        let private = Project::open(&copied).unwrap();
+        assert_eq!(
+            private.confined_build_workspace().unwrap(),
+            private.root.join("rust")
+        );
+        assert_eq!(
+            project
+                .confined_build_workspace()
+                .unwrap()
+                .strip_prefix(&project.root)
+                .unwrap(),
+            private
+                .confined_build_workspace()
+                .unwrap()
+                .strip_prefix(&private.root)
+                .unwrap()
+        );
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        assert!(project.confined_build_workspace().is_err());
+        let rediscovered = Project::open(&root).unwrap();
+        assert_eq!(
+            rediscovered.confined_build_workspace().unwrap(),
+            rediscovered.root
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(copied).unwrap();
+    }
+
+    #[test]
+    fn invalid_hints_are_refused_even_when_root_cargo_has_discovery_precedence() {
+        let root = temp_dir("invalid-cargo-hints");
+        let outside = temp_dir("outside-cargo-hint");
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(outside.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::create_dir_all(root.join("target/workspace")).unwrap();
+        std::fs::write(root.join("target/workspace/Cargo.toml"), "[workspace]\n").unwrap();
+        for hint in [
+            String::new(),
+            "missing".into(),
+            format!("../{}", outside.file_name().unwrap().to_str().unwrap()),
+            outside.to_string_lossy().into_owned(),
+            "res://target/workspace".into(),
+            "target/workspace".into(),
+        ] {
+            let config = ProjectConfig {
+                rust_package: Some("nested-game".into()),
+                engine_path_hint: Some(hint),
+                ..Default::default()
+            };
+            std::fs::write(root.join("aurum.toml"), config.to_toml()).unwrap();
+            let project = Project::open(&root).unwrap();
+            assert_eq!(project.build_workspace(), project.root);
+            assert!(project.confined_build_workspace().is_err());
+        }
+        assert_eq!(
+            std::fs::read(outside.join("Cargo.toml")).unwrap(),
+            b"[workspace]\n"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn cargo_hint_links_cannot_rebind_an_external_workspace() {
+        let root = temp_dir("linked-cargo-hint");
+        let outside = temp_dir("external-linked-cargo");
+        std::fs::write(outside.join("Cargo.toml"), "[workspace]\n").unwrap();
+        let config = ProjectConfig {
+            rust_package: Some("nested-game".into()),
+            engine_path_hint: Some("linked".into()),
+            ..Default::default()
+        };
+        std::fs::write(root.join("aurum.toml"), config.to_toml()).unwrap();
+        let linked = root.join("linked");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &linked).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let status = std::process::Command::new("cmd")
+                .creation_flags(0x08000000)
+                .args(["/C", "mklink", "/J"])
+                .arg(&linked)
+                .arg(&outside)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let project = Project::open(&root).unwrap();
+        assert!(project.confined_build_workspace().is_err());
+        assert_eq!(
+            std::fs::read(outside.join("Cargo.toml")).unwrap(),
+            b"[workspace]\n"
+        );
+        #[cfg(unix)]
+        std::fs::remove_file(linked).unwrap();
+        #[cfg(windows)]
+        std::fs::remove_dir(linked).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn script_projects_without_a_hint_need_no_cargo_workspace() {
+        let root = temp_dir("script-without-cargo");
+        std::fs::write(root.join("aurum.toml"), ProjectConfig::default().to_toml()).unwrap();
+        let project = Project::open(&root).unwrap();
+        assert_eq!(project.confined_build_workspace().unwrap(), project.root);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

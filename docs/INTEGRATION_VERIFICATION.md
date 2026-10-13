@@ -1,5 +1,44 @@
 # Integration verification
 
+## Contained nested Cargo workspace gate, 2026-10-13
+
+The [nested workspace fixture](../scripts/tests/native-workspace-acceptance.mjs)
+uses `godot/project.godot` beside a `rust/` virtual Cargo workspace. Its configured
+member declares the renamed `nested_game_logic` library and calls a local
+support crate through an actual native method. The fixture seeds its nested
+lockfile from the repository, resolves local package changes offline and checks
+that every external dependency retains its pinned version/source identity.
+
+The gate covers real native start and checkpoint capture, stale-source refusal,
+invalid and missing required member source, private candidate validation,
+loaded-library hashes, source-only publication/history/undo and native successor
+activation. Actual Rust constructors and methods must execute while working
+DLLs, both lockfiles, Cargo target sentinels and Godot cache inventories remain
+unchanged. Missing, absolute, parent-escape and real Windows junction hints must
+refuse replacement and retain the accepted PID/checkpoint.
+
+```powershell
+node scripts/tests/native-workspace-acceptance.mjs C:/Builds/aurum.exe C:/Aurum/runtime/Godot.exe
+```
+
+Runtime CI invokes this gate sequentially after the existing Rust fixture and
+uses the same locked dependency-cache provisioning. All project sources,
+targets, Studio state, junction targets and evidence are ephemeral. The compiled
+Windows gate passed all 49 checks, including two linked source changes and their
+combined native behavior after replacement. The full focused suite passed 687
+Rust/doc tests and strict Clippy. Existing root-Cargo Rust acceptance passed 38,
+script/resource candidates passed 60 and diagnostics passed 25. Truly external workspace
+staging, shared compilation caching, background jobs/cancellation, devices and
+the binary release remain required roadmap work.
+
+The first nested start caught a traversal timing refusal after 498 ms with only
+85 inspected entries. Storage traversal now has a finite two-second maximum;
+running commands and readiness scans clamp it to their remaining deadlines.
+Zero remaining budget and late traversal success are refused. The 1 GiB byte,
+50,000-entry, nesting and link guards remain unchanged. A later root-Cargo
+regression refused publication when A: ran out of space; its failed candidate
+was cleaned and the complete regression passed in a fresh C: temporary area.
+
 ## Self-contained native source revisions, 2026-10-13
 
 Current development source privately compiles configured Rust/GDExtension

@@ -83,11 +83,10 @@ impl NativePreview {
             crate::transactions::ensure_writable(&project.root)?;
             let project = Project::open(&project.root).map_err(|error| error.to_string())?;
             let inventory = snapshot::inventory(&project.root)?;
-            if project.config.engine_path_hint.is_some()
-                || project.config.validation_command.is_some()
-            {
-                return Err("private native preview does not yet stage external engine sources or custom validators".into());
+            if project.config.validation_command.is_some() {
+                return Err("private native preview does not stage custom validators".into());
             }
+            project.confined_build_workspace()?;
             if inventory.iter().map(|(_, bytes)| bytes).sum::<u64>()
                 > crate::candidates::MAX_SOURCE_BYTES
             {
@@ -234,8 +233,13 @@ impl NativePreview {
             std::thread::spawn(move || crate::diagnostic_relay::drain(pipe, &session));
         }
         let result = (|| -> Result<_, String> {
-            let started = Instant::now();
+            let deadline = Instant::now() + Duration::from_secs(15);
             let ready = loop {
+                if Instant::now() >= deadline {
+                    return Err(
+                        "prepared native game did not become ready within 15 seconds".into(),
+                    );
+                }
                 if let Ok(metadata) = std::fs::metadata(&ready_path) {
                     if !metadata.is_file() || metadata.len() > 4096 {
                         return Err("native readiness exceeds supported bounds".into());
@@ -243,6 +247,11 @@ impl NativePreview {
                     let bytes = std::fs::read(&ready_path).map_err(|error| error.to_string())?;
                     if bytes.len() > 4096 {
                         return Err("native readiness exceeds supported bounds".into());
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(
+                            "prepared native game did not become ready within 15 seconds".into(),
+                        );
                     }
                     break serde_json::from_slice::<Ready>(&bytes)
                         .map_err(|_| "invalid native readiness record")?;
@@ -254,13 +263,20 @@ impl NativePreview {
                 {
                     return Err("prepared native game exited before readiness".into());
                 }
-                if started.elapsed() > Duration::from_secs(15) {
+                candidate_workspace::usage_with_budget(
+                    &workspace.path,
+                    candidate_workspace::WORKSPACE_BYTES,
+                    deadline.saturating_duration_since(Instant::now()),
+                )?;
+                if Instant::now() >= deadline {
                     return Err(
                         "prepared native game did not become ready within 15 seconds".into(),
                     );
                 }
-                candidate_workspace::usage(&workspace.path, candidate_workspace::WORKSPACE_BYTES)?;
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::sleep(
+                    Duration::from_millis(20)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
             };
             if ready.version != 1
                 || ready.pid != worker.pid()

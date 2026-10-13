@@ -9,9 +9,10 @@ pub const MAX_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RECEIPT_BYTES: usize = 64 * 1024;
 
 fn self_contained_project(project: &Project, inventory: &[(String, u64)]) -> Result<(), String> {
-    if project.config.engine_path_hint.is_some() || project.config.validation_command.is_some() {
-        return Err("candidate validation requires self-contained source; external workspaces and custom validators need explicit staging support".into());
+    if project.config.validation_command.is_some() {
+        return Err("candidate validation requires copied source; custom validators need explicit staging support".into());
     }
+    project.confined_build_workspace()?;
     if project.godot_project_dir().is_none() {
         return Err("candidate validation requires project.godot".into());
     }
@@ -617,6 +618,40 @@ mod tests {
             std::fs::read_to_string(fixture.0.root.join("other.gd")).unwrap(),
             "external edit"
         );
+    }
+
+    #[test]
+    fn contained_cargo_hint_is_rebound_to_the_private_copy() {
+        let fixture = Fixture::new();
+        std::fs::create_dir(fixture.0.root.join("rust")).unwrap();
+        std::fs::write(fixture.0.root.join("rust/Cargo.toml"), "[workspace]\n").unwrap();
+        let config = std::fs::read_to_string(fixture.0.root.join("aurum.toml")).unwrap();
+        std::fs::write(
+            fixture.0.root.join("aurum.toml"),
+            format!("{config}\n[engine]\npath_hint=\"rust\"\n"),
+        )
+        .unwrap();
+        let original = Project::open(&fixture.0.root).unwrap();
+        let before = snapshot::fingerprint_all(&original.root).unwrap();
+        let result = validate_with(&original, &fixture.changes(), |candidate, _| {
+            assert_eq!(
+                candidate.confined_build_workspace().unwrap(),
+                candidate.root.join("rust")
+            );
+            assert_ne!(
+                candidate.confined_build_workspace().unwrap(),
+                original.build_workspace()
+            );
+            assert_eq!(
+                std::fs::read(candidate.root.join("rust/Cargo.toml")).unwrap(),
+                b"[workspace]\n"
+            );
+            Ok(json!({"ok":true}))
+        })
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["applied"], false);
+        assert_eq!(snapshot::fingerprint_all(&original.root).unwrap(), before);
     }
 
     #[test]

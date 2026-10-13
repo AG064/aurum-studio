@@ -7,6 +7,8 @@ controls passed local Windows gates and all 13 hosted CI jobs. Native
 validation and source-only revisions for self-contained Rust/GDExtension
 projects are implemented in current development source. External workspaces,
 shared compilation caching and final release qualification remain open.
+Contained nested Cargo workspace hints are the next native integration gate;
+the dedicated fixture uses a nested Godot root and a renamed member library.
 
 This follows the [bounded diagnostics milestone](LOGGING.md) and is tracked in
 the [roadmap](ROADMAP.md). The implementation belongs in the shared Rust core,
@@ -72,13 +74,16 @@ with Cargo's `--frozen --offline` flags, an existing pinned lockfile and cached
 dependencies before Godot imports and validates their resources. Native
 manifest resolution uses Godot's parser and confines selected libraries and
 declared dependencies to the private source copy. External engine hints,
-workspaces and custom validators require separate staging support and are
+workspaces outside the imported root and custom validators require separate staging support and are
 refused instead of being silently rebound or skipped.
 
 The snapshot budget is 512 MiB, including proposed text. Snapshot exclusions
 apply to change targets too: internal state, credentials, caches and excluded
 generated files cannot be treated as copied source. Compiler output and
 redirected application data share the observed workspace storage budget.
+Storage traversal has a finite two-second maximum and is clamped to a running
+operation's remaining deadline. Expired budgets and traversal that finishes
+late are refused; byte, entry, nesting and link limits still apply.
 Other platforms need private-userdata acceptance before this runtime operation
 is enabled.
 
@@ -102,6 +107,29 @@ selected library, and `native_artifacts` identifies its confined path and hash.
 The selected bytes are rechecked after runtime validation. A changed compiled
 library cannot qualify the candidate. `native_artifacts_published` remains
 false; validation leaves the working DLL, lockfile and import directory intact.
+
+### Contained Cargo workspace layout
+
+Development source admits a relative `[engine].path_hint` selecting a Cargo
+workspace inside the imported Aurum root, including virtual workspaces, member
+packages and local path dependencies. For example, `path_hint="rust"` selects
+`rust/Cargo.toml` while Godot runs `godot/project.godot`. Cargo's reported
+workspace root must match that discovered workspace; selected local manifests
+and target sources must remain in copied project source. Revision requests and
+artifact receipts keep paths relative to the Aurum root, such as
+`rust/game/src/lib.rs` and `godot/addons/native/bin/active.dll`.
+
+The declared hint is checked even when a root Cargo manifest takes discovery
+precedence. Missing directories/manifests, absolute hints, parent escapes and
+junction escapes are refused before compilation. The nested workspace needs
+its own pinned `Cargo.lock`; compiler targets remain private. Working native
+libraries, lockfiles, Cargo targets and Godot caches are preserved by validation,
+source publication, undo and managed replacement.
+
+The dedicated [nested workspace fixture](../scripts/tests/native-workspace-acceptance.mjs)
+is an integration gate for this contained layout. Workspaces outside the
+imported root still need an explicit dependency provenance, source-staging and
+freshness contract. That external-workspace requirement remains open.
 
 Normal completion removes the private source/import/userdata copy. Only the last
 completed compact receipt is retained at `.aurum/checks/candidate-latest.json`,
@@ -278,6 +306,7 @@ remain before treating the entire roadmap as complete.
 - [x] Shared discovery and actual CLI/HTTP/MCP acceptance for preflight and candidate validation.
 - [x] Shared discovery and integration acceptance for script/resource publication/recovery/undo.
 - [x] Self-contained native candidate compilation and source-only publication/undo, with compiled-library hash checks and working-DLL preservation.
+- [ ] Compiled native acceptance for contained nested Cargo workspaces, renamed member libraries, local dependencies and hint/source refusal paths.
 - [ ] External workspace staging, shared compilation caching, background jobs/cancellation and device/release qualification.
 
 Use disposable copies for every mutation/failure-injection test. Exercise real

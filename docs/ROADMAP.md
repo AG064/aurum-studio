@@ -55,6 +55,9 @@ candidates before source-only publication and undo. Compiled candidate DLLs
 are hash-verified and excluded from revision records, preserving working
 libraries and the accepted native game. External workspace staging, shared
 compilation caching and device/release qualification remain open.
+Contained nested Cargo workspaces are the next native integration gate: nested
+Godot roots, virtual workspaces, renamed member libraries and copied local
+dependencies, with source/hint refusal and working-cache preservation checks.
 
 The next implementation slices and lock/recovery boundaries are specified in
 [project revisions](PROJECT_REVISIONS.md).
@@ -151,9 +154,12 @@ hashes. A real Rust fixture covers code replacement, native method behavior,
 checkpoint continuity, stale working DLLs, compiler failure and external-path
 refusal. Native source revisions now compile candidates before journaled
 publication and preserve installed DLLs and accepted gameplay through undo.
-Original imports and lockfiles remain untouched. External workspaces, private
-compile caching, background jobs/cancellation and device/release gates remain
-open.
+Original imports and lockfiles remain untouched. Development source adds
+contained relative Cargo workspace hints and a dedicated compiled acceptance
+gate for nested roots and member dependencies. Workspaces outside the imported
+root still require source-staging, provenance and freshness support. External
+workspace delivery, private compile caching, background jobs/cancellation and
+device/release gates remain open.
 
 - Extend versioned capture/restore hooks to supervised native games.
 - Prepare a replacement privately, validate state compatibility, then hand

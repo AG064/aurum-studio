@@ -17,7 +17,9 @@ part of the 0.4.0 download. Self-contained private Rust/GDExtension preparation
 and source-only revision publication/undo are also implemented in development
 source. Native candidates compile before validation; their generated DLLs are
 verified but excluded from source journals and undo, preserving working
-libraries and accepted gameplay. External workspace/dependency staging, shared
+libraries and accepted gameplay. Contained relative Cargo workspace hints add
+a nested-layout integration gate for member libraries and local dependencies.
+External workspace/dependency staging outside the imported root, shared
 compilation caching, background jobs, in-flight cancellation and device/release
 qualification remain open gates.
 

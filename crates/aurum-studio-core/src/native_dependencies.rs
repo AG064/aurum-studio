@@ -39,13 +39,14 @@ fn confined_absolute(root: &Path, path: &Path) -> Result<PathBuf, String> {
 }
 fn validate_graph(
     root: &Path,
+    workspace: &Path,
     metadata: &Value,
     package: &str,
 ) -> Result<(String, String), String> {
     if metadata["version"] != 1 {
         return Err("unsupported Cargo metadata version".into());
     }
-    confined_absolute(
+    let observed_workspace = confined_absolute(
         root,
         Path::new(
             metadata["workspace_root"]
@@ -53,6 +54,11 @@ fn validate_graph(
                 .ok_or("missing Cargo workspace")?,
         ),
     )?;
+    if !crate::ownership::paths_equal(workspace, &observed_workspace) {
+        return Err(
+            "Cargo metadata selected a different workspace than the copied project layout".into(),
+        );
+    }
     let packages = metadata["packages"]
         .as_array()
         .filter(|packages| packages.len() <= 4096)
@@ -151,9 +157,12 @@ pub(crate) fn prepare(
     engine: &Path,
     userdata: &Path,
 ) -> Result<Value, String> {
-    if project.config.engine_path_hint.is_some() || project.config.validation_command.is_some() {
-        return Err("private native dependencies require a self-contained project without external engine hints or custom validators".into());
+    if project.config.validation_command.is_some() {
+        return Err(
+            "private native dependencies require copied source without custom validators".into(),
+        );
     }
+    project.confined_build_workspace()?;
     let godot = project
         .godot_project_dir()
         .ok_or("native dependencies require project.godot")?;
@@ -264,7 +273,7 @@ pub(crate) fn prepare(
                     .ok_or("missing Rust library destination")?,
             ),
         )?;
-        let workspace_root = confined_absolute(&project.root, project.build_workspace())?;
+        let workspace_root = project.confined_build_workspace()?;
         let lock = workspace_root.join("Cargo.lock");
         if !lock.is_file() {
             return Err("private Rust builds require an existing pinned Cargo.lock; prepare dependencies before native_start".into());
@@ -302,8 +311,9 @@ pub(crate) fn prepare(
             .env("CARGO_INCREMENTAL", "0");
         let metadata = base
             .clone()
+            .args(["metadata", "--manifest-path"])
+            .arg(clean(&workspace_root.join("Cargo.toml")))
             .args([
-                "metadata",
                 "--frozen",
                 "--offline",
                 "--format-version",
@@ -332,10 +342,21 @@ pub(crate) fn prepare(
         if let Some(directory) = metadata["build_directory"].as_str() {
             confined_absolute(workspace, Path::new(directory))?;
         }
-        let (package_id, target_name) = validate_graph(&project.root, &metadata, package)?;
+        let (package_id, target_name) =
+            validate_graph(&project.root, &workspace_root, &metadata, package)?;
+        if snapshot::fingerprint_all(&project.root)? != source_sha
+            || crate::sha256_file(&lock).map_err(|error| error.to_string())? != lock_sha
+            || project.confined_build_workspace()? != workspace_root
+        {
+            return Err(
+                "Cargo metadata changed copied source or workspace identity; compilation refused"
+                    .into(),
+            );
+        }
         let build = base
+            .args(["build", "--manifest-path"])
+            .arg(clean(&workspace_root.join("Cargo.toml")))
             .args([
-                "build",
                 "--lib",
                 "--frozen",
                 "--offline",
@@ -484,7 +505,7 @@ mod tests {
         let fixture = Fixture::new();
         let metadata = json!({"version":1,"workspace_root":fixture.0,"packages":[{"name":"game","id":"opaque-package-id","source":null,"manifest_path":fixture.0.join("Cargo.toml"),"targets":[{"name":"custom_library","crate_types":["cdylib"],"src_path":fixture.0.join("src/lib.rs")}]}]});
         assert_eq!(
-            validate_graph(&fixture.0, &metadata, "game").unwrap(),
+            validate_graph(&fixture.0, &fixture.0, &metadata, "game").unwrap(),
             ("opaque-package-id".into(), "custom_library".into())
         );
         let spelling = fixture
@@ -499,7 +520,35 @@ mod tests {
         let mut external = metadata.clone();
         external["packages"][0]["targets"][0]["src_path"] =
             json!(fixture.0.parent().unwrap().join("external.rs"));
-        assert!(validate_graph(&fixture.0, &external, "game").is_err());
+        assert!(validate_graph(&fixture.0, &fixture.0, &external, "game").is_err());
+    }
+
+    #[test]
+    fn nested_cargo_graph_rejects_workspace_rebinding_and_external_local_members() {
+        let fixture = Fixture::new();
+        let workspace = fixture.0.join("rust");
+        let package = workspace.join("game");
+        std::fs::create_dir_all(package.join("src")).unwrap();
+        std::fs::write(workspace.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(package.join("Cargo.toml"), "").unwrap();
+        std::fs::write(package.join("src/lib.rs"), "").unwrap();
+        let metadata = json!({"version":1,"workspace_root":workspace,"packages":[{
+            "name":"game","id":"nested-package-id","source":null,
+            "manifest_path":package.join("Cargo.toml"),"targets":[{
+                "name":"renamed_nested_library","crate_types":["cdylib"],
+                "src_path":package.join("src/lib.rs")}]}]});
+        assert_eq!(
+            validate_graph(&fixture.0, &workspace, &metadata, "game").unwrap(),
+            ("nested-package-id".into(), "renamed_nested_library".into())
+        );
+        let mut rebound = metadata.clone();
+        rebound["workspace_root"] = json!(fixture.0);
+        assert!(validate_graph(&fixture.0, &workspace, &rebound, "game").is_err());
+        let mut external = metadata;
+        external["packages"].as_array_mut().unwrap().push(json!({
+            "name":"external-support","id":"external-package-id","source":null,
+            "manifest_path":fixture.0.parent().unwrap().join("external/Cargo.toml"),"targets":[]}));
+        assert!(validate_graph(&fixture.0, &workspace, &external, "game").is_err());
     }
     #[test]
     fn dependency_verification_requires_loaded_matching_libraries_and_hashes() {
