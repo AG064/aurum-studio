@@ -23,7 +23,8 @@ const cli = (input, readOnly = false) => {
 };
 const once = (child) => new Promise((resolve, reject) => {
     child.once("error", reject);
-    child.once("exit", (code) => resolve(code));
+    // Exit can precede the last stdout/stderr data event. Close follows drainage.
+    child.once("close", (code) => resolve(code));
 });
 const deadline = (promise, ms, label) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms} ms`)), ms);
@@ -60,7 +61,8 @@ for (const request of [
 mcp.stdin.end();
 check(await deadline(mcpDone, 15_000, "MCP") === 0, "MCP exit");
 const responses = mcpOutput.trim().split("\n").map(line => JSON.parse(line));
-check(responses.length === 4 && responses.every(response => response.jsonrpc === "2.0"), "MCP stdout contains protocol only");
+check(responses.length === 4 && responses.every(response => response.jsonrpc === "2.0"),
+    `MCP stdout contains protocol only: responses=${responses.length} expected_responses=4 jsonrpc_responses=${responses.filter(response => response.jsonrpc === "2.0").length} stdout_bytes=${Buffer.byteLength(mcpOutput)}`);
 check(responses[2].result.structuredContent.records.length <= 3, "bounded structured MCP tail");
 check(responses[3].result.structuredContent.ready && !responses[3].result.structuredContent.applied, "MCP change preflight");
 check(mcpTrace.includes("payload=omitted") && !mcpTrace.includes(payload), "payload-free real protocol trace");

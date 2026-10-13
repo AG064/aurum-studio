@@ -42,6 +42,14 @@ acceptance. An empty ephemeral Cargo cache passed that fetch and the same
 offline fixture metadata with gdext `107a87e3` and `libc 0.2.189`; the repository
 lockfile remained unchanged. Production private compilation stays frozen/offline.
 
+The [cache-provisioned run](https://github.com/AG064/aurum-studio/actions/runs/38396470681)
+passed that provisioning step but stopped at the diagnostics fixture's MCP
+response-count assertion. The fixture inspected output at process exit; it now
+waits for stdout/stderr closure and retains the exact four-response JSON-RPC
+predicate. The copied diagnostics suite passed all 25 checks, and 30 additional
+real MCP exchanges returned all 120 expected responses after closure. Server
+protocol and tracing code did not change.
+
 ```powershell
 node scripts/tests/native-rust-acceptance.mjs C:/Builds/aurum.exe C:/Aurum/runtime/Godot.exe
 ```
