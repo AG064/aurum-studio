@@ -65,6 +65,16 @@ a retained-descriptor regression address that failure. Hosted confirmation of
 the follow-up is separate from these local results. Context payloads are
 compact paths/hashes; token and latency improvements have not been benchmarked.
 
+The [follow-up hosted run](https://github.com/AG064/aurum-studio/actions/runs/38330991383)
+confirmed macOS controller-lease tests but exposed immediate candidate-pool
+lease reacquisition on Linux. Pool/workspace leases now release explicitly too.
+All nine candidate-pool regressions, strict core Clippy and the actual private
+native-preparation fixture passed locally after that change. The targeted
+browser contract case also passed independently after adding workspace
+navigation and assertions for the new context schema. Its earlier isolated run
+had depended on navigation performed by previous gameplay cases, not a product
+failure. The next hosted run must qualify these follow-ups.
+
 ## Development verification, 2026-10-07
 
 The redesigned Studio was checked against a freshly compiled Rust backend, not only Claude's stand-in server. Across the bounded browser runs, 12 distinct scenarios passed: isolated export, actual keyboard play/live edits, workshop behavior, responsive/fullscreen handling, source save/undo and failed-build preservation, hostile-origin/message refusal, keyboard Source navigation, standalone export, ordinary 2D projects, actual operation-contract rendering and headless execution receipts with malformed-input refusal.

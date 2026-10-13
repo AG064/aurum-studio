@@ -28,6 +28,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Controller leases are explicitly unlocked before descriptor closure, avoiding delayed Unix lock release during concurrent process spawning.
+- Candidate pool and workspace leases now explicitly release retained descriptors, with regression coverage for immediate allocation/reclamation. Active workspace protection and storage admission remain unchanged.
+- Browser agent-contract acceptance opens its own workspace and verifies the context-delta contract, so it can run without preceding gameplay cases.
 - Native-output suppression counts survive failed window-summary writes, and the final summary has a finite contention-only retry budget. This repairs missing accounting without logging every child line or retrying partial disk writes.
 - MCP tracing no longer echoes request/response payloads, IDs or unknown method names.
 - Native child output no longer bypasses session-log rotation through an inherited file handle.

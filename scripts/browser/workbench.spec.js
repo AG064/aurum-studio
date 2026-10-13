@@ -682,12 +682,14 @@ test("an ordinary 2D project boots without the example-specific live bridge", as
 });
 
 test("agent contract discovery renders actual backend schemas", async () => {
+    await openWorkspace(page, endpoint);
     await page.getByRole("tab", { name: "Agents", exact: true }).click();
     await page.locator("#describe-name").fill("");
     await page.locator("#describe-op").click();
     await expect(page.locator("#contract-list table")).toBeVisible();
     await expect(page.locator("#contract-list")).toContainText("capture");
     await expect(page.locator("#contract-list")).toContainText("draft_save");
+    await expect(page.locator("#contract-list")).toContainText("context_delta");
     await page.locator("#describe-name").fill("play");
     await page.locator("#describe-op").click();
     await expect(page.locator("#contract-raw")).toBeVisible();
@@ -695,6 +697,13 @@ test("agent contract discovery renders actual backend schemas", async () => {
     expect(contract.op).toBe("play");
     expect(contract.input_schema.properties.frames.maximum).toBe(3600000);
     expect(contract.read_only).toBe(false);
+    await page.locator("#describe-name").fill("context_delta");
+    await page.locator("#describe-op").click();
+    await expect.poll(async () => JSON.parse(await page.locator("#contract-raw").textContent()).op).toBe("context_delta");
+    const contextContract = JSON.parse(await page.locator("#contract-raw").textContent());
+    expect(contextContract.read_only).toBe(true);
+    expect(contextContract.input_schema.required).toContain("baseline_id");
+    expect(contextContract.constraints.page_limit_max).toBe(200);
     expect(errors).toEqual([]);
 });
 

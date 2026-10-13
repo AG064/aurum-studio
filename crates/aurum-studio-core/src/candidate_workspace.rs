@@ -28,14 +28,20 @@ fn open_lock(path: &Path, create: bool) -> Result<File, String> {
         .open(path)
         .map_err(|error| error.to_string())
 }
-fn manager(root: &Path) -> Result<File, String> {
+struct Lease(File);
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+fn manager(root: &Path) -> Result<Lease, String> {
     crate::diagnostics::checked_path(root).map_err(|error| error.to_string())?;
     std::fs::create_dir_all(root).map_err(|error| error.to_string())?;
     let lock = open_lock(&root.join("pool.lock"), true)?;
     lock.try_lock().map_err(|_| {
         "candidate storage is busy; retry after the current allocation or cleanup".to_string()
     })?;
-    Ok(lock)
+    Ok(Lease(lock))
 }
 fn valid_id(id: &str) -> bool {
     id.len() == 32
@@ -90,7 +96,7 @@ fn remove(root: &Path, path: &Path) -> Result<(), String> {
 pub(crate) struct Workspace {
     pub(crate) path: PathBuf,
     pool: PathBuf,
-    lease: Option<File>,
+    lease: Option<Lease>,
     pub(crate) recovered: usize,
 }
 impl Workspace {
@@ -138,6 +144,7 @@ impl Workspace {
             let lease = open_lock(&path.join("workspace.lock"), false)?;
             match lease.try_lock() {
                 Ok(()) => {
+                    let _lease = Lease(lease);
                     remove(&pool, &path)?;
                     recovered += 1;
                 }
@@ -169,7 +176,7 @@ impl Workspace {
         Ok(Self {
             path,
             pool,
-            lease: Some(lease),
+            lease: Some(Lease(lease)),
             recovered,
         })
     }
@@ -334,6 +341,24 @@ mod tests {
             .unwrap_err()
             .contains("nesting"));
     }
+    #[test]
+    fn pool_and_workspace_leases_release_retained_descriptors() {
+        let pool = Pool::new();
+        let manager = manager(&pool.0).unwrap();
+        let retained_manager = manager.0.try_clone().unwrap();
+        drop(manager);
+        let mut workspace = Workspace::in_pool(&pool.0).unwrap();
+        let retained_workspace = workspace.lease.as_ref().unwrap().0.try_clone().unwrap();
+        let path = workspace.path.clone();
+        // Simulate a crashed source owner with another descriptor still open.
+        drop(workspace.lease.take());
+        let next = Workspace::in_pool(&pool.0).unwrap();
+        assert_eq!(next.recovered, 1);
+        assert!(!path.exists());
+        drop(retained_workspace);
+        drop(retained_manager);
+    }
+
     #[test]
     fn active_reservations_are_never_swept_and_capacity_is_bounded() {
         let pool = Pool::new();
