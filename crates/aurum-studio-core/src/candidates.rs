@@ -786,6 +786,7 @@ mod tests {
         }
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn cancellation_after_private_validation_never_publishes_source() {
         let fixture = Fixture::new();
@@ -820,6 +821,7 @@ mod tests {
         assert!(!fixture.0.root.join(".aurum/revisions/active.json").exists());
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn private_validation_and_receipt_writes_do_not_commit_the_job() {
         let fixture = Fixture::new();
@@ -845,6 +847,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn candidate_changes_are_private_and_workspace_is_removed() {
         let fixture = Fixture::new();
@@ -875,6 +878,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn verified_import_outputs_remain_private_while_uid_and_source_are_journaled() {
         use crate::private_import_artifacts::test_support;
@@ -925,6 +929,7 @@ mod tests {
         assert_eq!(snapshot::fingerprint_all(&fixture.0.root).unwrap(), before);
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn authored_import_changes_and_unknown_generated_source_still_refuse_publication() {
         use crate::private_import_artifacts::test_support;
@@ -960,6 +965,7 @@ mod tests {
         }
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn explicit_import_request_is_published_and_not_exempted() {
         use crate::private_import_artifacts::test_support;
@@ -985,6 +991,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn failed_validator_and_conflicts_never_publish() {
         let fixture = Fixture::new();
@@ -1005,6 +1012,7 @@ mod tests {
         assert_eq!(snapshot::fingerprint_all(&fixture.0.root).unwrap(), before);
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn external_edits_during_validation_make_the_receipt_stale() {
         let fixture = Fixture::new();
@@ -1021,6 +1029,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn contained_cargo_hint_is_rebound_to_the_private_copy() {
         let fixture = Fixture::new();
@@ -1055,6 +1064,7 @@ mod tests {
         assert_eq!(snapshot::fingerprint_all(&original.root).unwrap(), before);
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn a_validator_cannot_silently_replace_requested_content() {
         let fixture = Fixture::new();
@@ -1067,6 +1077,7 @@ mod tests {
         assert_eq!(result["requested_changes_intact"], false);
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn native_source_publication_keeps_the_working_library_and_records_source_only_undo() {
         let fixture = Fixture::new();
@@ -1121,6 +1132,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn changed_generated_library_refuses_publication_and_cleans_the_workspace() {
         let fixture = Fixture::new();
@@ -1177,6 +1189,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[cfg(not(windows))]
     #[test]
     fn native_dependencies_require_windows_staging_but_script_validation_is_preserved() {
@@ -1213,6 +1226,7 @@ mod tests {
         .is_err());
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn create_replace_delete_are_applied_only_to_the_private_copy() {
         let fixture = Fixture::new();
@@ -1264,6 +1278,7 @@ mod tests {
         std::fs::remove_dir_all(outside).unwrap();
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn receipts_stay_bounded_when_tools_emit_long_errors() {
         let fixture = Fixture::new();

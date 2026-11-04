@@ -2798,7 +2798,10 @@ pub(super) fn qualify_metadata_only_parent_races(
         .and_then(|name| name.strip_prefix("external-workspace-fixture-"))
         .ok_or("namespace_test_fixture_required")?;
     if base.parent() != Some(temp.as_path())
-        || !temp.to_string_lossy().starts_with("A:")
+        || !temp
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with(&crate::test_drive())
         || token.len() != 32
         || !token
             .bytes()
@@ -2955,7 +2958,10 @@ pub(super) fn qualify_state_parent_races(
         .and_then(|v| v.strip_prefix("external-workspace-fixture-"))
         .ok_or("namespace_test_fixture_required")?;
     if base.parent() != Some(temp.as_path())
-        || !temp.to_string_lossy().starts_with("A:")
+        || !temp
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with(&crate::test_drive())
         || token.len() != 32
         || !token
             .bytes()

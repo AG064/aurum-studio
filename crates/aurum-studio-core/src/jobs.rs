@@ -215,6 +215,13 @@ struct Store {
     _lease: File,
     known: Mutex<BTreeSet<String>>,
 }
+impl Drop for Store {
+    fn drop(&mut self) {
+        // Explicit unlock: closing the descriptor alone can release late on Unix when a
+        // concurrently spawned child briefly holds a copy of it.
+        let _ = self._lease.unlock();
+    }
+}
 impl Store {
     fn open(directory: PathBuf) -> Result<Self, String> {
         crate::diagnostics::checked_path(&directory)

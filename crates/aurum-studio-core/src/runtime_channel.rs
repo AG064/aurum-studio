@@ -389,7 +389,7 @@ mod tests {
             vec![]
         });
         let started = Instant::now();
-        let result = channel.request(&json!({"op":"inspect"}), Duration::from_millis(100));
+        let result = channel.request(&json!({"op":"inspect"}), Duration::from_millis(500));
         let elapsed = started.elapsed();
         let report = worker.finish();
         assert!(

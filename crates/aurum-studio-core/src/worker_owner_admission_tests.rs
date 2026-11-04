@@ -208,7 +208,7 @@ fn assert_a(path: &Path) {
     assert!(
         matches!(path.components().next(), Some(Component::Prefix(p))
         if matches!(p.kind(), Prefix::Disk(d) | Prefix::VerbatimDisk(d)
-            if d.eq_ignore_ascii_case(&b'A')))
+            if d.eq_ignore_ascii_case(&crate::test_drive().as_bytes()[0])))
     );
 }
 fn spawn(f: &Fixture, c: &StreamController, deadline: Instant) -> io::Result<BinaryStream> {

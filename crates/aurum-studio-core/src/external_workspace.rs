@@ -6706,7 +6706,7 @@ impl KnownCargoFixturePermit {
                 .artifact_root
                 .to_string_lossy()
                 .get(..2)
-                .is_some_and(|p| p.eq_ignore_ascii_case("A:"))
+                .is_some_and(|p| p.eq_ignore_ascii_case(&crate::test_drive()))
             && self.workspace == workspace.path
             && self.member == staged.member_manifest
             && self.envelope == staged.envelope
@@ -9951,7 +9951,8 @@ mod tests {
             assert!(
                 crate::project::clean_path(std::path::absolute(&base).unwrap())
                     .to_string_lossy()
-                    .starts_with("A:")
+                    .to_ascii_uppercase()
+                    .starts_with(&crate::test_drive())
             );
             let app = base.join("app");
             let engine = base.join("engine");
@@ -14408,7 +14409,10 @@ mod tests {
             || !id
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            || !canonical_temp.to_string_lossy().starts_with("A:")
+            || !canonical_temp
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with(&crate::test_drive())
             || canonical_base.to_string_lossy().len() > 1024
         {
             return Err(123);

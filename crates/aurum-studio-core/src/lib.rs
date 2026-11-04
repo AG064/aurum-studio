@@ -39,6 +39,19 @@
 //! is small enough that a focused reader is both smaller and more explicit
 //! about what it refuses.
 
+/// Windows tests keep their fixtures on the drive of the temporary directory (`A:` on one
+/// developer machine, `D:` on hosted runners) instead of assuming a particular letter.
+#[cfg(all(test, windows))]
+pub(crate) fn test_drive() -> String {
+    let temp = project::clean_path(std::env::temp_dir().canonicalize().unwrap());
+    let text = temp.to_string_lossy().to_ascii_uppercase();
+    assert_eq!(
+        text.as_bytes().get(1),
+        Some(&b':'),
+        "the temporary directory is not on a lettered drive"
+    );
+    text[..2].to_string()
+}
 pub mod agent_context;
 pub mod build;
 pub mod build_queue;

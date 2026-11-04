@@ -292,7 +292,8 @@ pub(crate) fn capture(roots: &Roots<'_>, budget: &Budget<'_>) -> Outcome {
                 .to_str()
                 .and_then(|text| text.get(..3))
                 .is_some_and(|prefix| {
-                    prefix.eq_ignore_ascii_case("A:\\") || prefix.eq_ignore_ascii_case("A:/")
+                    prefix.eq_ignore_ascii_case(&format!("{}\\", crate::test_drive()))
+                        || prefix.eq_ignore_ascii_case(&format!("{}/", crate::test_drive()))
                 })
         {
             return Err(refused(role, "fixture_A_root"));
@@ -356,7 +357,7 @@ mod tests {
         assert!(temp
             .to_string_lossy()
             .get(..3)
-            .is_some_and(|p| p.eq_ignore_ascii_case("A:\\")));
+            .is_some_and(|p| p.eq_ignore_ascii_case(&format!("{}\\", crate::test_drive()))));
         let root = temp.join(format!(
             "all-entry-file-guard-{}",
             crate::random::session_id()

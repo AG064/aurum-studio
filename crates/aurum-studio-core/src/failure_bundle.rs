@@ -1167,6 +1167,7 @@ mod tests {
         value["command"] = json!("anything");
         assert!(serde_json::from_value::<Run>(value).is_err());
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn bundle_source_matches_existing_snapshot_and_refuses_alias_drift_missing_file() {
         let root = std::env::temp_dir().join(format!(

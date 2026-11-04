@@ -693,6 +693,7 @@ fn fingerprint_with_live_data(source: &Path, include_live: bool) -> Result<Strin
 }
 
 #[cfg(test)]
+#[cfg(any(windows, target_os = "linux"))]
 mod bounded_tests {
     use super::*;
     use std::time::{Duration, Instant};

@@ -361,7 +361,7 @@ mod tests {
                     && path
                         .to_string_lossy()
                         .get(..2)
-                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("A:"))
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&crate::test_drive()))
             );
         }
         std::mem::ManuallyDrop::new(Workspace::create().unwrap())
@@ -370,8 +370,13 @@ mod tests {
         let program = std::env::current_exe().unwrap();
         assert!(crate::project::clean_path(program.clone())
             .to_string_lossy()
-            .starts_with("A:"));
-        assert!(workspace.path.to_string_lossy().starts_with("A:"));
+            .to_ascii_uppercase()
+            .starts_with(&crate::test_drive()));
+        assert!(workspace
+            .path
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with(&crate::test_drive()));
         FixtureDiagnostic {
             sink: Sink::new().unwrap(),
             program,

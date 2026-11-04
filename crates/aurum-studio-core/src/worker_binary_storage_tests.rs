@@ -41,7 +41,7 @@ impl Fixture {
         assert!(
             matches!(temporary.components().next(), Some(Component::Prefix(prefix))
             if matches!(prefix.kind(), Prefix::Disk(drive) | Prefix::VerbatimDisk(drive)
-                if drive.eq_ignore_ascii_case(&b'A')))
+                if drive.eq_ignore_ascii_case(&crate::test_drive().as_bytes()[0])))
         );
         let root = temporary.join(format!(
             "aurum-storage-check-{}",

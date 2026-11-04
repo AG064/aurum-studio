@@ -1225,6 +1225,12 @@ fn collect(
 
 #[cfg(test)]
 mod tests {
+    // Tests that need checked reads run only where they exist, which leaves their helpers
+    // unused on other platforms.
+    #![cfg_attr(
+        not(any(windows, target_os = "linux")),
+        allow(dead_code, unused_imports)
+    )]
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     struct Fixture {
@@ -1456,6 +1462,7 @@ mod tests {
         )
         .is_err());
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn runtime_context_selection_filters_rows_without_narrowing_whole_session_queries() {
         let fixture = Fixture::new();
@@ -1516,6 +1523,7 @@ mod tests {
         assert!(!selected.to_string().contains("PRIVATE-"));
         assert!(!fixture.public.join(".aurum").exists());
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn runtime_context_selection_preserves_prepared_order_and_canonical_selection() {
         let fixture = Fixture::new();
@@ -1537,6 +1545,7 @@ mod tests {
             "res://addons/vendor/vendor.gdextension"
         );
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn runtime_context_selection_unknown_or_ambiguous_roster_refuses_before_game_queries() {
         for ambiguous in [false, true] {
@@ -1574,6 +1583,7 @@ mod tests {
             assert!(!report.to_string().contains("not-retained"));
         }
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn runtime_context_selection_unselected_unloaded_manifest_remains_unhealthy() {
         let fixture = Fixture::new();
@@ -1601,6 +1611,7 @@ mod tests {
             .unwrap()
             .contains(&json!("native_extension_not_loaded")));
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn runtime_context_selection_unselected_disk_drift_remains_nonavailable() {
         let fixture = Fixture::new();
@@ -1626,6 +1637,7 @@ mod tests {
         assert_eq!(report["reasons"][0], "private_preparation_drift");
         assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn runtime_context_selection_unselected_runtime_drift_remains_nonavailable() {
         let fixture = Fixture::new();
@@ -1650,6 +1662,7 @@ mod tests {
         assert_eq!(report["reasons"][0], "runtime_metadata_drift");
         assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn accepted_context_distinguishes_disk_and_loaded_resource_evidence_without_secret_bodies() {
         let fixture = Fixture::new();
@@ -1684,6 +1697,7 @@ mod tests {
         assert!(fits(&report, REPORT_BYTES));
         assert!(!fixture.public.join(".aurum").exists());
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn same_size_public_edit_reports_staleness_without_changing_accepted_library_or_pid() {
         let fixture = Fixture::new();
@@ -1706,6 +1720,7 @@ mod tests {
             b"accepted binary"
         );
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn private_manifest_drift_refuses_queries_into_changed_preparation() {
         let fixture = Fixture::new();
@@ -1727,6 +1742,7 @@ mod tests {
         assert_eq!(report["reasons"][0], "private_preparation_drift");
         assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn source_edit_during_query_discards_mixed_freshness_evidence() {
         let fixture = Fixture::new();
@@ -1744,6 +1760,7 @@ mod tests {
         assert_eq!(report["reasons"][0], "file_drift");
         assert!(report["runtime"].is_null());
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn missing_launch_hashes_or_game_identity_never_qualify_disk_evidence() {
         let fixture = Fixture::new();
@@ -1859,6 +1876,7 @@ mod tests {
         )
         .is_err());
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn changed_process_creation_identity_refuses_before_or_after_the_same_query() {
         let fixture = Fixture::new();
@@ -1904,6 +1922,7 @@ mod tests {
         assert_eq!(report["state"], "unhealthy");
         assert_eq!(queried.load(Ordering::Relaxed), 1);
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn external_plan_paths_and_oversized_replies_are_refused_without_returning_them() {
         let fixture = Fixture::new();
@@ -1932,6 +1951,7 @@ mod tests {
         assert_eq!(report["reasons"][0], "dependency_reply_byte_limit");
         assert!(fits(&report, REPORT_BYTES));
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn key_file_presence_refuses_source_hashing_before_game_queries() {
         let fixture = Fixture::new();
@@ -1954,6 +1974,7 @@ mod tests {
             .unwrap()
             .contains("PRIVATE-KEY"));
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn unloaded_native_resource_is_unhealthy_despite_matching_current_files() {
         let fixture = Fixture::new();
@@ -1974,6 +1995,7 @@ mod tests {
             .unwrap()
             .contains(&json!("native_extension_not_loaded")));
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn cancellation_during_query_stays_cancellation_and_has_no_commit_or_state_files() {
         let fixture = Fixture::new();
@@ -2005,6 +2027,7 @@ mod tests {
         assert!(context.commit_status_verified());
         assert!(!fixture.public.join(".aurum").exists());
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn feature_mismatch_and_loaded_flag_drift_refuse_consistent_context() {
         let fixture = Fixture::new();
@@ -2029,6 +2052,7 @@ mod tests {
         assert_eq!(report["state"], "drift");
         assert_eq!(report["reasons"][0], "runtime_metadata_drift");
     }
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn compiled_origin_belongs_only_to_selected_library_with_precompiled_vendor_separate() {
         let fixture = Fixture::new();
@@ -2077,6 +2101,7 @@ mod tests {
         preparation
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn accepted_context_returns_bounded_retained_graph_summary_without_payload() {
         let fixture = Fixture::new();
@@ -2098,6 +2123,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn malformed_retained_graph_refuses_before_any_runtime_query() {
         let fixture = Fixture::new();
@@ -2114,6 +2140,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn unmatched_compiled_library_refuses_before_any_runtime_query() {
         let fixture = Fixture::new();

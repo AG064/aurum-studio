@@ -823,6 +823,7 @@ pub(crate) mod test_support {
         bytes.extend_from_slice(&bin);
         bytes
     }
+    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
     pub(crate) fn remap_text(source: &str, cache: &str, importer: &str, kind: &str) -> String {
         format!("[remap]\nimporter=\"{importer}\"\ntype=\"{kind}\"\nuid=\"uid://abc123\"\npath=\"res://.godot/imported/{cache}\"\nmetadata={{\n\"vram_texture\": false\n}}\n\n[deps]\nsource_file=\"res://{source}\"\ndest_files=[\"res://.godot/imported/{cache}\"]\n\n[params]\nnodes/root_script=null\n")
     }
@@ -835,6 +836,7 @@ pub(crate) mod test_support {
         )
         .unwrap();
     }
+    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
     pub(crate) fn outputs(root: &Path) {
         std::fs::create_dir_all(root.join(".godot/imported")).unwrap();
         std::fs::write(
@@ -868,6 +870,12 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    // Tests that need checked reads run only where they exist, which leaves their helpers
+    // unused on other platforms.
+    #![cfg_attr(
+        not(any(windows, target_os = "linux")),
+        allow(dead_code, unused_imports)
+    )]
     use super::*;
     use test_support::*;
     struct Fixture(Project);
@@ -988,6 +996,7 @@ mod tests {
         file
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn exact_embedded_png_and_new_remaps_are_registered_for_nested_godot() {
         let original = Fixture::new(true);
@@ -1015,6 +1024,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn publication_rechecks_artifact_source_and_private_cache_hashes() {
         for target in [
@@ -1038,6 +1048,7 @@ mod tests {
         }
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn exemption_never_targets_existing_or_requested_source() {
         let original = Fixture::new(false);
@@ -1056,6 +1067,7 @@ mod tests {
         assert!(!filtered.contains("assets/model.glb.import"));
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn a_filename_convention_does_not_qualify_unbound_png_bytes() {
         let fixture = Fixture::new(false);
@@ -1071,6 +1083,7 @@ mod tests {
         assert!(!error.contains("unrelated PNG bytes"));
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn remap_requires_literal_source_and_confined_regular_destinations() {
         let good = remap_text("assets/model.glb", "model.scn", "scene", "PackedScene");
@@ -1128,6 +1141,7 @@ mod tests {
         assert!(embedded_images(&invalid_png).is_err());
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn storage_and_registration_limits_are_enforced_before_unbounded_reads() {
         let fixture = Fixture::new(false);

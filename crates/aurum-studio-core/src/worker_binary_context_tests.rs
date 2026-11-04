@@ -113,13 +113,13 @@ fn temporary_root() -> PathBuf {
         temporary.components().next(),
         Some(Component::Prefix(prefix))
             if matches!(prefix.kind(), Prefix::Disk(drive) | Prefix::VerbatimDisk(drive)
-                if drive.eq_ignore_ascii_case(&b'A'))
+                if drive.eq_ignore_ascii_case(&crate::test_drive().as_bytes()[0]))
     );
     assert!(
         temporary.is_absolute()
             && a_disk
             && temporary.components().nth(1) == Some(Component::RootDir),
-        "absolute A-only gate required"
+        "absolute local-drive gate required"
     );
     temporary
 }
