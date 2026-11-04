@@ -92,6 +92,9 @@ fn verify_native_dependencies(
         .arg(clean(&output))
         .arg(clean(&helper))
         .candidate_storage(workspace);
+    if let Some(lifetime) = &context.lifetime {
+        command = command.lifetime_fence(lifetime);
+    }
     for key in [
         "APPDATA",
         "LOCALAPPDATA",
@@ -144,7 +147,18 @@ fn runtime_validate(
     original: &Project,
     candidate: &Project,
     userdata: &Path,
+    lifetime: &crate::candidate_workspace::LifetimeFence,
+    #[cfg(windows)] runtime: Option<&crate::native_operations::NativeRuntime>,
 ) -> Result<Validation, String> {
+    #[cfg(windows)]
+    let compiler = if candidate.config.rust_package.is_some() {
+        Some(crate::native_dependencies::CompilerOwner::acquire(
+            runtime,
+            &original.root,
+        )?)
+    } else {
+        None
+    };
     operation_phase(crate::operation_context::Phase::Dependencies);
     operation_check()?;
     self_contained_project(candidate, &snapshot::inventory(&candidate.root)?)?;
@@ -155,6 +169,7 @@ fn runtime_validate(
     let context = crate::project_ops::RuntimeContext {
         engine,
         userdata: userdata.to_path_buf(),
+        lifetime: Some(lifetime.clone()),
     };
     #[cfg(windows)]
     let mut artifacts = Vec::new();
@@ -168,6 +183,8 @@ fn runtime_validate(
             .ok_or("candidate workspace is unavailable")?,
         &context.engine,
         userdata,
+        lifetime,
+        compiler.as_ref(),
     )?;
     #[cfg(not(windows))]
     let dependencies = json!({"native":false});
@@ -258,11 +275,11 @@ pub fn last(project: &Project) -> Result<Value, String> {
     let path = receipt_path(project)?;
     match std::fs::metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(json!({"present":false}))
+            return Ok(json!({"present":false}));
         }
         Err(error) => return Err(error.to_string()),
         Ok(metadata) if !metadata.is_file() || metadata.len() > MAX_RECEIPT_BYTES as u64 => {
-            return Err("candidate receipt exceeds supported bounds".into())
+            return Err("candidate receipt exceeds supported bounds".into());
         }
         Ok(_) => {}
     }
@@ -280,23 +297,81 @@ pub fn validate(project: &Project, input: &Value) -> Result<Value, String> {
     if !cfg!(windows) {
         return Err("candidate runtime validation is currently Windows-qualified; other platforms need private-userdata acceptance".into());
     }
-    run_with_validation(
-        project,
-        input,
-        |candidate, userdata| runtime_validate(project, candidate, userdata),
-        false,
-    )
+    #[cfg(windows)]
+    {
+        validate_in_runtime(project, input, None)
+    }
+    #[cfg(not(windows))]
+    {
+        run_with_validation(
+            project,
+            input,
+            |candidate, userdata, lifetime| {
+                runtime_validate(project, candidate, userdata, lifetime)
+            },
+            false,
+        )
+    }
 }
 
 pub fn apply(project: &Project, input: &Value) -> Result<Value, String> {
     if !cfg!(windows) {
         return Err("candidate publication is currently Windows-qualified".into());
     }
+    #[cfg(windows)]
+    {
+        apply_in_runtime(project, input, None)
+    }
+    #[cfg(not(windows))]
+    {
+        run_with_validation(
+            project,
+            input,
+            |candidate, userdata, lifetime| {
+                runtime_validate(project, candidate, userdata, lifetime)
+            },
+            true,
+        )
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn validate_in_runtime(
+    project: &Project,
+    input: &Value,
+    runtime: Option<&crate::native_operations::NativeRuntime>,
+) -> Result<Value, String> {
+    run_in_runtime(project, input, runtime, false)
+}
+#[cfg(windows)]
+pub(crate) fn apply_in_runtime(
+    project: &Project,
+    input: &Value,
+    runtime: Option<&crate::native_operations::NativeRuntime>,
+) -> Result<Value, String> {
+    run_in_runtime(project, input, runtime, true)
+}
+#[cfg(windows)]
+fn run_in_runtime(
+    project: &Project,
+    input: &Value,
+    runtime: Option<&crate::native_operations::NativeRuntime>,
+    publish: bool,
+) -> Result<Value, String> {
+    if project.config.rust_package.is_some() {
+        let runtime =
+            runtime.ok_or("native candidate compilation requires its authenticated runtime")?;
+        if !runtime.is_controller_for(&project.root) {
+            return Err("native candidate runtime belongs to another project".into());
+        }
+    }
     run_with_validation(
         project,
         input,
-        |candidate, userdata| runtime_validate(project, candidate, userdata),
-        true,
+        |candidate, userdata, lifetime| {
+            runtime_validate(project, candidate, userdata, lifetime, runtime)
+        },
+        publish,
     )
 }
 
@@ -319,14 +394,18 @@ fn run_with(
     run_with_validation(
         project,
         input,
-        |candidate, userdata| validator(candidate, userdata).map(Validation::from),
+        |candidate, userdata, _| validator(candidate, userdata).map(Validation::from),
         publish,
     )
 }
 fn run_with_validation(
     project: &Project,
     input: &Value,
-    validator: impl FnOnce(&Project, &Path) -> Result<Validation, String>,
+    validator: impl FnOnce(
+        &Project,
+        &Path,
+        &crate::candidate_workspace::LifetimeFence,
+    ) -> Result<Validation, String>,
     publish: bool,
 ) -> Result<Value, String> {
     let started = Instant::now();
@@ -407,14 +486,25 @@ fn run_with_validation(
         let candidate = Project::open(&directory).map_err(|error| error.to_string())?;
         self_contained_project(&candidate, &snapshot::inventory(&directory)?)?;
         let prepared_sha = snapshot::fingerprint_all(&directory)?;
-        Ok(Ok((candidate, source_sha, prepared_sha, checked, bytes)))
+        let import_baseline = crate::private_import_artifacts::Baseline::capture(&candidate)?;
+        if snapshot::fingerprint_all(&directory)? != prepared_sha {
+            return Err("candidate source changed while recording private import baseline".into());
+        }
+        Ok(Ok((
+            candidate,
+            source_sha,
+            prepared_sha,
+            checked,
+            bytes,
+            import_baseline,
+        )))
     })()?;
-    let (candidate, source_sha, prepared_sha, checked, bytes) = match prepared {
+    let (candidate, source_sha, prepared_sha, checked, bytes, import_baseline) = match prepared {
         Ok(prepared) => prepared,
         Err(conflicts) => {
             return Ok(
                 json!({"ok":false,"applied":false,"validated":false,"phase":"preflight","conflicts":conflicts["conflicts"]}),
-            )
+            );
         }
     };
     let private = workspace.as_mut().ok_or("missing candidate workspace")?;
@@ -423,7 +513,15 @@ fn run_with_validation(
     // The original content lease ended before invoking any compiler/runtime.
     operation_phase(crate::operation_context::Phase::Validating);
     operation_check()?;
-    let result = validator(&candidate, &userdata);
+    let result = validator(&candidate, &userdata, &private.lifetime);
+    let result = if !private.lifetime.close_if_resolved() {
+        Err(
+            "private worker lifetime is unresolved; publication refused and workspace retained"
+                .into(),
+        )
+    } else {
+        result
+    };
     operation_check()?;
     let storage_budget = crate::operation_context::OperationContext::current()
         .map(|context| context.budget(Duration::from_secs(2)))
@@ -438,7 +536,7 @@ fn run_with_validation(
     operation_check()?;
     let storage_ok = storage.is_ok();
     let result = result.and_then(|result| storage.map(|_| result));
-    let (validation, artifacts) = match result {
+    let (mut validation, artifacts) = match result {
         Ok(result) => {
             let mut summary = text_summary(&result.outcome);
             let mut artifact_evidence = Vec::new();
@@ -468,6 +566,19 @@ fn run_with_validation(
         }
         Err(error) => (json!({"ok":false,"error":receipt_line(&error)}), Vec::new()),
     };
+    let private_imports = if validation["ok"] == true && storage_ok {
+        match import_baseline.classify(&candidate, &checked) {
+            Ok(artifacts) => artifacts,
+            Err(error) => {
+                validation["ok"] = json!(false);
+                validation["error"] = json!(receipt_line(&error));
+                crate::private_import_artifacts::PrivateArtifacts::default()
+            }
+        }
+    } else {
+        crate::private_import_artifacts::PrivateArtifacts::default()
+    };
+    operation_check()?;
     let source_current =
         snapshot::fingerprint_all(&project.root).is_ok_and(|hash| hash == source_sha);
     let candidate_sha = if storage_ok {
@@ -511,6 +622,7 @@ fn run_with_validation(
         "workspace_storage_ok":storage_ok,
         "native_build":validation["native_build"],"native_artifacts":validation["native_artifacts"],"native_artifacts_published":false,
         "native_dependencies":validation["native_dependencies"],
+        "private_import_artifacts":private_imports.count(),"private_import_artifacts_published":false,
         "scope":"private source/resource validation; native builds when configured; no gameplay proof"});
     if publish && receipt["ok"] == true {
         operation_phase(crate::operation_context::Phase::Publishing);
@@ -524,6 +636,7 @@ fn run_with_validation(
                 .ok_or("candidate has no checked fingerprint")?,
             &checked,
             &artifacts,
+            &private_imports,
         ) {
             Ok(publication) => publication,
             Err(error) => json!({"ok":false,"applied":false,"error":receipt_line(&error)}),
@@ -531,8 +644,9 @@ fn run_with_validation(
         receipt["ok"] = publication["ok"].clone();
         receipt["applied"] = publication.get("applied").cloned().unwrap_or(json!(false));
         receipt["publication"] = publication;
-        receipt["scope"] =
-            json!("validated journaled source publication; compiled artifacts remain private; no gameplay proof");
+        receipt["scope"] = json!(
+            "validated journaled source publication; compiled artifacts remain private; no gameplay proof"
+        );
     }
     operation_phase(crate::operation_context::Phase::Cleanup);
     match private.clean() {
@@ -561,6 +675,86 @@ fn run_with_validation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn no_context_unresolved_candidate_child() {
+        let Some(report) = std::env::var_os("AURUM_FENCE_CANDIDATE_REPORT") else {
+            return;
+        };
+        assert!(crate::operation_context::OperationContext::current().is_none());
+        let fixture = Fixture::new();
+        let before = snapshot::fingerprint_all(&fixture.0.root).unwrap();
+        let mut private_root = None;
+        let result = run_with_validation(
+            &fixture.0,
+            &fixture.changes(),
+            |candidate, userdata, fence| {
+                private_root = Some(candidate.root.clone());
+                let tree = userdata.join("owned-tree");
+                std::fs::create_dir(&tree).unwrap();
+                let result = crate::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "worker_windows::tests::worker_tree_helper",
+                        "--nocapture",
+                    ])
+                    .env("AURUM_WORKER_FIXTURE", tree.to_string_lossy())
+                    .env("AURUM_WORKER_ROLE", "root")
+                    .env("AURUM_WORKER_CHAIN_BREAK", "1")
+                    .candidate_storage(userdata.parent().unwrap())
+                    .lifetime_fence(fence)
+                    .run(Duration::from_secs(2));
+                assert!(result.is_err());
+                assert!(fence.unresolved());
+                assert!(tree.join("ready").exists());
+                // Even a validator that converts an error to ok cannot authorize
+                // publication while its exact native lifetime claim is unresolved.
+                Ok(Validation::from(json!({"ok":true})))
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["applied"], false);
+        assert_eq!(result["cleanup_ok"], false);
+        assert_eq!(result["candidate_retained"], true);
+        assert_eq!(snapshot::fingerprint_all(&fixture.0.root).unwrap(), before);
+        assert!(private_root.unwrap().exists());
+        assert!(!fixture.0.root.join(".aurum/revisions/active.json").exists());
+        std::fs::write(
+            report,
+            b"retained=true\npublication=false\nsource_unchanged=true\n",
+        )
+        .unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn no_context_uncertainty_retains_the_copy_and_refuses_publication() {
+        let path = std::env::temp_dir().join(format!(
+            "aurum-fence-publication-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        let report = path.join("retention.txt");
+        let output = crate::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "candidates::tests::no_context_unresolved_candidate_child",
+                "--nocapture",
+            ])
+            .env("TEMP", path.to_string_lossy())
+            .env("TMP", path.to_string_lossy())
+            .env("AURUM_FENCE_CANDIDATE_REPORT", report.to_string_lossy())
+            .run(Duration::from_secs(20))
+            .unwrap();
+        assert!(output.success(), "{}", output.failure_detail());
+        assert_eq!(
+            std::fs::read(report).unwrap(),
+            b"retained=true\npublication=false\nsource_unchanged=true\n"
+        );
+        // Evidence remains ephemeral. The subprocess has exited, releasing its
+        // forgotten allocation lease; existing crash/orphan tests qualify reuse.
+    }
     struct Fixture(Project);
     impl Fixture {
         fn new() -> Self {
@@ -682,6 +876,116 @@ mod tests {
     }
 
     #[test]
+    fn verified_import_outputs_remain_private_while_uid_and_source_are_journaled() {
+        use crate::private_import_artifacts::test_support;
+        let fixture = Fixture::new();
+        test_support::assets(&fixture.0.root);
+        let before = snapshot::fingerprint_all(&fixture.0.root).unwrap();
+        let model = std::fs::read(fixture.0.root.join("assets/model.glb")).unwrap();
+        let result = run_with(
+            &fixture.0,
+            &fixture.changes(),
+            |candidate, _| {
+                test_support::outputs(&candidate.root);
+                std::fs::write(candidate.root.join("main.gd.uid"), "uid://abc123\n").unwrap();
+                Ok(json!({"ok":true}))
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["applied"], true);
+        assert_eq!(result["private_import_artifacts"], 3);
+        assert_eq!(result["private_import_artifacts_published"], false);
+        assert_eq!(
+            std::fs::read(fixture.0.root.join("assets/model.glb")).unwrap(),
+            model
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.0.root.join("assets/authored.import")).unwrap(),
+            "authored import settings"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.0.root.join("main.gd.uid")).unwrap(),
+            "uid://abc123\n"
+        );
+        for path in [
+            "assets/model.glb.import",
+            "assets/model_colormap.png",
+            "assets/model_colormap.png.import",
+            ".godot/imported/model.scn",
+        ] {
+            assert!(!fixture.0.root.join(path).exists(), "{path}");
+        }
+        crate::transactions::undo(
+            &fixture.0,
+            result["publication"]["revision_id"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(snapshot::fingerprint_all(&fixture.0.root).unwrap(), before);
+    }
+
+    #[test]
+    fn authored_import_changes_and_unknown_generated_source_still_refuse_publication() {
+        use crate::private_import_artifacts::test_support;
+        for target in ["assets/authored.import", "assets/unknown.png"] {
+            let fixture = Fixture::new();
+            test_support::assets(&fixture.0.root);
+            let before = snapshot::fingerprint_all(&fixture.0.root).unwrap();
+            let result = run_with(
+                &fixture.0,
+                &fixture.changes(),
+                |candidate, _| {
+                    test_support::outputs(&candidate.root);
+                    std::fs::write(
+                        candidate.root.join(target),
+                        "private-content-must-not-be-dumped",
+                    )
+                    .unwrap();
+                    Ok(json!({"ok":true}))
+                },
+                true,
+            )
+            .unwrap();
+            assert_eq!(result["ok"], false);
+            assert_eq!(result["applied"], false);
+            assert!(result["publication"]["error"]
+                .as_str()
+                .unwrap()
+                .contains(target));
+            assert!(!result
+                .to_string()
+                .contains("private-content-must-not-be-dumped"));
+            assert_eq!(snapshot::fingerprint_all(&fixture.0.root).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn explicit_import_request_is_published_and_not_exempted() {
+        use crate::private_import_artifacts::test_support;
+        let fixture = Fixture::new();
+        test_support::assets(&fixture.0.root);
+        let mut request = fixture.changes();
+        request["changes"].as_array_mut().unwrap().push(json!({"path":"assets/explicit.import", "action":"create", "expected_sha256":"", "text":"explicit authored import settings"}));
+        let result = run_with(
+            &fixture.0,
+            &request,
+            |candidate, _| {
+                test_support::outputs(&candidate.root);
+                Ok(json!({"ok":true}))
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["private_import_artifacts"], 3);
+        assert_eq!(
+            std::fs::read_to_string(fixture.0.root.join("assets/explicit.import")).unwrap(),
+            "explicit authored import settings"
+        );
+    }
+
+    #[test]
     fn failed_validator_and_conflicts_never_publish() {
         let fixture = Fixture::new();
         let before = snapshot::fingerprint_all(&fixture.0.root).unwrap();
@@ -772,7 +1076,7 @@ mod tests {
         let result = run_with_validation(
             &fixture.0,
             &fixture.changes(),
-            |candidate, _| {
+            |candidate, _, _| {
                 private_root = Some(candidate.root.clone());
                 std::fs::write(candidate.root.join(&library), b"compiled library").unwrap();
                 Ok(Validation {
@@ -826,7 +1130,7 @@ mod tests {
         let result = run_with_validation(
             &fixture.0,
             &fixture.changes(),
-            |candidate, _| {
+            |candidate, _, _| {
                 private_root = Some(candidate.root.clone());
                 std::fs::write(candidate.root.join(&library), b"changed after compilation")
                     .unwrap();
@@ -862,6 +1166,7 @@ mod tests {
         let context = crate::project_ops::RuntimeContext {
             engine: fixture.0.root.join("missing-engine.exe"),
             userdata: fixture.0.root.join("userdata"),
+            lifetime: None,
         };
         assert!(
             verify_native_dependencies(&fixture.0, &context, &json!({"manifests":[]})).is_err()
@@ -897,7 +1202,15 @@ mod tests {
         )
         .unwrap();
         let native = Project::open(&fixture.0.root).unwrap();
-        assert!(runtime_validate(&native, &native, &native.root.join("userdata")).is_err());
+        assert!(runtime_validate(
+            &native,
+            &native,
+            &native.root.join("userdata"),
+            &crate::candidate_workspace::LifetimeFence::default(),
+            #[cfg(windows)]
+            None,
+        )
+        .is_err());
     }
 
     #[test]

@@ -259,11 +259,42 @@ mod tests {
             "{}\nAuthorization: Bearer private-value\nlast",
             "界".repeat(100_000)
         );
-        drain(input.as_bytes(), &session);
+        let mut reader = io::Cursor::new(input.as_bytes());
+        drain(&mut reader, &session);
+        assert_eq!(reader.position(), input.len() as u64);
         let text = std::fs::read_to_string(session.log_path()).unwrap();
-        assert!(text.len() < 5000 && text.contains("truncated") && text.contains("last"));
+        assert!(text.len() < 5000 && text.contains("truncated"));
+        // The finite I/O budget may intentionally suppress the final line.
+        // Require an explicit accounting record if it was not retained.
+        let suppressed: u64 = text
+            .lines()
+            .filter_map(|line| {
+                line.split_once("diagnostics: ")?
+                    .1
+                    .strip_suffix(" child lines suppressed by rate/storage limits")?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .sum();
+        let expected_suppressed = u64::from(!text.contains("last"))
+            + u64::from(!text.contains("credential-bearing line omitted"));
+        assert_eq!(suppressed, expected_suppressed);
         assert!(!text.contains("private-value"));
-        std::fs::create_dir(session.log_path().with_file_name("session.log.2")).unwrap();
+        let partial = Session::create_in(&root, &root).unwrap();
+        drain(b"last".as_slice(), &partial);
+        assert!(std::fs::read_to_string(partial.log_path())
+            .unwrap()
+            .contains("last"));
+        // A directory at the actual append destination produces a real I/O
+        // failure without relying on a rotation threshold being reached.
+        std::fs::rename(
+            session.log_path(),
+            session
+                .log_path()
+                .with_file_name("session-before-error.log"),
+        )
+        .unwrap();
+        std::fs::create_dir(session.log_path()).unwrap();
         let mut input = io::Cursor::new(b"still\ndrain\n".as_slice());
         drain(&mut input, &session);
         assert_eq!(input.position(), 12);

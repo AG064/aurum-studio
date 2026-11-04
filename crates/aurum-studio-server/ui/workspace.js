@@ -7,6 +7,7 @@
             fileHash = null,
             loadedFile = "";
         let selected = null,
+            transformBusy = false,
             watching = false,
             dialogAction = "create",
             agent = null;
@@ -62,9 +63,18 @@
             }
             return value;
         }
+        const activeTasks = [];
+        function showActivity() {
+            const text = activeTasks.at(-1) ?? "";
+            $("busy").dataset.active = String(Boolean(text));
+            $("busy").querySelector(".status-text").textContent = text;
+        }
         async function task(label, action) {
-            $("workspace-status").textContent = label + "...";
+            const activity = label + "...";
+            $("workspace-status").textContent = activity;
             $("workspace-status").dataset.state = "busy";
+            activeTasks.push(activity);
+            showActivity();
             try {
                 const result = await action();
                 $("workspace-status").textContent = label + " complete";
@@ -74,9 +84,12 @@
                 $("workspace-status").textContent = error.message;
                 $("workspace-status").dataset.state = "error";
                 throw error;
+            } finally {
+                activeTasks.splice(activeTasks.lastIndexOf(activity), 1);
+                showActivity();
             }
         }
-        const bind = (id, label, callback) =>
+        const bind = (id, label, callback, unavailable = () => false) =>
             $(id).addEventListener("click", async () => {
                 const hadFocus = document.activeElement === $(id);
                 $(id).disabled = true;
@@ -85,7 +98,7 @@
                     await task(label, callback);
                 } catch (_) {
                 } finally {
-                    $(id).disabled = false;
+                    $(id).disabled = unavailable();
                     $(id).removeAttribute("aria-busy");
                     if (hadFocus) $(id).focus();
                 }
@@ -94,6 +107,32 @@
             if (!project) throw new Error("Choose a project first");
             return api("/api/project", { ...request, project });
         };
+        const accessControl = (id, label, request, message) => {
+            $(id).addEventListener("click", async () => {
+                const hadFocus = document.activeElement === $(id);
+                $(id).disabled = true;
+                $(id).setAttribute("aria-busy", "true");
+                try {
+                    const result = await task(label, () => operation(request));
+                    $("workspace-status").textContent = message(result);
+                } catch (_) {
+                } finally {
+                    $(id).disabled = false;
+                    $(id).removeAttribute("aria-busy");
+                    if (hadFocus) $(id).focus();
+                }
+            });
+        };
+        accessControl("dependency-access", "Requesting dependency access",
+            { op: "workspace_access_request", mode: "dependency_read" },
+            () => "Choose and confirm the dependency folder in the native Studio window. This permits reading for the current project revision.");
+        accessControl("dependency-access-status", "Checking dependency access",
+            { op: "workspace_access_status" }, (result) => {
+                const paths = result.grants.map((grant) => grant.canonical_path);
+                return result.pending ? "Dependency access is waiting for native confirmation."
+                    : paths.length ? "Approved dependency folders (validation checks the project revision): " + paths.join(", ")
+                    : "No external dependency folder is approved for this Studio session.";
+            });
         async function showOperation(id, request) {
             $(id).textContent = "Running...";
             const started = performance.now();
@@ -310,22 +349,78 @@
                 agent.mcpServers.aurum.args.push("--read-only");
             $("agent-config").textContent = JSON.stringify(agent, null, 2);
         }
+        const transformAxes = ["x", "y", "z"];
+        const hasVector = (value, axes) =>
+            value && axes.every((axis) =>
+                Object.prototype.hasOwnProperty.call(value, axis) &&
+                Number.isFinite(value[axis]),
+            );
+        function transformDimension() {
+            if (!selected || $("selected-node").value !== selected.path) return 0;
+            if (
+                hasVector(selected.position, transformAxes) &&
+                hasVector(selected.rotation, transformAxes) &&
+                hasVector(selected.scale, transformAxes)
+            ) return 3;
+            return hasVector(selected.position, ["x", "y"]) &&
+                !Object.prototype.hasOwnProperty.call(selected.position, "z") ? 2 : 0;
+        }
+        function updateTransformControls() {
+            const dimension = transformDimension();
+            for (const axis of transformAxes) {
+                $("pos-" + axis).disabled = transformBusy || !dimension || (axis === "z" && dimension === 2);
+                $("rot-" + axis).disabled = transformBusy || dimension !== 3;
+                $("scale-" + axis).disabled = transformBusy || dimension !== 3;
+            }
+            $("position-snap").disabled = transformBusy || dimension !== 3;
+            $("apply-position").disabled = transformBusy || !dimension;
+            $("apply-rotation").disabled = transformBusy || dimension !== 3;
+            $("apply-scale").disabled = transformBusy || dimension !== 3;
+        }
+        function transformNumber(id, label, bounded = true) {
+            const input = $(id), raw = input.value.trim();
+            if (input.validity.badInput || raw === "") throw new Error(label + " needs a number");
+            const value = Number(raw);
+            if (!Number.isFinite(value) || (bounded && Math.abs(value) > 100000))
+                throw new Error(label + (bounded ? " must be finite and between -100000 and 100000" : " must be finite"));
+            return value;
+        }
+        const transformVector = (prefix, label, bounded = true) =>
+            transformAxes.map((axis) => transformNumber(prefix + "-" + axis, label + " " + axis.toUpperCase(), bounded));
+        async function editTransform(operation) {
+            if (transformBusy) throw new Error("Wait for the transform save to finish");
+            transformBusy = true;
+            updateTransformControls();
+            try {
+                return await editScene([operation]);
+            } finally {
+                transformBusy = false;
+                updateTransformControls();
+            }
+        }
         function selectNode(node) {
+            if (!node || selected?.path !== node.path) $("position-snap").value = "";
             selected = node;
             document.querySelectorAll("#scene-tree button").forEach((item) =>
-                item.setAttribute("aria-current", String(item.dataset.path === node.path)),
+                item.setAttribute("aria-current", String(item.dataset.path === node?.path)),
             );
-            $("selected-node").value = node.path;
-            $("node-label").textContent = node.name;
-            $("node-type-label").textContent = node.type;
-            ["x", "y", "z"].forEach((axis) => {
-                $("pos-" + axis).value = node.position?.[axis] || 0;
-            });
-            $("pos-z").disabled =
-                node.position &&
-                !Object.prototype.hasOwnProperty.call(node.position, "z");
-            $("node-script").value = node.script || "";
+            $("selected-node").value = node?.path ?? ".";
+            $("node-label").textContent = node?.name ?? "Scene";
+            $("node-type-label").textContent = node?.type ?? "Select a node";
+            for (const axis of transformAxes) {
+                const position = node?.position?.[axis],
+                    radians = node?.rotation?.[axis],
+                    rotation = Number.isFinite(radians) ? radians * 180 / Math.PI : NaN,
+                    scale = node?.scale?.[axis];
+                $("pos-" + axis).value = Number.isFinite(position) ? String(position) : "";
+                $("rot-" + axis).value = Number.isFinite(rotation) ? String(rotation) : "";
+                $("scale-" + axis).value = Number.isFinite(scale) ? String(scale) : "";
+            }
+            $("node-script").value = node?.script ?? "";
+            updateTransformControls();
         }
+        selectNode(null);
+        $("selected-node").addEventListener("input", updateTransformControls);
         function renderTree(node, container, depth = 0) {
             const button = document.createElement("button");
             button.style.paddingLeft = 12 + depth * 16 + "px";
@@ -343,6 +438,7 @@
         }
         async function inspectScene(preserveSelection = false) {
             const previous = preserveSelection ? $("selected-node").value : ".";
+            if (!preserveSelection) selectNode(null);
             const project = activeRoot,
                 scene = $("scene-path").value.trim();
             const result = await operation(
@@ -438,6 +534,7 @@
                     path: $("project-select").value,
                 });
                 sceneHash = null;
+                selectNode(null);
                 fileHash = null;
                 loadedFile = "";
                 watching = false;
@@ -493,6 +590,7 @@
                     await projects();
                 });
                 sceneHash = null;
+                selectNode(null);
                 fileHash = null;
                 loadedFile = "";
                 $("file-editor").value = "";
@@ -704,20 +802,40 @@
                 },
             ]);
         });
-        bind("apply-position", "Move node", () => {
-            const position = {
-                x: Number($("pos-x").value),
-                y: Number($("pos-y").value),
-            };
-            if (!$("pos-z").disabled) position.z = Number($("pos-z").value);
-            return editScene([
-                {
-                    op: "set",
-                    node: $("selected-node").value,
-                    properties: { position },
-                },
-            ]);
-        });
+        bind("apply-position", "Save position", () => {
+            const dimension = transformDimension();
+            if (!dimension) throw new Error("Select a supported node in the scene tree");
+            if (dimension === 2) return editTransform({
+                op: "set", node: selected.path, properties: { position: {
+                    x: transformNumber("pos-x", "Position X", false),
+                    y: transformNumber("pos-y", "Position Y", false),
+                } },
+            });
+            const operation = { op: "set_transform", node: selected.path, position: transformVector("pos", "Position") };
+            if ($("position-snap").validity.badInput) throw new Error("Position grid step needs a positive number");
+            if ($("position-snap").value.trim() !== "") {
+                const step = transformNumber("position-snap", "Position grid step");
+                if (step <= 0) throw new Error("Position grid step must be greater than zero");
+                operation.position_snap = step;
+            }
+            return editTransform(operation);
+        }, () => transformBusy || !transformDimension());
+        bind("apply-rotation", "Save rotation", () => {
+            if (transformDimension() !== 3) throw new Error("Select a 3D node in the scene tree");
+            return editTransform({ op: "set_transform", node: selected.path, rotation_degrees: transformVector("rot", "Rotation") });
+        }, () => transformBusy || transformDimension() !== 3);
+        bind("apply-scale", "Save scale", () => {
+            if (transformDimension() !== 3) throw new Error("Select a 3D node in the scene tree");
+            const scale = transformVector("scale", "Scale", false);
+            const relativeTolerance = 1 / 2097152;
+            const minimumMagnitude = 0.000001 * (1 - relativeTolerance);
+            const maximumMagnitude = 100000 * (1 + relativeTolerance);
+            if (
+                scale.some((value) => Math.abs(value) < minimumMagnitude || Math.abs(value) > maximumMagnitude) ||
+                !(scale.every((value) => value > 0) || scale.every((value) => value < 0))
+            ) throw new Error("Scale axes must share a sign and have magnitude 0.000001 to 100000; saved-scene rounding is accepted");
+            return editTransform({ op: "set_transform", node: selected.path, scale });
+        }, () => transformBusy || transformDimension() !== 3);
         bind("apply-properties", "Set properties", () =>
             editScene([
                 {
@@ -1093,6 +1211,10 @@
             if (data.type === "aurum-preview-ready") {
                 if ($("preview-state").textContent === "Loading game")
                     $("preview-state").textContent = "Preview ready";
+                // Publishing state is optional for a game. Its absence must not
+                // read as "no runtime" while the game is live and inspectable.
+                if (!$("live-runtime-state").dataset.snapshot)
+                    $("live-runtime-state").textContent = "Not reported";
                 return;
             }
             if (data.type === "aurum-runtime-response") {

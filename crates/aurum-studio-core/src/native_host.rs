@@ -10,6 +10,172 @@ use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+fn request_window(op: &str, native_candidate: bool) -> Duration {
+    if native_candidate {
+        Duration::from_secs(600)
+    } else if matches!(op, "native_start" | "native_replace" | "native_recover") {
+        Duration::from_secs(240)
+    } else {
+        Duration::from_secs(15)
+    }
+}
+struct RequestBudget {
+    started: Instant,
+    deadline: Instant,
+    context: Option<crate::operation_context::OperationContext>,
+}
+impl RequestBudget {
+    fn at(
+        started: Instant,
+        window: Duration,
+        context: Option<crate::operation_context::OperationContext>,
+    ) -> Result<Self, String> {
+        let deadline = context.as_ref().map_or(started + window, |context| {
+            context.deadline().min(started + window)
+        });
+        let budget = Self {
+            started,
+            deadline,
+            context,
+        };
+        budget.remaining_at(started, Duration::MAX)?;
+        Ok(budget)
+    }
+    fn remaining_at(&self, now: Instant, cap: Duration) -> Result<Duration, String> {
+        if let Some(context) = &self.context {
+            context.check().map_err(|error| error.to_string())?;
+        }
+        let left = self.deadline.saturating_duration_since(now).min(cap);
+        if left.is_zero() {
+            return Err("native controller caller deadline expired".into());
+        }
+        Ok(left)
+    }
+    fn remaining(&self, cap: Duration) -> Result<Duration, String> {
+        self.remaining_at(Instant::now(), cap)
+    }
+    fn check(&self) -> Result<(), String> {
+        self.remaining(Duration::MAX).map(|_| ())
+    }
+    fn clip(&self, cap: Duration) -> Self {
+        self.clip_at(Instant::now(), cap)
+    }
+    fn clip_at(&self, now: Instant, cap: Duration) -> Self {
+        Self {
+            started: self.started,
+            deadline: self.deadline.min(now + cap),
+            context: self.context.clone(),
+        }
+    }
+    fn restrict_window(&self, window: Duration) -> Self {
+        Self {
+            started: self.started,
+            deadline: self.deadline.min(self.started + window),
+            context: self.context.clone(),
+        }
+    }
+}
+fn write_before<W: Write>(
+    stream: &mut W,
+    bytes: &[u8],
+    budget: &RequestBudget,
+    mut now: impl FnMut() -> Instant,
+    mut timeout: impl FnMut(&mut W, Duration) -> std::io::Result<()>,
+) -> Result<(), String> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let remaining = budget.remaining_at(now(), Duration::MAX)?;
+        timeout(stream, remaining).map_err(|_| "native controller write timeout failed")?;
+        budget.remaining_at(now(), Duration::MAX)?;
+        let result = stream.write(&bytes[offset..]);
+        match result {
+            Ok(0) => return Err("native controller request write returned zero".into()),
+            Ok(count) if count <= bytes.len() - offset => {
+                budget.remaining_at(now(), Duration::MAX)?;
+                offset += count;
+            }
+            Ok(_) => return Err("native controller request write count is invalid".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                budget.remaining_at(now(), Duration::MAX)?;
+                continue;
+            }
+            Err(_) => return Err("native controller request write failed".into()),
+        }
+    }
+    budget.remaining_at(now(), Duration::MAX).map(|_| ())
+}
+fn read_ready_before<R: Read>(
+    stream: &mut R,
+    budget: &RequestBudget,
+    mut now: impl FnMut() -> Instant,
+    mut timeout: impl FnMut(&mut R, Duration) -> std::io::Result<()>,
+) -> Result<(), String> {
+    // Read exactly the negotiated interim reply, leaving the final response
+    // untouched. A different reply never permits sending the operation body.
+    for expected in crate::native_request_control::READY {
+        loop {
+            let remaining = budget.remaining_at(now(), Duration::from_secs(1))?;
+            timeout(stream, remaining).map_err(|_| "native controller ready timeout failed")?;
+            budget.remaining_at(now(), Duration::MAX)?;
+            let mut byte = [0];
+            match stream.read(&mut byte) {
+                Ok(0) => return Err("native controller closed before ready".into()),
+                Ok(1) if byte[0] == *expected => {
+                    budget.remaining_at(now(), Duration::MAX)?;
+                    break;
+                }
+                Ok(_) => return Err("native controller returned an unsupported ready reply".into()),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    budget.remaining_at(now(), Duration::MAX)?;
+                }
+                Err(_) => return Err("native controller ready read failed".into()),
+            }
+        }
+    }
+    budget.remaining_at(now(), Duration::MAX).map(|_| ())
+}
+struct Delivery<'a> {
+    budget: &'a RequestBudget,
+    attempted: bool,
+}
+impl Delivery<'_> {
+    fn begin(&mut self) -> Result<(), String> {
+        self.budget.check()?;
+        self.attempted = true;
+        Ok(())
+    }
+}
+fn deliver_once<T>(
+    budget: &RequestBudget,
+    work: impl FnOnce(&mut Delivery<'_>) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut delivery = Delivery {
+        budget,
+        attempted: false,
+    };
+    let result = work(&mut delivery).and_then(|value| budget.check().map(|_| value));
+    if result.is_err() && delivery.attempted {
+        if let Some(context) = &budget.context {
+            context.mark_recovery_required();
+        }
+    }
+    result
+}
+fn launch_eligible(existing: bool, op: &str, native_candidate: bool) -> bool {
+    !existing
+        && (matches!(
+            op,
+            "native_start" | "native_recover" | "job_submit" | "job_reconnect"
+        ) || (native_candidate && matches!(op, "changes_validate" | "changes_apply")))
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Endpoint {
@@ -229,13 +395,34 @@ impl Drop for Registration {
     }
 }
 pub fn route(root: &Path, input: &Value) -> Result<Value, String> {
+    let started = Instant::now();
+    let hint = input["op"].as_str().unwrap_or("");
+    // Native-candidate classification may only shorten this initial ceiling.
+    let budget = RequestBudget::at(
+        started,
+        request_window(hint, matches!(hint, "changes_validate" | "changes_apply")),
+        crate::operation_context::OperationContext::current(),
+    )?;
+    budget.check()?;
+    let context_request = (input["op"] == "runtime_context")
+        .then(|| crate::runtime_context::operation_request(input))
+        .transpose()?;
+    budget.check()?;
     if !cfg!(windows) {
+        if let Some(input) = context_request.as_ref() {
+            return crate::runtime_context::inspect(
+                root,
+                input,
+                crate::runtime_context::Session::Unavailable,
+            );
+        }
         return Err("managed native sessions are currently Windows-qualified".into());
     }
     let root = root
         .canonicalize()
         .map(crate::project::clean_path)
         .map_err(|error| error.to_string())?;
+    budget.check()?;
     let op = input["op"]
         .as_str()
         .ok_or("native operation must be a string")?;
@@ -246,10 +433,42 @@ pub fn route(root: &Path, input: &Value) -> Result<Value, String> {
         crate::jobs::validate_request_size(&request)?;
     }
     let body = serde_json::to_vec(&request).map_err(|_| "native request encoding failed")?;
+    budget.check()?;
     if body.len() > 2 * 1024 * 1024 {
         return Err("native routed request exceeds 2 MiB".into());
     }
+    let native_candidate = if matches!(op, "changes_validate" | "changes_apply") {
+        budget.check()?;
+        let project = Project::open(&root).map_err(|error| error.to_string())?;
+        budget.check()?;
+        if project.config.rust_package.is_some() {
+            if project.config.validation_command.is_some() {
+                return Err(
+                    "native candidates require copied source without custom validators".into(),
+                );
+            }
+            project.confined_build_workspace()?;
+            budget.check()?;
+            if project.godot_project_dir().is_none() {
+                return Err("native candidate validation requires project.godot".into());
+            }
+            let checked = crate::revisions::check(&root, input)?;
+            budget.check()?;
+            if checked["ready"] != true {
+                return Ok(checked);
+            }
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let budget = budget.restrict_window(request_window(op, native_candidate));
+    budget.check()?;
     let mut endpoint = metadata(&root)?;
+    budget.check()?;
+    let may_launch = launch_eligible(endpoint.is_some(), op, native_candidate);
     if endpoint.is_none() {
         if jobs && !matches!(op, "job_submit" | "job_reconnect") {
             return Ok(
@@ -259,24 +478,31 @@ pub fn route(root: &Path, input: &Value) -> Result<Value, String> {
         if op == "native_status" {
             return Ok(json!({"ok":true,"running":false,"host_available":false}));
         }
+        if op == "runtime_context" {
+            return crate::runtime_context::inspect(
+                &root,
+                context_request
+                    .as_ref()
+                    .ok_or("runtime context request is unavailable")?,
+                crate::runtime_context::Session::Unavailable,
+            );
+        }
         if matches!(op, "native_stop" | "native_host_stop") {
             return Ok(json!({"ok":true,"stopped":false,"host_available":false}));
         }
-        if !matches!(
-            op,
-            "native_start" | "native_recover" | "job_submit" | "job_reconnect"
-        ) {
+        if !may_launch {
             return Err("no native controller is running; start a native session first".into());
         }
         Project::open(&root).map_err(|error| error.to_string())?;
+        budget.check()?;
         launch(&root)?;
-        let deadline = Instant::now() + Duration::from_secs(20);
+        budget.check()?;
+        let startup = budget.clip(Duration::from_secs(20));
         while endpoint.is_none() {
-            if Instant::now() >= deadline {
-                return Err("native controller did not become ready within 20 seconds".into());
-            }
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(startup.remaining(Duration::from_millis(50))?);
+            startup.check()?;
             endpoint = metadata(&root)?;
+            startup.check()?;
         }
     }
     let endpoint = endpoint.ok_or("native controller unavailable")?;
@@ -285,111 +511,173 @@ pub fn route(root: &Path, input: &Value) -> Result<Value, String> {
         return Err("native controller port does not belong to its recorded process".into());
     }
     let secret = token(&root)?;
-    verify_scope(&root, &endpoint, &secret)?;
-    let budget = if matches!(op, "native_start" | "native_replace" | "native_recover") {
-        Duration::from_secs(240)
-    } else {
-        Duration::from_secs(15)
-    };
-    let deadline = Instant::now() + budget;
-    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, endpoint.port));
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
-        .map_err(|_| "native controller connection failed")?;
-    stream
-        .set_write_timeout(Some(budget))
-        .map_err(|_| "native controller write timeout failed")?;
-    let path = if op == "native_host_stop" {
-        "/api/stop"
-    } else {
-        "/api/project"
-    };
-    let header=format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nX-Aurum-Token: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",endpoint.port,secret,body.len());
-    stream
-        .write_all(header.as_bytes())
-        .and_then(|_| stream.write_all(&body))
-        .map_err(|_| "native controller request failed")?;
-    let mut bytes = Vec::new();
-    let mut chunk = [0; 8192];
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err("native controller operation exceeded its deadline".into());
+    budget.check()?;
+    let controlled = op != "native_host_stop";
+    let supports_control = verify_scope_with_budget(
+        &root,
+        &endpoint,
+        &secret,
+        &budget.clip(Duration::from_secs(3)),
+    )?;
+    if controlled && !supports_control {
+        return Err("native controller does not support bounded request control".into());
+    }
+    deliver_once(&budget, |delivery| {
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, endpoint.port));
+        let mut stream =
+            TcpStream::connect_timeout(&address, budget.remaining(Duration::from_secs(2))?)
+                .map_err(|_| "native controller connection failed")?;
+        let path = if op == "native_host_stop" {
+            "/api/stop"
+        } else {
+            "/api/project"
+        };
+        let control_header = if controlled {
+            format!(
+                "X-Aurum-Request-Control: {}\r\nExpect: 100-continue\r\n",
+                crate::native_request_control::PROTOCOL
+            )
+        } else {
+            String::new()
+        };
+        let body_len = if controlled {
+            crate::native_request_control::body_len(body.len())?
+        } else {
+            body.len()
+        };
+        let header=format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nX-Aurum-Token: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{control_header}Connection: close\r\n\r\n",endpoint.port,secret,body_len);
+        delivery.begin()?;
+        write_before(
+            &mut stream,
+            header.as_bytes(),
+            &budget,
+            Instant::now,
+            |stream, remaining| stream.set_write_timeout(Some(remaining)),
+        )?;
+        let controlled_body = if controlled {
+            read_ready_before(&mut stream, &budget, Instant::now, |stream, remaining| {
+                stream.set_read_timeout(Some(remaining))
+            })?;
+            // The receiver established its anchor before sending ready. Sample
+            // this same restricted budget now, without creating a new window.
+            Some(crate::native_request_control::encode(
+                &body,
+                budget.remaining(Duration::MAX)?,
+            )?)
+        } else {
+            None
+        };
+        write_before(
+            &mut stream,
+            controlled_body.as_deref().unwrap_or(&body),
+            &budget,
+            Instant::now,
+            |stream, remaining| stream.set_write_timeout(Some(remaining)),
+        )?;
+        budget.check()?;
+        let mut bytes = Vec::new();
+        let mut chunk = [0; 8192];
+        loop {
+            let remaining = budget.remaining(Duration::from_secs(1))?;
+            stream
+                .set_read_timeout(Some(remaining))
+                .map_err(|_| "native controller read timeout failed")?;
+            let count = match stream.read(&mut chunk) {
+                Ok(count) => count,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    budget.check()?;
+                    continue; // Same socket/request and absolute end, never resend.
+                }
+                Err(_) => return Err("native controller response failed".into()),
+            };
+            budget.check()?;
+            if count == 0 {
+                break;
+            }
+            if bytes.len() + count > 4 * 1024 * 1024 {
+                return Err("native controller response exceeds 4 MiB".into());
+            }
+            bytes.extend_from_slice(&chunk[..count]);
         }
-        stream
-            .set_read_timeout(Some(remaining))
-            .map_err(|_| "native controller read timeout failed")?;
-        let count = stream
-            .read(&mut chunk)
-            .map_err(|_| "native controller response failed")?;
-        if count == 0 {
-            break;
+        let boundary = bytes
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .ok_or("native controller returned invalid HTTP")?;
+        if boundary > 16384 {
+            return Err("native controller response headers exceed their bound".into());
         }
-        if bytes.len() + count > 4 * 1024 * 1024 {
-            return Err("native controller response exceeds 4 MiB".into());
+        let header = std::str::from_utf8(&bytes[..boundary])
+            .map_err(|_| "invalid native controller headers")?;
+        let status = header
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|value| value.parse::<u16>().ok())
+            .ok_or("invalid native controller response status")?;
+        let value: Value = serde_json::from_slice(&bytes[boundary + 4..])
+            .map_err(|_| "native controller returned invalid JSON")?;
+        if op != "native_host_stop"
+            && !crate::ownership::inspect(endpoint.owner.pid)
+                .is_some_and(|live| endpoint.owner.describes(&live))
+        {
+            return Err("native controller identity changed during request".into());
         }
-        bytes.extend_from_slice(&chunk[..count]);
-    }
-    let boundary = bytes
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or("native controller returned invalid HTTP")?;
-    if boundary > 16384 {
-        return Err("native controller response headers exceed their bound".into());
-    }
-    let header =
-        std::str::from_utf8(&bytes[..boundary]).map_err(|_| "invalid native controller headers")?;
-    let status = header
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|value| value.parse::<u16>().ok())
-        .ok_or("invalid native controller response status")?;
-    let value: Value = serde_json::from_slice(&bytes[boundary + 4..])
-        .map_err(|_| "native controller returned invalid JSON")?;
-    if op != "native_host_stop"
-        && !crate::ownership::inspect(endpoint.owner.pid)
-            .is_some_and(|live| endpoint.owner.describes(&live))
-    {
-        return Err("native controller identity changed during request".into());
-    }
-    if status != 200 || value["ok"] == false {
-        return Err(value["error"]
-            .as_str()
-            .unwrap_or("native controller operation failed")
-            .replace(&secret, "[redacted]"));
-    }
-    Ok(value)
+        if status != 200 || value["ok"] == false {
+            return Err(value["error"]
+                .as_str()
+                .unwrap_or("native controller operation failed")
+                .replace(&secret, "[redacted]"));
+        }
+        Ok(value)
+    })
 }
 fn verify_scope(root: &Path, endpoint: &Endpoint, secret: &str) -> Result<(), String> {
+    let budget = RequestBudget::at(
+        Instant::now(),
+        Duration::from_secs(3),
+        crate::operation_context::OperationContext::current(),
+    )?;
+    verify_scope_with_budget(root, endpoint, secret, &budget).map(|_| ())
+}
+fn verify_scope_with_budget(
+    root: &Path,
+    endpoint: &Endpoint,
+    secret: &str,
+    budget: &RequestBudget,
+) -> Result<bool, String> {
     let mut stream = TcpStream::connect_timeout(
         &SocketAddr::from((Ipv4Addr::LOCALHOST, endpoint.port)),
-        Duration::from_secs(2),
+        budget.remaining(Duration::from_secs(2))?,
     )
     .map_err(|_| "native controller scope probe failed")?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .map_err(|_| "native controller scope timeout failed")?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(3)))
+        .set_read_timeout(Some(budget.remaining(Duration::MAX)?))
         .map_err(|_| "native controller scope timeout failed")?;
     let header=format!("GET /api/native_host HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nX-Aurum-Token: {}\r\nConnection: close\r\n\r\n",endpoint.port,secret);
-    stream
-        .write_all(header.as_bytes())
-        .map_err(|_| "native controller scope request failed")?;
+    write_before(
+        &mut stream,
+        header.as_bytes(),
+        budget,
+        Instant::now,
+        |stream, remaining| stream.set_write_timeout(Some(remaining)),
+    )?;
+    budget.check()?;
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 8192];
-    let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err("native controller scope deadline exceeded".into());
-        }
+        let remaining = budget.remaining(Duration::MAX)?;
         stream
             .set_read_timeout(Some(remaining))
             .map_err(|_| "native scope timeout failed")?;
         let count = stream
             .read(&mut chunk)
             .map_err(|_| "native controller scope response failed")?;
+        budget.check()?;
         if count == 0 {
             break;
         }
@@ -418,7 +706,8 @@ fn verify_scope(root: &Path, endpoint: &Endpoint, secret: &str) -> Result<(), St
     {
         return Err("native controller serves a different project or protocol".into());
     }
-    Ok(())
+    budget.check()?;
+    Ok(value["request_control"] == crate::native_request_control::PROTOCOL)
 }
 pub fn existing_url(root: &Path) -> Result<Option<String>, String> {
     let Some(endpoint) = metadata(root)? else {
@@ -478,13 +767,344 @@ fn launch(root: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[path = "native_request_caller_tests.rs"]
+mod request_control_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    enum WriteStep {
+        Part(usize, u64),
+        Interrupt,
+        Timeout,
+        Zero,
+        Cancel(usize),
+        Terminal { zero: bool, cancel: bool },
+    }
+    struct ScriptWriter {
+        steps: std::collections::VecDeque<WriteStep>,
+        bytes: Vec<u8>,
+        inputs: Vec<Vec<u8>>,
+        now: std::rc::Rc<std::cell::Cell<Instant>>,
+        context: Option<crate::operation_context::OperationContext>,
+    }
+    impl Write for ScriptWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.inputs.push(bytes.to_vec());
+            match self.steps.pop_front().expect("unexpected extra write") {
+                WriteStep::Part(count, seconds) => {
+                    self.bytes.extend_from_slice(&bytes[..count]);
+                    self.now.set(self.now.get() + Duration::from_secs(seconds));
+                    Ok(count)
+                }
+                WriteStep::Cancel(count) => {
+                    self.bytes.extend_from_slice(&bytes[..count]);
+                    self.context.as_ref().unwrap().request_cancel().unwrap();
+                    Ok(count)
+                }
+                WriteStep::Interrupt => {
+                    self.now.set(self.now.get() + Duration::from_secs(1));
+                    Err(std::io::ErrorKind::Interrupted.into())
+                }
+                WriteStep::Timeout => Err(std::io::ErrorKind::TimedOut.into()),
+                WriteStep::Zero => Ok(0),
+                WriteStep::Terminal { zero, cancel } => {
+                    if cancel {
+                        self.context.as_ref().unwrap().request_cancel().unwrap();
+                    } else {
+                        self.now.set(self.now.get() + Duration::from_secs(21));
+                    }
+                    if zero {
+                        Ok(0)
+                    } else {
+                        Err(std::io::ErrorKind::BrokenPipe.into())
+                    }
+                }
+            }
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    fn scripted(start: Instant, steps: Vec<WriteStep>) -> ScriptWriter {
+        ScriptWriter {
+            steps: steps.into(),
+            bytes: Vec::new(),
+            inputs: Vec::new(),
+            now: std::rc::Rc::new(std::cell::Cell::new(start)),
+            context: None,
+        }
+    }
+    #[test]
+    fn partial_writer_recomputes_timeout_and_never_duplicates_accepted_prefix() {
+        let start = Instant::now();
+        let budget = RequestBudget::at(start, Duration::from_secs(20), None).unwrap();
+        let mut writer = scripted(
+            start,
+            vec![
+                WriteStep::Part(2, 2),
+                WriteStep::Interrupt,
+                WriteStep::Part(1, 3),
+                WriteStep::Part(3, 1),
+            ],
+        );
+        let clock = writer.now.clone();
+        let mut timeouts = Vec::new();
+        write_before(
+            &mut writer,
+            b"abcdef",
+            &budget,
+            || clock.get(),
+            |_, value| {
+                timeouts.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(writer.bytes, b"abcdef");
+        assert_eq!(
+            writer.inputs,
+            [
+                b"abcdef".to_vec(),
+                b"cdef".to_vec(),
+                b"cdef".to_vec(),
+                b"def".to_vec()
+            ]
+        );
+        assert_eq!(timeouts, [20, 18, 17, 14].map(Duration::from_secs));
+    }
+    #[test]
+    fn writer_expiry_after_partial_progress_stops_suffix_and_next_frame() {
+        let start = Instant::now();
+        let budget = RequestBudget::at(start, Duration::from_secs(5), None).unwrap();
+        let mut writer = scripted(start, vec![WriteStep::Part(2, 6), WriteStep::Part(2, 0)]);
+        let clock = writer.now.clone();
+        let result: Result<(), String> = deliver_once(&budget, |delivery| {
+            delivery.begin()?;
+            write_before(&mut writer, b"abcd", &budget, || clock.get(), |_, _| Ok(()))?;
+            write_before(&mut writer, b"body", &budget, || clock.get(), |_, _| Ok(()))
+        });
+        assert!(result.is_err());
+        assert_eq!(writer.bytes, b"ab");
+        assert_eq!(writer.inputs.len(), 1);
+    }
+    #[test]
+    fn writer_cancellation_after_partial_progress_does_not_send_suffix() {
+        let start = Instant::now();
+        let context =
+            crate::operation_context::OperationContext::new(start + Duration::from_secs(20));
+        let budget =
+            RequestBudget::at(start, Duration::from_secs(20), Some(context.clone())).unwrap();
+        let mut writer = scripted(start, vec![WriteStep::Cancel(1), WriteStep::Part(2, 0)]);
+        writer.context = Some(context.clone());
+        let clock = writer.now.clone();
+        let result: Result<(), String> = deliver_once(&budget, |delivery| {
+            delivery.begin()?;
+            write_before(&mut writer, b"abc", &budget, || clock.get(), |_, _| Ok(()))
+        });
+        assert!(result.is_err());
+        assert_eq!(writer.bytes, b"a");
+        assert_eq!(writer.inputs.len(), 1);
+        assert!(context.recovery_required());
+    }
+    #[test]
+    fn writer_zero_timeout_and_setup_expiry_refuse_without_redelivery() {
+        for step in [WriteStep::Zero, WriteStep::Timeout] {
+            let start = Instant::now();
+            let budget = RequestBudget::at(start, Duration::from_secs(20), None).unwrap();
+            let mut writer = scripted(start, vec![step]);
+            let clock = writer.now.clone();
+            assert!(
+                write_before(&mut writer, b"abc", &budget, || clock.get(), |_, _| Ok(())).is_err()
+            );
+            assert!(writer.bytes.is_empty());
+            assert_eq!(writer.inputs.len(), 1);
+        }
+        let start = Instant::now();
+        let budget = RequestBudget::at(start, Duration::from_secs(20), None).unwrap();
+        let mut writer = scripted(start, vec![WriteStep::Part(3, 0)]);
+        let clock = writer.now.clone();
+        let setter_clock = writer.now.clone();
+        assert!(write_before(
+            &mut writer,
+            b"abc",
+            &budget,
+            || clock.get(),
+            |_, _| {
+                setter_clock.set(start + Duration::from_secs(21));
+                Ok(())
+            }
+        )
+        .is_err());
+        assert!(writer.inputs.is_empty());
+    }
+    #[test]
+    fn terminal_write_negative_survives_later_expiry_or_cancellation() {
+        for zero in [false, true] {
+            for cancel in [false, true] {
+                let start = Instant::now();
+                let context = crate::operation_context::OperationContext::new(
+                    start + Duration::from_secs(20),
+                );
+                let budget =
+                    RequestBudget::at(start, Duration::from_secs(20), Some(context.clone()))
+                        .unwrap();
+                let mut writer = scripted(start, vec![WriteStep::Terminal { zero, cancel }]);
+                writer.context = Some(context.clone());
+                let clock = writer.now.clone();
+                let result: Result<(), String> = deliver_once(&budget, |delivery| {
+                    delivery.begin()?;
+                    write_before(
+                        &mut writer,
+                        b"header",
+                        &budget,
+                        || clock.get(),
+                        |_, _| Ok(()),
+                    )?;
+                    write_before(&mut writer, b"body", &budget, || clock.get(), |_, _| Ok(()))
+                });
+                assert_eq!(
+                    result.unwrap_err(),
+                    if zero {
+                        "native controller request write returned zero"
+                    } else {
+                        "native controller request write failed"
+                    }
+                );
+                assert!(context.recovery_required());
+                assert_eq!(writer.inputs, [b"header".to_vec()]);
+                assert!(writer.bytes.is_empty());
+                assert!(writer.steps.is_empty());
+            }
+        }
+    }
+    #[test]
+    fn request_classification_keeps_original_start_and_cannot_renew_after_preflight() {
+        let start = Instant::now();
+        let initial = RequestBudget::at(start, Duration::from_secs(600), None).unwrap();
+        let ordinary = initial.restrict_window(Duration::from_secs(15));
+        assert_eq!(ordinary.started, start);
+        assert_eq!(ordinary.deadline, start + Duration::from_secs(15));
+        assert!(ordinary
+            .remaining_at(start + Duration::from_secs(20), Duration::MAX)
+            .is_err());
+        let native = initial.restrict_window(request_window("changes_validate", true));
+        assert_eq!(native.started, start);
+        assert_eq!(native.deadline, initial.deadline);
+        assert_eq!(
+            native
+                .remaining_at(start + Duration::from_secs(20), Duration::MAX)
+                .unwrap(),
+            Duration::from_secs(580)
+        );
+    }
+    #[test]
+    fn fresh_candidate_bootstrap_is_explicit_and_existing_hosts_never_relaunch() {
+        for op in ["changes_validate", "changes_apply"] {
+            assert!(launch_eligible(false, op, true));
+            assert!(!launch_eligible(true, op, true));
+            assert!(!launch_eligible(false, op, false));
+        }
+        for op in [
+            "native_status",
+            "native_stop",
+            "native_host_stop",
+            "runtime_context",
+            "malformed",
+        ] {
+            assert!(!launch_eligible(false, op, false));
+            assert!(!launch_eligible(false, op, true));
+        }
+        assert!(launch_eligible(false, "native_start", false));
+        assert!(launch_eligible(false, "job_submit", false));
+    }
+    #[test]
+    fn caller_budget_consumes_bootstrap_and_preserves_original_parent_expiry() {
+        let start = Instant::now();
+        let context =
+            crate::operation_context::OperationContext::new(start + Duration::from_secs(30));
+        let budget = RequestBudget::at(
+            start,
+            request_window("changes_apply", true),
+            Some(context.clone()),
+        )
+        .unwrap();
+        assert_eq!(budget.deadline, context.deadline());
+        assert_eq!(
+            budget
+                .remaining_at(start + Duration::from_secs(20), Duration::MAX)
+                .unwrap(),
+            Duration::from_secs(10)
+        );
+        let scope = budget.clip_at(start + Duration::from_secs(28), Duration::from_secs(3));
+        assert_eq!(scope.deadline, budget.deadline);
+        assert!(scope
+            .remaining_at(start + Duration::from_secs(30), Duration::MAX)
+            .is_err());
+        assert_eq!(budget.deadline, start + Duration::from_secs(30));
+        assert!(request_window("changes_apply", true) >= Duration::from_secs(300));
+        assert_eq!(
+            request_window("native_status", false),
+            Duration::from_secs(15)
+        );
+    }
+    #[test]
+    fn cancellation_before_send_prevents_delivery_and_does_not_claim_remote_work() {
+        let start = Instant::now();
+        let context =
+            crate::operation_context::OperationContext::new(start + Duration::from_secs(30));
+        let budget =
+            RequestBudget::at(start, Duration::from_secs(30), Some(context.clone())).unwrap();
+        context.request_cancel().unwrap();
+        let mut writes = 0;
+        let result: Result<(), String> = deliver_once(&budget, |delivery| {
+            delivery.begin()?;
+            writes += 1;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(writes, 0);
+        assert!(!context.recovery_required());
+    }
+    #[test]
+    fn expired_original_budget_refuses_before_first_write() {
+        let budget = RequestBudget {
+            started: Instant::now() - Duration::from_secs(2),
+            deadline: Instant::now() - Duration::from_secs(1),
+            context: None,
+        };
+        let mut writes = 0;
+        let result: Result<(), String> = deliver_once(&budget, |delivery| {
+            delivery.begin()?;
+            writes += 1;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(writes, 0);
+    }
+    #[test]
+    fn uncertain_delivery_preserves_failure_and_never_retries() {
+        let start = Instant::now();
+        let context =
+            crate::operation_context::OperationContext::new(start + Duration::from_secs(30));
+        let budget =
+            RequestBudget::at(start, Duration::from_secs(30), Some(context.clone())).unwrap();
+        let mut attempts = 0;
+        let result: Result<(), String> = deliver_once(&budget, |delivery| {
+            delivery.begin()?;
+            attempts += 1;
+            Err("injected partial request failure".into())
+        });
+        assert_eq!(result.unwrap_err(), "injected partial request failure");
+        assert_eq!(attempts, 1);
+        assert!(context.recovery_required());
+        // This local uncertainty flag is not remote cancellation or retirement.
+    }
     use std::net::TcpListener;
 
-    struct Fixture(PathBuf);
+    pub(super) struct Fixture(pub(super) PathBuf);
     impl Fixture {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let path = std::env::temp_dir()
                 .join(format!("aurum-host-test-{}", crate::random::session_id()));
             std::fs::create_dir(&path).unwrap();

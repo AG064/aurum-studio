@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Aurum CLI module: command-line interface. Useful for tools, asset processors, and server-side use cases."
+default-run = "aurum"
 
 [lib]
 crate-type = ["rlib"]
@@ -12,6 +13,10 @@ crate-type = ["rlib"]
 [[bin]]
 name = "aurum"
 path = "src/main.rs"
+
+[[bin]]
+name = "aurum-studio"
+path = "src/studio_main.rs"
 
 [dependencies]
 aurum-core = { path = "../aurum-core" }

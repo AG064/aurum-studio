@@ -149,6 +149,31 @@ func _native_peer(peer: Dictionary) -> bool:
 
 func _native_request(input: Dictionary, request_id: String) -> Dictionary:
 	var operation = str(input.get("op", ""))
+	if operation == "context_identity":
+		if input.size() != 1: return {"ok":false,"error":"Runtime identity accepts no state or mutation fields"}
+		var version = Engine.get_version_info()
+		var architecture = "x86_64" if OS.has_feature("x86_64") else ("arm64" if OS.has_feature("arm64") else ("x86_32" if OS.has_feature("x86_32") else ("arm32" if OS.has_feature("arm32") else "unsupported")))
+		return {"ok":true,"pid":OS.get_process_id(),"version":{"major":version.major,"minor":version.minor,"patch":version.patch,"status":version.status,"build":version.build},"architecture":architecture,"debug":OS.is_debug_build()}
+	if operation == "context_dependencies":
+		if input.size() != 3 or not input.get("resources") is Array or not input.get("features") is Array: return {"ok":false,"error":"Context dependencies accepts only resource and feature identities"}
+		if input.resources.size() > 16 or input.features.size() > 128: return {"ok":false,"error":"Context dependency identity count exceeds bounds"}
+		var seen_resources = {}
+		var seen_features = {}
+		for resource in input.resources:
+			if not resource is String or resource.length() > 1024 or not resource.begins_with("res://") or ".." in resource.split("/") or seen_resources.has(resource): return {"ok":false,"error":"Invalid context resource identity"}
+			seen_resources[resource] = true
+		for feature in input.features:
+			if not feature is String or feature.is_empty() or feature.length() > 64 or seen_features.has(feature): return {"ok":false,"error":"Invalid context feature identity"}
+			for index in feature.length():
+				var character = feature.substr(index, 1)
+				if not character in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-": return {"ok":false,"error":"Invalid context feature identity"}
+			seen_features[feature] = true
+		var manifests = []
+		for resource in input.resources: manifests.append({"resource":resource,"loaded":GDExtensionManager.is_extension_loaded(resource)})
+		var features = {}
+		for feature in input.features: features[feature] = OS.has_feature(feature)
+		var architecture = "x86_64" if OS.has_feature("x86_64") else ("arm64" if OS.has_feature("arm64") else ("x86_32" if OS.has_feature("x86_32") else ("arm32" if OS.has_feature("arm32") else "unsupported")))
+		return {"ok":true,"manifests":manifests,"features":features,"architecture":architecture,"debug":OS.is_debug_build()}
 	if operation == "dependencies":
 		var root = OS.get_environment("AURUM_NATIVE_PROJECT_ROOT")
 		if root.is_empty(): return {"ok":false,"error":"Managed native source identity is unavailable"}

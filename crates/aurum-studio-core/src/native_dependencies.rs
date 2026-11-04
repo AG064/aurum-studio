@@ -8,6 +8,43 @@ use std::time::Duration;
 
 const PLAN_BYTES: u64 = 256 * 1024;
 pub const COMPILER_SECONDS: u64 = 120;
+/// Scoped preparation capability. The standing game never stores this owner.
+pub(crate) struct CompilerOwner<'a> {
+    runtime: &'a crate::native_operations::NativeRuntime,
+    root: PathBuf,
+    controller: crate::worker_windows::StreamController,
+}
+impl<'a> CompilerOwner<'a> {
+    pub(crate) fn acquire(
+        runtime: Option<&'a crate::native_operations::NativeRuntime>,
+        root: &Path,
+    ) -> Result<Self, String> {
+        let runtime =
+            runtime.ok_or("private Rust preparation requires its authenticated native runtime")?;
+        let controller = runtime.managed_native_output(root)?;
+        Ok(Self {
+            runtime,
+            root: root.to_path_buf(),
+            controller,
+        })
+    }
+    fn check(&self) -> Result<(), String> {
+        self.runtime
+            .check_managed_native_output(&self.root, &self.controller)
+    }
+    fn command(
+        &self,
+        program: PathBuf,
+        workspace: &Path,
+        lifetime: &crate::candidate_workspace::LifetimeFence,
+    ) -> Result<Command, String> {
+        self.check()?;
+        Ok(Command::new(program)
+            .candidate_storage(workspace)
+            .lifetime_fence(lifetime)
+            .owned_native_output(&self.controller))
+    }
+}
 fn operation_check() -> Result<(), String> {
     if let Some(context) = OperationContext::current() {
         context.check().map_err(|error| error.to_string())?;
@@ -56,7 +93,7 @@ fn confined_absolute(root: &Path, path: &Path) -> Result<PathBuf, String> {
     crate::diagnostics::checked_path(&result).map_err(|error| error.to_string())?;
     Ok(result)
 }
-fn validate_graph(
+pub(crate) fn validate_graph(
     root: &Path,
     workspace: &Path,
     metadata: &Value,
@@ -135,7 +172,12 @@ fn validate_graph(
     }
     selected.ok_or("configured native Rust package is absent from the private workspace".into())
 }
-fn artifact(stdout: &str, package: &str, target: &str, output: &Path) -> Result<PathBuf, String> {
+pub(crate) fn artifact(
+    stdout: &str,
+    package: &str,
+    target: &str,
+    output: &Path,
+) -> Result<PathBuf, String> {
     let mut selected = None;
     for line in stdout.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
@@ -175,8 +217,15 @@ pub(crate) fn prepare(
     workspace: &Path,
     engine: &Path,
     userdata: &Path,
+    lifetime: &crate::candidate_workspace::LifetimeFence,
+    compiler: Option<&CompilerOwner<'_>>,
 ) -> Result<Value, String> {
     operation_phase(Phase::Dependencies)?;
+    if project.config.rust_package.is_some() {
+        compiler
+            .ok_or("private Rust preparation requires managed compiler ownership")?
+            .check()?;
+    }
     if project.config.validation_command.is_some() {
         return Err(
             "private native dependencies require copied source without custom validators".into(),
@@ -229,7 +278,8 @@ pub(crate) fn prepare(
         .arg(clean(&input))
         .arg(clean(&output))
         .arg(clean(&helper))
-        .candidate_storage(workspace);
+        .candidate_storage(workspace)
+        .lifetime_fence(lifetime);
     for key in [
         "APPDATA",
         "LOCALAPPDATA",
@@ -306,9 +356,11 @@ pub(crate) fn prepare(
             .ok_or("native Rust preparation requires Cargo")?;
         let rustc = crate::toolchain::find_on_path("rustc")
             .ok_or("native Rust preparation requires rustc")?;
-        let version = Command::new(rustc)
+        let compiler =
+            compiler.ok_or("private Rust preparation requires managed compiler ownership")?;
+        let version = compiler
+            .command(rustc, workspace, lifetime)?
             .args(["-vV"])
-            .candidate_storage(workspace)
             .run(operation_budget(Duration::from_secs(10))?)
             .map_err(|error| error.to_string())?;
         let host = version
@@ -326,9 +378,9 @@ pub(crate) fn prepare(
         }
         let target = workspace.join("cargo-target");
         std::fs::create_dir(&target).map_err(|error| error.to_string())?;
-        let base = Command::new(cargo)
+        let base = compiler
+            .command(cargo, workspace, lifetime)?
             .directory(&workspace_root)
-            .candidate_storage(workspace)
             .env("CARGO_TARGET_DIR", clean(&target))
             .env("CARGO_INCREMENTAL", "0");
         let metadata = base
@@ -367,6 +419,7 @@ pub(crate) fn prepare(
         }
         let (package_id, target_name) =
             validate_graph(&project.root, &workspace_root, &metadata, package)?;
+        let cargo_graph = crate::cargo_graph::capture(&metadata, &package_id, host)?;
         if snapshot::fingerprint_all(&project.root)? != source_sha
             || crate::sha256_file(&lock).map_err(|error| error.to_string())? != lock_sha
             || project.confined_build_workspace()? != workspace_root
@@ -439,14 +492,24 @@ pub(crate) fn prepare(
         files::write_atomic(&destination, &binary).map_err(|error| error.to_string())?;
         operation_check()?;
         compiled = Some(
-            json!({"package":package,"target":target_name,"sha256":sha,"library":destination,"lock_sha256":lock_sha,"offline":true}),
+            json!({"package":package,"target":target_name,"sha256":sha,"library":destination,"lock_sha256":lock_sha,"offline":true,"cargo_graph":cargo_graph}),
         );
     }
+    let hash_deadline = std::time::Instant::now() + operation_budget(Duration::from_secs(10))?;
     for row in plan["manifests"]
         .as_array_mut()
         .ok_or("missing native plan")?
     {
         operation_check()?;
+        let manifest = confined_absolute(
+            &project.root,
+            Path::new(row["manifest"].as_str().ok_or("missing native manifest")?),
+        )?;
+        row["manifest_sha256"] = json!(crate::runtime_context::file_sha256_bounded(
+            &manifest,
+            65536,
+            hash_deadline
+        )?);
         let library = confined_absolute(
             &project.root,
             Path::new(row["library"].as_str().ok_or("missing native library")?),
@@ -454,7 +517,11 @@ pub(crate) fn prepare(
         if !library.is_file() {
             return Err("selected native library is missing from the private copy".into());
         }
-        row["sha256"] = json!(crate::sha256_file(&library).map_err(|error| error.to_string())?);
+        row["sha256"] = json!(crate::runtime_context::file_sha256_bounded(
+            &library,
+            128 * 1024 * 1024,
+            hash_deadline
+        )?);
         let mut hashes = serde_json::Map::new();
         for path in row["dependencies"]
             .as_array()
@@ -468,7 +535,11 @@ pub(crate) fn prepare(
             }
             hashes.insert(
                 path.to_string(),
-                json!(crate::sha256_file(&target).map_err(|error| error.to_string())?),
+                json!(crate::runtime_context::file_sha256_bounded(
+                    &target,
+                    128 * 1024 * 1024,
+                    hash_deadline
+                )?),
             );
         }
         row["dependency_hashes"] = Value::Object(hashes);
@@ -478,6 +549,11 @@ pub(crate) fn prepare(
     }
     plan["compiled"] = compiled.unwrap_or(Value::Null);
     plan["native"] = json!(true);
+    if plan["compiled"].get("cargo_graph").is_some()
+        && !crate::runtime_context::native_plan_fits(&plan)
+    {
+        return Err("compiled dependency graph exceeds the aggregate native plan budget".into());
+    }
     operation_check()?;
     Ok(plan)
 }
@@ -513,6 +589,10 @@ pub(crate) fn verify(expected: &Value, actual: &Value) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[path = "native_command_factory_tests.rs"]
+mod command_factory_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
@@ -534,6 +614,8 @@ mod tests {
                     &workspace,
                     Path::new("absent-engine.exe"),
                     &workspace.join("data"),
+                    &crate::candidate_workspace::LifetimeFence::default(),
+                    None,
                 )
                 .unwrap_err();
                 assert!(error.contains("cancellation"), "{error}");

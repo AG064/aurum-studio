@@ -22,7 +22,7 @@
 //!
 //! Every one of those is a deliberate refusal with a test, not an omission.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 
 /// The longest request line accepted, including the method and version.
 pub const MAX_REQUEST_LINE: usize = 8 * 1024;
@@ -126,13 +126,22 @@ impl Request {
 /// `Ok(None)` means the peer closed cleanly before sending anything, which is
 /// an ordinary end of a keep-alive connection rather than a failure.
 pub fn read_request(reader: &mut impl BufRead) -> Result<Option<Request>, ParseError> {
+    let Some(mut request) = read_request_head(reader)? else {
+        return Ok(None);
+    };
+    request.body = read_body(reader, &request.headers)?;
+    Ok(Some(request))
+}
+
+/// Read and validate framing without consuming the body, for opt-in ready control.
+pub(crate) fn read_request_head(reader: &mut impl BufRead) -> Result<Option<Request>, ParseError> {
     let Some(request_line) = read_line(reader, MAX_REQUEST_LINE, "request line")? else {
         return Ok(None);
     };
     if request_line.is_empty() {
         // Tolerate leading blank lines, which some clients send after a
         // previous request.
-        return read_request(reader);
+        return read_request_head(reader);
     }
 
     let mut parts = request_line.split(' ');
@@ -184,14 +193,14 @@ pub fn read_request(reader: &mut impl BufRead) -> Result<Option<Request>, ParseE
 
     let headers = read_headers(reader)?;
 
-    let body = read_body(reader, &headers, method)?;
+    body_length(&headers)?;
 
     Ok(Some(Request {
         method: method.to_string(),
         path,
         query,
         headers,
-        body,
+        body: Vec::new(),
     }))
 }
 
@@ -304,11 +313,7 @@ fn read_headers(reader: &mut impl BufRead) -> Result<Vec<(String, String)>, Pars
 ///
 /// The framing rules are the part of HTTP that has to be exactly right, so
 /// they are checked rather than assumed.
-fn read_body(
-    reader: &mut impl BufRead,
-    headers: &[(String, String)],
-    method: &str,
-) -> Result<Vec<u8>, ParseError> {
+pub(crate) fn body_length(headers: &[(String, String)]) -> Result<usize, ParseError> {
     let mut transfer_encoding = None;
     let mut lengths: Vec<&str> = Vec::new();
     for (name, value) in headers {
@@ -355,9 +360,14 @@ fn read_body(
         return Err(ParseError::TooLarge("body"));
     }
 
-    // A body on a method that has none is still read, so the connection stays
-    // in sync, but it is not passed on as if it meant something.
-    let _ = method;
+    Ok(length)
+}
+
+pub(crate) fn read_body(
+    reader: &mut impl Read,
+    headers: &[(String, String)],
+) -> Result<Vec<u8>, ParseError> {
+    let length = body_length(headers)?;
 
     let mut body = vec![0u8; length];
     if length > 0 {
@@ -598,6 +608,23 @@ mod tests {
     fn a_body_is_read_to_its_length() {
         let request = parse_ok("POST /api/x HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello");
         assert_eq!(request.body, b"hello");
+    }
+
+    #[test]
+    fn split_request_head_leaves_body_and_preserves_framing_refusals() {
+        let mut reader = BufReader::new(
+            b"POST /api/project HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello".as_slice(),
+        );
+        let request = read_request_head(&mut reader).unwrap().unwrap();
+        assert!(request.body.is_empty());
+        assert_eq!(read_body(&mut reader, &request.headers).unwrap(), b"hello");
+        for raw in [
+            "POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n",
+            "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n",
+        ] {
+            let mut reader = BufReader::new(raw.as_bytes());
+            assert!(read_request_head(&mut reader).is_err());
+        }
     }
 
     #[test]

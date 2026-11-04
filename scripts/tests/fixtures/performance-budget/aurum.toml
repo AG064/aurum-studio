@@ -1,0 +1,3 @@
+schema_version = 1
+name = "Aurum performance fixture"
+godot_version = "4.7"

@@ -997,7 +997,76 @@ mod tests {
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
+            if std::thread::panicking() {
+                eprintln!("retained failed jobs fixture: {}", self.0.display());
+                return;
+            }
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    #[cfg(windows)]
+    struct RetirementWitness(std::os::windows::io::OwnedHandle);
+    #[cfg(windows)]
+    impl RetirementWitness {
+        fn retain(record: &crate::ownership::OwnershipRecord) -> Self {
+            use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+            #[repr(C)]
+            #[derive(Default)]
+            struct FileTime {
+                low: u32,
+                high: u32,
+            }
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+                fn GetProcessTimes(
+                    process: *mut std::ffi::c_void,
+                    created: *mut FileTime,
+                    exited: *mut FileTime,
+                    kernel: *mut FileTime,
+                    user: *mut FileTime,
+                ) -> i32;
+            }
+            let raw = unsafe { OpenProcess(0x0010_1000, 0, record.pid) };
+            assert!(!raw.is_null(), "could not retain owned retirement witness");
+            let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+            let (mut created, mut exited, mut kernel, mut user) = (
+                FileTime::default(),
+                FileTime::default(),
+                FileTime::default(),
+                FileTime::default(),
+            );
+            assert_ne!(
+                unsafe {
+                    GetProcessTimes(
+                        handle.as_raw_handle(),
+                        &mut created,
+                        &mut exited,
+                        &mut kernel,
+                        &mut user,
+                    )
+                },
+                0,
+                "could not query retained retirement witness"
+            );
+            assert_eq!(
+                record.started,
+                format!(
+                    "windows-filetime:{}",
+                    ((created.high as u64) << 32) | created.low as u64
+                )
+            );
+            let witness = Self(handle);
+            assert_eq!(witness.signal(), 258, "owned witness already exited");
+            witness
+        }
+        fn signal(&self) -> u32 {
+            use std::os::windows::io::AsRawHandle;
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn WaitForSingleObject(process: *mut std::ffi::c_void, milliseconds: u32) -> u32;
+            }
+            unsafe { WaitForSingleObject(self.0.as_raw_handle(), 0) }
         }
     }
     fn permit(_: &Value, read_only: bool) -> Result<(), String> {
@@ -1615,6 +1684,8 @@ mod tests {
                 }
             })
             .collect();
+        #[cfg(windows)]
+        let retirement_witnesses: Vec<_> = records.iter().map(RetirementWitness::retain).collect();
         let begin = Instant::now();
         assert_eq!(
             manager.status(&ticket.id, &owner, None).unwrap()["job"]["state"],
@@ -1626,6 +1697,17 @@ mod tests {
             terminal(&manager, &owner, &ticket.id)["job"]["state"],
             "cancelled"
         );
+        #[cfg(windows)]
+        {
+            let signals: Vec<_> = retirement_witnesses
+                .iter()
+                .map(RetirementWitness::signal)
+                .collect();
+            assert!(
+                signals.iter().all(|signal| *signal == 0),
+                "cancelled job retained unsignaled process objects: signals={signals:?}, records={records:?}"
+            );
+        }
         assert!(records.iter().all(crate::ownership::recorded_process_gone));
         assert_eq!(
             crate::ownership::inspect(witness.0.id()).unwrap(),

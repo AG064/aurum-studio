@@ -84,6 +84,7 @@ pub struct NativePreview {
     channel: Channel,
     source_sha256: String,
     prepared_sha256: String,
+    executable_sha256: String,
     headless: bool,
     owner: OwnershipRecord,
     session: Session,
@@ -95,13 +96,29 @@ impl NativePreview {
     /// Stage, import and boot while paused, without changing working content.
     /// Self-contained scripts and privately staged Rust/GDExtension projects.
     pub fn prepare(project: &Project, headless: bool) -> Result<Self, String> {
-        Self::prepare_from(project, headless, None)
+        Self::prepare_with_runtime(project, headless, None)
+    }
+    pub(crate) fn prepare_with_runtime(
+        project: &Project,
+        headless: bool,
+        runtime: Option<&crate::native_operations::NativeRuntime>,
+    ) -> Result<Self, String> {
+        Self::prepare_from(project, headless, None, runtime)
     }
     fn prepare_from(
         project: &Project,
         headless: bool,
         parent: Option<&crate::native_userdata::UserdataRun>,
+        runtime: Option<&crate::native_operations::NativeRuntime>,
     ) -> Result<Self, String> {
+        let compiler = if project.config.rust_package.is_some() {
+            Some(crate::native_dependencies::CompilerOwner::acquire(
+                runtime,
+                &project.root,
+            )?)
+        } else {
+            None
+        };
         operation_phase(Phase::Staging)?;
         let (mut workspace, candidate, source_sha256, engine) = {
             let _lease = crate::content_lock::ContentLock::shared(&project.root)?;
@@ -159,11 +176,13 @@ impl NativePreview {
             .map_err(|error| error.to_string())?;
         let validation_data = workspace.path.join("validation-userdata");
         std::fs::create_dir(&validation_data).map_err(|error| error.to_string())?;
-        let dependencies = crate::native_dependencies::prepare(
+        let mut dependencies = crate::native_dependencies::prepare(
             &candidate,
             &workspace.path,
             &engine,
             &validation_data,
+            &workspace.lifetime,
+            compiler.as_ref(),
         )?;
         operation_phase(Phase::Importing)?;
         let environment: Vec<(String, String)> = [
@@ -181,7 +200,8 @@ impl NativePreview {
             .arg(godot.to_string_lossy())
             .arg("--script")
             .arg(setup.to_string_lossy())
-            .candidate_storage(&workspace.path);
+            .candidate_storage(&workspace.path)
+            .lifetime_fence(&workspace.lifetime);
         for (key, value) in &environment {
             setup_command = setup_command.env(key, value);
         }
@@ -197,6 +217,7 @@ impl NativePreview {
             Some(&crate::project_ops::RuntimeContext {
                 engine: engine.clone(),
                 userdata: validation_data,
+                lifetime: Some(workspace.lifetime.clone()),
             }),
         )?;
         if validation["ok"] != true {
@@ -262,16 +283,31 @@ impl NativePreview {
             args.insert(0, "--headless".into());
         }
         operation_phase(Phase::Validating)?;
-        let (worker, stdout, stderr) =
-            crate::worker_windows::Worker::spawn(&engine, &args, Some(&candidate.root), &overrides)
-                .map_err(|error| error.to_string())?;
+        let launch_started = Instant::now();
+        let launch_deadline = launch_started + operation_budget(Duration::from_secs(30))?;
+        let executable_sha256 = crate::runtime_context::file_sha256_bounded(
+            &engine,
+            512 * 1024 * 1024,
+            launch_deadline,
+        )?;
+        let (worker, stdout, stderr) = crate::worker_windows::Worker::spawn_with_argv0_and_fence(
+            &engine,
+            &engine,
+            &args,
+            Some(&candidate.root),
+            &overrides,
+            Some(&workspace.lifetime),
+            Some(launch_deadline.min(launch_started + Duration::from_secs(10))),
+        )
+        .map_err(|error| error.to_string())?;
         let worker = Arc::new(worker);
         for pipe in [stdout, stderr] {
             let session = session.clone();
             std::thread::spawn(move || crate::diagnostic_relay::drain(pipe, &session));
         }
         let result = (|| -> Result<_, String> {
-            let deadline = Instant::now() + operation_budget(Duration::from_secs(15))?;
+            let deadline =
+                (Instant::now() + operation_budget(Duration::from_secs(15))?).min(launch_deadline);
             let ready = loop {
                 operation_check()?;
                 if Instant::now() >= deadline {
@@ -339,6 +375,14 @@ impl NativePreview {
             if !owner.describes(&live) {
                 return Err("native process identity does not match its prepared launch".into());
             }
+            if crate::runtime_context::file_sha256_bounded(
+                &owner.executable,
+                512 * 1024 * 1024,
+                launch_deadline,
+            )? != executable_sha256
+            {
+                return Err("native executable changed during its bounded launch capture".into());
+            }
             let channel = Channel::new(ready.port, token, owner.clone())?;
             let checkpoint = channel.request(
                 &json!({"op":"checkpoint"}),
@@ -362,6 +406,22 @@ impl NativePreview {
                 )?;
                 operation_check()?;
                 crate::native_dependencies::verify(&dependencies, &actual)?;
+            }
+            if let Some(request) = crate::runtime_context::dependency_capture_request(&dependencies)
+            {
+                let remaining = launch_deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_secs(5));
+                if !remaining.is_zero() {
+                    if let Ok(actual) = channel.request(&request, operation_budget(remaining)?) {
+                        crate::runtime_context::record_dependency_capture(
+                            &mut dependencies,
+                            &request,
+                            &actual,
+                        );
+                    }
+                }
+                operation_check()?;
             }
             operation_check()?;
             owner
@@ -405,6 +465,7 @@ impl NativePreview {
                     channel,
                     source_sha256,
                     prepared_sha256,
+                    executable_sha256,
                     headless,
                     owner,
                     session,
@@ -420,7 +481,9 @@ impl NativePreview {
                     // Retain the marked copy and its allocation lease until
                     // host exit rather than removing files under a live job.
                     std::mem::forget(workspace);
-                    return Err(format!("{error}; native retirement was not confirmed: {retirement}; private workspace retained"));
+                    return Err(format!(
+                        "{error}; native retirement was not confirmed: {retirement}; private workspace retained"
+                    ));
                 }
                 match workspace.clean() {
                     Ok(()) => Err(error),
@@ -438,10 +501,20 @@ impl NativePreview {
     }
     pub fn status(&self) -> Value {
         json!({"pid":self.owner.pid,"running":self.worker.try_wait().is_ok_and(|status|status.is_none()),"source_sha256":self.source_sha256,
-            "source_private":true,"source":self.source,"session":self.session.id,"host_owned":true,"execution_sandboxed":false,"native_dependencies":self.dependencies})
+            "source_private":true,"source":self.source,"session":self.session.id,"host_owned":true,"execution_sandboxed":false,"native_dependencies":crate::cargo_graph::public_plan(&self.dependencies)})
     }
     pub(crate) fn owner(&self) -> OwnershipRecord {
         self.owner.clone()
+    }
+    pub(crate) fn context_preparation(&self) -> crate::runtime_context::Preparation {
+        crate::runtime_context::Preparation {
+            owner: self.owner.clone(),
+            private_source: self.source.clone(),
+            source_sha256: self.source_sha256.clone(),
+            prepared_sha256: self.prepared_sha256.clone(),
+            native_plan: self.dependencies.clone(),
+            executable_sha256: Some(self.executable_sha256.clone()),
+        }
     }
     pub fn source_still_current(&self, project: &Project) -> bool {
         snapshot::fingerprint_all(&project.root).is_ok_and(|hash| hash == self.source_sha256)
@@ -497,12 +570,20 @@ impl NativePreview {
     /// Prepare and prove restoration before terminating the witnessed old job.
     /// The previous preview remains owned until the new one is active and ready.
     pub fn replace(&mut self, project: &Project) -> Result<Value, String> {
+        self.replace_with_runtime(project, None)
+    }
+    pub(crate) fn replace_with_runtime(
+        &mut self,
+        project: &Project,
+        runtime: Option<&crate::native_operations::NativeRuntime>,
+    ) -> Result<Value, String> {
         operation_check()?;
         if !crate::ownership::paths_equal(&self.owner.project, &project.root) {
             return Err("native replacement must use the original project".into());
         }
         let previous_userdata = crate::native_userdata::list(&project.root)?["current"].clone();
-        let mut replacement = Self::prepare_from(project, self.headless, Some(&self.userdata))?;
+        let mut replacement =
+            Self::prepare_from(project, self.headless, Some(&self.userdata), runtime)?;
         let _lease = crate::content_lock::ContentLock::shared(&project.root)?;
         crate::transactions::ensure_writable(&project.root)?;
         if !replacement.source_still_current(project) {
@@ -584,7 +665,9 @@ impl NativePreview {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
-                return Err(format!("replacement state verification did not match the checkpoint; differing_fields={keys:?}"));
+                return Err(format!(
+                    "replacement state verification did not match the checkpoint; differing_fields={keys:?}"
+                ));
             }
             if !replacement.source_still_current(project)
                 || snapshot::fingerprint_all(&replacement.source)? != replacement.prepared_sha256
@@ -676,7 +759,9 @@ impl NativePreview {
                 } else if let Some(context) = OperationContext::current() {
                     context.mark_recovery_required();
                 }
-                return Err(format!("{error}; previous_game_resumed={resumed}; previous_controls_restored={controls_restored}; replacement_stopped={replacement_stopped}; userdata_generation_unchanged={userdata_unchanged}; rollback_verified={rollback_verified}"));
+                return Err(format!(
+                    "{error}; previous_game_resumed={resumed}; previous_controls_restored={controls_restored}; replacement_stopped={replacement_stopped}; userdata_generation_unchanged={userdata_unchanged}; rollback_verified={rollback_verified}"
+                ));
             }
         };
         let previous_pid = self.owner.pid;
@@ -731,6 +816,12 @@ impl NativePreview {
     /// Resume a checkpoint after the recorded host and both jobs have ended.
     /// No recorded PID is stopped, and newer working source is never overwritten.
     pub fn recover(project: &Project) -> Result<(Self, Value), String> {
+        Self::recover_with_runtime(project, None)
+    }
+    pub(crate) fn recover_with_runtime(
+        project: &Project,
+        runtime: Option<&crate::native_operations::NativeRuntime>,
+    ) -> Result<(Self, Value), String> {
         operation_check()?;
         let path = files::confined(&project.root, ".aurum/native/replacement-latest.json")?;
         crate::diagnostics::checked_path(&path).map_err(|error| error.to_string())?;
@@ -791,7 +882,7 @@ impl NativePreview {
             );
         }
         let previous_userdata = crate::native_userdata::list(&project.root)?["current"].clone();
-        let mut preview = Self::prepare(project, recovery.headless)?;
+        let mut preview = Self::prepare_with_runtime(project, recovery.headless, runtime)?;
         operation_phase(Phase::Restoring)?;
         let baseline = preview.request(&json!({"op":"checkpoint"}), Duration::from_secs(5))?;
         let mut held = recovery.checkpoint.clone();
@@ -859,7 +950,10 @@ impl NativePreview {
             } else if let Some(context) = OperationContext::current() {
                 context.mark_recovery_required();
             }
-            return Err(format!("{error}; recovery_run_stopped={stopped}; userdata_generation_unchanged={userdata_unchanged}; rollback_verified={}", stopped && userdata_unchanged));
+            return Err(format!(
+                "{error}; recovery_run_stopped={stopped}; userdata_generation_unchanged={userdata_unchanged}; rollback_verified={}",
+                stopped && userdata_unchanged
+            ));
         }
         let persisted = persist_handoff(&path, &journal).is_ok();
         let receipt = json!({"ok":true,"recovered":true,"pid":preview.owner.pid,"state_preserved":true,"evidence":path,"evidence_persisted":persisted});
@@ -999,7 +1093,9 @@ mod tests {
         std::fs::write(root.join("project.godot"),"config_version=5\n[application]\nrun/main_scene=\"res://main.tscn\"\n[rendering]\nrenderer/rendering_method=\"gl_compatibility\"\n").unwrap();
         std::fs::write(root.join("main.tscn"),"[gd_scene load_steps=2 format=3]\n[ext_resource type=\"Script\" path=\"res://main.gd\" id=\"1\"]\n[node name=\"Mission\" type=\"Node3D\"]\nscript=ExtResource(\"1\")\n").unwrap();
         let original = "extends Node3D\n@export var speed: float = 4.0\nvar inventory = [\"cell\",\"tool\"]\nvar enemy_ids = [\"guard-4\",\"guard-9\"]\nvar cooldowns = {\"dash\": 1.5}\nvar mission_step = 3\nfunc aurum_capture_state():\n\treturn {\"schema\":1,\"position\":position,\"inventory\":inventory,\"enemy_ids\":enemy_ids,\"cooldowns\":cooldowns,\"mission_step\":mission_step}\nfunc aurum_restore_state(state):\n\tif not state is Dictionary or state.get(\"schema\") != 1 or not state.get(\"position\") is Vector3: return false\n\tposition = state.position\n\tinventory = state.inventory.duplicate()\n\tenemy_ids = state.enemy_ids.duplicate()\n\tcooldowns = state.cooldowns.duplicate()\n\tmission_step = int(state.mission_step)\n\treturn true\n";
-        let original = format!("{original}\n@export var saved_value: String = \"\"\nfunc _ready():\n\tvar file = FileAccess.open(\"user://persistent.dat\", FileAccess.READ)\n\tif file != null: saved_value = file.get_as_text()\n\telse:\n\t\tfile = FileAccess.open(\"user://persistent.dat\", FileAccess.WRITE)\n\t\tfile.store_string(\"saved-progress\")\n\t\tfile.close()\n\t\tsaved_value = \"saved-progress\"\n");
+        let original = format!(
+            "{original}\n@export var saved_value: String = \"\"\nfunc _ready():\n\tvar file = FileAccess.open(\"user://persistent.dat\", FileAccess.READ)\n\tif file != null: saved_value = file.get_as_text()\n\telse:\n\t\tfile = FileAccess.open(\"user://persistent.dat\", FileAccess.WRITE)\n\t\tfile.store_string(\"saved-progress\")\n\t\tfile.close()\n\t\tsaved_value = \"saved-progress\"\n"
+        );
         std::fs::write(root.join("main.gd"), &original).unwrap();
         std::fs::write(root.join(".env"), "private-sentinel").unwrap();
         let project = Project::open(&root).unwrap();

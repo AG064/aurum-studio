@@ -44,12 +44,18 @@ pub mod build;
 pub mod build_queue;
 mod candidate_workspace;
 pub mod candidates;
+mod cargo_graph;
 pub mod content_lock;
 pub mod diagnostic_relay;
 pub mod diagnostics;
 pub mod doctor;
 pub mod downloads;
+#[cfg(windows)]
+mod external_native;
+#[cfg(windows)]
+mod external_workspace;
 pub mod files;
+pub mod failure_bundle;
 pub mod gameplay;
 pub mod hash;
 pub mod jobs;
@@ -60,13 +66,16 @@ pub mod native_host;
 pub mod native_operations;
 #[cfg(windows)]
 pub mod native_preview;
+pub mod native_request_control;
 pub mod native_runtime;
 pub mod native_schema;
 pub mod native_userdata;
 pub mod operation_context;
 pub mod ownership;
+pub(crate) mod performance_budget;
 pub mod playtest;
 pub mod presets;
+pub(crate) mod private_import_artifacts;
 pub mod process;
 pub mod project;
 pub mod project_contract;
@@ -77,6 +86,7 @@ pub mod registry;
 pub mod reload;
 pub mod revisions;
 pub mod runtime_channel;
+pub mod runtime_context;
 pub mod session;
 pub mod snapshot;
 pub mod supervise;
@@ -90,6 +100,7 @@ pub mod watch;
 pub mod web_build;
 #[cfg(windows)]
 mod worker_windows;
+pub mod workspace_access;
 
 pub use build::{BuildError, BuildReport, BuildRequest, Profile};
 pub use build_queue::{BuildLock, BuildQueue, LockError, Submission};

@@ -10,6 +10,81 @@ shared compilation caching and final release qualification remain open.
 Contained nested Cargo workspace hints are the next native integration gate;
 the dedicated fixture uses a nested Godot root and a renamed member library.
 
+The current development source integrates the private Windows external-source
+journal with retained namespace handles. A matching isolated 0.4.1 core build
+passed all 109 selected tests, covering interruption recovery, owned-directory
+retirement/return, whole-revision undo/redo, preservation of newer edits and
+retained compiler ownership. The real compile-first fixture used edited Rust
+with one local dependency, retired its native compiler within the original
+180-second budget and admitted the same checked candidate under a separate
+postcompile window of at most 60 seconds. Its confirmation uses private test
+authority; it did not publish source or load/activate the DLL. A second real
+producer moved the original checked artifact and five held provenance inputs
+with the candidate workspace within one original 60-second budget, then verified
+their drop and workspace cleanup. Four new regressions and five controlled
+real-producer refusals cover custody ownership, identity, binding and deadlines.
+Posttest artifact replica bytes and reported original-path absence are separate
+observations; they do not adopt the original native handles. All 90 raw output
+streams matched, protected input inventories were equal before and after, and
+the independently reviewed original runner closed with exit 0. Complete external
+native delivery, GDExtension dependencies/loading, attended publication and shared
+compilation caching remain open; public `SourcePublish` intake is still closed.
+The installed package has not been updated with these development-source changes.
+
+A private Windows transaction entry now consumes the exact candidate retained by
+postvalidation confirmation and passes its admission to the existing journaled
+publication engine. Eight focused filesystem unit tests passed, including the
+extended publication, interruption, fresh repair and whole-revision undo cases.
+These tests use private test authority; they do not qualify native compilation,
+loading or attended approval. Public `SourcePublish` intake remains closed.
+
+Private compiler provenance now retains the staged envelope and selected input
+roles for the workspace/member manifests, Rust source and lockfile. Its tests
+verify handle identity, cancellation cleanup, shared cursor restoration and
+witness lifetime, including equivalent Windows path spellings and unsafe or
+ambiguous binding refusals. The genuine producer rechecked the typed record and
+refused seven controlled corruptions with every mutation restored. Complete
+dependency content and exact build-unit provenance remain unverified.
+
+Development source now also binds observed Cargo package, target, profile and
+feature records to the original held local manifest/source identities, hashes
+and inventory fingerprints. All 23 focused unit and owned-filesystem tests
+passed, including ordinary, slash and verbatim Windows path combinations.
+The join retains reported features rather than equating them with workspace
+metadata unions, and does not require inactive metadata packages to compile.
+A matching real fixture in a short temporary workspace joined two observed
+Cargo artifacts to held local content, then passed compiler retirement, custody
+rechecks, controlled refusals and input preservation within one original
+60-second budget. Complete compiler read closure, exact build units, relocation,
+loading and `SourcePublish` intake remain unverified.
+
+A private core operation can now place the checked DLL in a fixed slot in the
+same owned candidate workspace. Original custody and deadline checks remain in
+force, with bounded allocation, same-writer hash readback and source-cursor
+restoration. Fourteen focused tests and a matching real compiler fixture passed;
+repeated placement was refused and the owned allocation was cleaned. Relocation,
+loading and public `SourcePublish` remain unqualified.
+
+A limited GDExtension binding plan now reads the manifest and its project
+ancestor through retained original guards, then associates a quoted Windows
+debug/x86_64 library entry with that same private DLL slot. Twenty-five focused
+tests and a matching real compiler fixture passed identity, cursor, custody and
+preservation checks within the original budget.
+
+Structural named-export checking subsequently passed 22 focused tests and a
+matching real compiler fixture. It reads the same retained DLL, confirms a direct
+executable export, refuses a missing name and restores the file cursor. Bounded
+table and name reads reject malformed mappings, header aliases and forwarders.
+The result is name/RVA metadata. Authoritative Godot ConfigFile semantics, export
+completeness, ABI compatibility, loading and publication remain unqualified.
+
+Held configured-engine identity passed eight focused tests and a matching real
+compiler/custody fixture. The original runtime issued the read controller; the
+same image guard remained held through compilation and custody and passed a final
+identity/hash recheck. The fixture preserved all four source roots, confirmed
+owned cleanup and restored all 17 process settings. These checks did not execute
+Godot or qualify ConfigFile parsing, loading or publication.
+
 This follows the [bounded diagnostics milestone](LOGGING.md) and is tracked in
 the [roadmap](ROADMAP.md). The implementation belongs in the shared Rust core,
 with CLI, HTTP and MCP adapters calling that same implementation.
@@ -306,7 +381,10 @@ remain before treating the entire roadmap as complete.
 - [x] Shared discovery and actual CLI/HTTP/MCP acceptance for preflight and candidate validation.
 - [x] Shared discovery and integration acceptance for script/resource publication/recovery/undo.
 - [x] Self-contained native candidate compilation and source-only publication/undo, with compiled-library hash checks and working-DLL preservation.
-- [ ] Compiled native acceptance for contained nested Cargo workspaces, renamed member libraries, local dependencies and hint/source refusal paths.
+- [x] Compiled native acceptance for contained nested Cargo workspaces, renamed member libraries, local dependencies and hint/source refusal paths.
+  Qualified at commit 38e68fc by the contained-workspace fixture in the
+  [successful Windows CI job](https://github.com/AG064/aurum-studio/actions/runs/38445290216/job/115461949781).
+  External-workspace publication remains separately gated.
 - [ ] External workspace staging, shared compilation caching, background jobs/cancellation and device/release qualification.
 
 Use disposable copies for every mutation/failure-injection test. Exercise real

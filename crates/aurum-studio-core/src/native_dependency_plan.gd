@@ -12,6 +12,7 @@ func plan(project_root: String, godot_root: String, manifests: Array, loaded: bo
 		var entry = config.get_value("configuration", "entry_symbol", "")
 		if not entry is String or entry.is_empty() or entry.length() > 256: return {"ok":false,"error":"Native entry symbol is invalid"}
 		var selected = ""
+		var selected_tags = PackedStringArray()
 		var references = []
 		var keys = config.get_section_keys("libraries")
 		if keys.size() > 128: return {"ok":false,"error":"Too many native library variants"}
@@ -19,7 +20,9 @@ func plan(project_root: String, godot_root: String, manifests: Array, loaded: bo
 			var path = _path(project_root, godot_root, manifest, config.get_value("libraries", key))
 			if path.is_empty(): return {"ok":false,"error":"Native library path escapes private source or uses an unsupported scheme"}
 			references.append(path)
-			if selected.is_empty() and _matches(key): selected = path
+			if selected.is_empty() and _matches(key):
+				selected = path
+				selected_tags = key.split(".")
 		if selected.is_empty(): return {"ok":false,"error":"Native manifest has no matching runtime library"}
 		var dependencies = []
 		if config.has_section("dependencies"):
@@ -35,7 +38,7 @@ func plan(project_root: String, godot_root: String, manifests: Array, loaded: bo
 					if _matches(key): dependencies.append(path)
 		if references.size() > 512: return {"ok":false,"error":"Too many native dependency paths"}
 		var resource = "res://" + manifest.trim_prefix(godot_root.trim_suffix("/") + "/")
-		var result = {"manifest":manifest,"resource":resource,"library":selected,"dependencies":dependencies,"references":references,"entry_symbol":entry}
+		var result = {"manifest":manifest,"resource":resource,"library":selected,"dependencies":dependencies,"references":references,"entry_symbol":entry,"feature_tags":selected_tags}
 		if loaded:
 			result["loaded"] = GDExtensionManager.is_extension_loaded(resource)
 			result["sha256"] = FileAccess.get_sha256(selected) if FileAccess.file_exists(selected) else ""

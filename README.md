@@ -13,7 +13,7 @@ The screenshot is the implemented workbench running against the Rust backend, ca
 | Choose | What you get |
 | --- | --- |
 | [Versioned Windows package](docs/RELEASES.md) | Studio 0.4.0 with the redesigned workbench, runtime, Web templates, operation contracts and both games. No compiler needed for script-only projects. |
-| [Build current main](#get-started-on-windows) | The source workspace and development changes after the latest tag. Requires the source-build prerequisites below. |
+| [Build current main](#get-started-on-windows) | The 0.4.1 development candidate with a direct `Aurum Studio.exe` entrypoint. Requires the source-build prerequisites below; it is not a published download. |
 
 Pushing source does not update an installed application or the release ZIP. [Current capabilities and limits](docs/STUDIO_STATUS.md).
 
@@ -81,28 +81,38 @@ Use **Run** to play in the workspace. **Live tuning** and the **Runtime inspecto
 
 ## Get started on Windows
 
-For the prebuilt release, download the Windows Studio ZIP, extract it into a writable folder and open `Launch Aurum Studio.vbs`. The Godot runtime and Web templates are included. Script-only projects need no Rust compiler or separate editor installation. [Packages, checksums and optional Rust setup](docs/RELEASES.md).
+The **0.4.1 development candidate** opens through `Aurum Studio.exe` at the installation or extracted package root. Its adjacent `bin/aurum.exe` remains the CLI/MCP entrypoint. [Candidate build commands and verification scope](docs/RELEASES.md#041-development-candidate).
+
+The currently published download is **0.4.0**. Extract that ZIP into a writable folder and open its `Launch Aurum Studio.vbs`; it predates the direct executable launcher. The Godot runtime and Web templates are included. Script-only projects need no Rust compiler or separate editor installation. [Published packages, checksums and optional Rust setup](docs/RELEASES.md#v040-published-download).
 
 To build from source:
 
 Prerequisites: PowerShell 7, Rust with the Windows C++ build tools, and the full **Godot 4.7 Windows executable**, not the small console launcher. Source builds were verified with Rust 1.98. The installer copies the runtime so subsequent use does not require a separate engine installation.
 
 ```powershell
-git clone https://github.com/AG064/aurum-studio.git
-cd aurum-studio
+git clone https://github.com/AG064/aurum-studio.git A:/Projects/aurum-studio
+Set-Location A:/Projects/aurum-studio
+$buildDirectory = Join-Path A:/CodexData/temp ('aurum-041-build-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path (Join-Path $buildDirectory 'tmp') -Force | Out-Null
+$env:TEMP = Join-Path $buildDirectory 'tmp'
+$env:TMP = $env:TEMP
+$env:CARGO_TARGET_DIR = Join-Path $buildDirectory 'target'
+cargo build --locked --release -p aurum-cli --bins
 pwsh ./scripts/install.ps1 `
-  -GodotBinary C:/Tools/Godot_v4.7-stable_win64.exe `
-  -StudioHome "$env:LOCALAPPDATA/AurumStudio"
+  -Binary "$env:CARGO_TARGET_DIR/release/aurum.exe" `
+  -LauncherBinary "$env:CARGO_TARGET_DIR/release/aurum-studio.exe" `
+  -GodotBinary A:/Tools/Godot_v4.7-stable_win64.exe `
+  -StudioHome A:/AurumStudio-0.4.1
 ```
 
-Open **Aurum Studio** from Start. In a new terminal, `aurum` opens the same workspace. The installer preserves projects and state, backs up replaced binaries, and supports `-WhatIf`. Building the application needs Rust; using the script-only project starters does not.
+Open `A:/AurumStudio-0.4.1/Aurum Studio.exe` or **Aurum Studio** from Start. The installer points the shortcut directly to the GUI executable and installs the verified full runtime at `runtime/godot.exe`. In a new terminal, `aurum` opens the same workspace. The installer preserves projects and state, backs up replaced binaries, and supports `-WhatIf`, `-NoEnvironment` and `-NoShortcut`. Building the application needs Rust; using the script-only project starters does not.
 
 For browser previews from a source installation, provision Web templates with the command above, using the same installation directory. The source installer copies the runtime but does not provision Web templates for you.
 
 ```powershell
-aurum new C:/Projects/MyGame --template 3d
-aurum studio C:/Projects/MyGame
-aurum dev C:/Projects/MyGame --play
+aurum new A:/Projects/MyGame --template 3d
+aurum studio A:/Projects/MyGame
+aurum dev A:/Projects/MyGame --play
 ```
 
 `dev` is headless by default. `--play` adds a managed game preview; `--editor` opens the optional native editor. See [getting started](docs/GETTING_STARTED.md) for the native Rust template and existing-project import.
@@ -118,7 +128,7 @@ Version 0.4.0 adds `op=describe` for on-demand operation schemas and structured 
   "mcpServers": {
     "aurum": {
       "command": "aurum",
-      "args": ["mcp", "--root", "C:/Projects/MyGame", "--tools", "studio"]
+      "args": ["mcp", "--root", "A:/Projects/MyGame", "--tools", "studio"]
     }
   }
 }

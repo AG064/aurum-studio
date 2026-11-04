@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const OPERATIONS: &[&str] = &[
+    "workspace_access_request",
+    "workspace_access_status",
+    "workspace_access_cancel",
+    "external_workspace_validate",
     "describe",
     "status",
     "logs",
@@ -30,6 +34,7 @@ pub const OPERATIONS: &[&str] = &[
     "native_recover",
     "native_status",
     "native_inspect",
+    "runtime_context",
     "native_apply",
     "native_input",
     "native_checkpoint",
@@ -49,6 +54,9 @@ pub const OPERATIONS: &[&str] = &[
     "validate",
     "play",
     "capture",
+    "failure_bundle_create",
+    "failure_bundle_inspect",
+    "failure_bundle_replay",
     "web_build",
     "export",
     "presets",
@@ -66,7 +74,8 @@ pub const OPERATIONS: &[&str] = &[
 pub fn is_read_only(op: &str) -> bool {
     matches!(
         op,
-        "describe"
+        "workspace_access_status"
+            | "describe"
             | "status"
             | "logs"
             | "context_delta"
@@ -78,6 +87,7 @@ pub fn is_read_only(op: &str) -> bool {
             | "changes_history"
             | "native_status"
             | "native_inspect"
+            | "runtime_context"
             | "native_userdata_list"
             | "files"
             | "read"
@@ -87,8 +97,58 @@ pub fn is_read_only(op: &str) -> bool {
             | "class_info"
             | "presets"
             | "runtime_info"
+            | "failure_bundle_inspect"
             | "target_preflight"
     )
+}
+
+#[cfg(test)]
+mod workspace_access_dispatch_tests {
+    use super::*;
+    #[test]
+    fn shared_dispatch_has_no_read_only_or_forged_approval_bypass() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-no-intake-write-{}",
+            crate::random::session_id()
+        ));
+        assert!(!root.exists());
+        let service =
+            std::sync::Arc::new(crate::native_operations::NativeRuntime::controller(&root));
+        let status = execute_in_service(
+            &root,
+            &json!({"op":"workspace_access_status"}),
+            true,
+            service.clone(),
+        )
+        .unwrap();
+        assert!(status["grants"].as_array().unwrap().is_empty());
+        assert_eq!(status["ordinary_authorization_can_approve"], false);
+        let request = json!({"op":"workspace_access_request","mode":"dependency_read"});
+        assert!(execute_in_service(&root, &request, true, service.clone())
+            .unwrap_err()
+            .contains("requires write permission"));
+        let forged =
+            json!({"op":"workspace_access_request","mode":"dependency_read","approved":true});
+        assert!(execute_in_service(&root, &forged, false, service.clone())
+            .unwrap_err()
+            .contains("unsupported field"));
+        let publish = json!({"op":"workspace_access_request","mode":"source_publish"});
+        assert!(execute_in_service(&root, &publish, false, service.clone())
+            .unwrap_err()
+            .contains("not implemented"));
+        service.close();
+        assert!(execute_in_service(
+            &root,
+            &json!({"op":"workspace_access_status"}),
+            true,
+            service
+        )
+        .is_err());
+        assert!(
+            !root.exists(),
+            "read status and refusals must not create project, controller or candidate state"
+        );
+    }
 }
 fn field<'a>(input: &'a Value, key: &str) -> Result<&'a str, String> {
     input
@@ -160,6 +220,16 @@ fn execute_context(
     if read_only && !is_read_only(op) {
         return Err(format!("'{op}' requires write permission"));
     }
+    if crate::failure_bundle::supported(op) {
+        return crate::failure_bundle::execute(root, input);
+    }
+    if crate::workspace_access::supported(op) {
+        crate::workspace_access::preflight(input)?;
+        if let Some(runtime) = runtime.filter(|runtime| runtime.is_controller_for(root)) {
+            return runtime.workspace_access(root, input, !read_only);
+        }
+        return crate::native_host::route(root, input);
+    }
     if crate::project_jobs::supported(op) {
         crate::project_jobs::preflight(input, read_only)?;
         return crate::native_host::route(root, input);
@@ -199,11 +269,15 @@ fn execute_context(
         return crate::native_userdata::forget(root, field(input, "userdata_id")?);
     }
     if crate::native_operations::supported(op) {
+        let request = (op == "runtime_context")
+            .then(|| crate::runtime_context::operation_request(input))
+            .transpose()?;
+        let input = request.as_ref().unwrap_or(input);
         if !runtime.is_some_and(|runtime| runtime.is_controller_for(root)) {
             return crate::native_host::route(root, input);
         }
         let runtime = runtime.ok_or("native controller context is unavailable")?;
-        if op != "native_status" && !runtime.knows_project(root) {
+        if !matches!(op, "native_status" | "runtime_context") && !runtime.knows_project(root) {
             Project::open(root).map_err(|error| error.to_string())?;
         }
         let span = if is_read_only(op) {
@@ -249,19 +323,110 @@ fn execute_context(
     };
     // Discovery and polling remain write-free. Open the project before creating
     // diagnostics, so an invalid project request cannot create arbitrary state.
-    let project = Project::open(root).map_err(|error| error.to_string())?;
+    let project = if matches!(op, "play" | "capture") && input.get("performance").is_some() {
+        let (frames, _, _) = play_options(input)?;
+        crate::performance_budget::Request::parse(
+            &input["performance"],
+            frames,
+            crate::playtest::timeout_seconds(input)?,
+        )?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = crate::operation_context::OperationContext::current()
+            .map_or(deadline, |context| deadline.min(context.deadline()));
+        Project::open_preflight(root, deadline).map_err(|error| error.to_string())?
+    } else {
+        Project::open(root).map_err(|error| error.to_string())?
+    };
+    #[cfg(windows)]
+    if native_candidate_needs_host(
+        &project.root,
+        project.config.rust_package.is_some(),
+        op,
+        runtime,
+    ) {
+        // Route before candidate validation/publication locks. Service requests
+        // carry their authenticated runtime and cannot recurse through here.
+        return crate::native_host::route(root, input);
+    }
     let span = input
         .get("op")
         .and_then(Value::as_str)
         .and_then(|op| crate::diagnostics::Operation::start(&project.root, op));
-    let result = execute_inner(project, input);
+    let result = execute_inner(
+        project,
+        input,
+        #[cfg(windows)]
+        runtime,
+    );
     if let Some(span) = span {
         span.finish(&result);
     }
     result
 }
 
-fn execute_inner(project: Project, input: &Value) -> Result<Value, String> {
+#[cfg(windows)]
+fn native_candidate_needs_host(
+    root: &Path,
+    rust: bool,
+    op: &str,
+    runtime: Option<&crate::native_operations::NativeRuntime>,
+) -> bool {
+    rust && matches!(op, "changes_validate" | "changes_apply")
+        && !runtime.is_some_and(|runtime| runtime.is_controller_for(root))
+}
+
+#[cfg(all(windows, test))]
+mod native_candidate_route_tests {
+    use super::*;
+    #[test]
+    fn native_candidate_route_handles_none_mcp_default_foreign_and_closed_matching_runtime() {
+        let temp = std::env::temp_dir().canonicalize().unwrap();
+        let root = temp.join(format!("aurum-route-{}", crate::random::session_id()));
+        let other = root.join("foreign");
+        std::fs::create_dir_all(&other).unwrap();
+        let default = crate::native_operations::NativeRuntime::default();
+        let matching = crate::native_operations::NativeRuntime::controller(&root);
+        let foreign = crate::native_operations::NativeRuntime::controller(&other);
+        for op in ["changes_validate", "changes_apply"] {
+            assert!(native_candidate_needs_host(&root, true, op, None));
+            assert!(native_candidate_needs_host(&root, true, op, Some(&default)));
+            assert!(native_candidate_needs_host(&root, true, op, Some(&foreign)));
+            assert!(!native_candidate_needs_host(
+                &root,
+                true,
+                op,
+                Some(&matching)
+            ));
+            assert!(!native_candidate_needs_host(
+                &root,
+                false,
+                op,
+                Some(&default)
+            ));
+        }
+        matching.close();
+        assert!(!native_candidate_needs_host(
+            &root,
+            true,
+            "changes_apply",
+            Some(&matching)
+        ));
+        assert!(
+            crate::native_dependencies::CompilerOwner::acquire(Some(&matching), &root).is_err()
+        );
+        assert!(crate::native_dependencies::CompilerOwner::acquire(Some(&default), &root).is_err());
+        assert!(crate::native_dependencies::CompilerOwner::acquire(Some(&foreign), &root).is_err());
+        foreign.close();
+        default.close();
+        // No host, compiler, service or worker is launched by this route-decision test.
+    }
+}
+
+fn execute_inner(
+    project: Project,
+    input: &Value,
+    #[cfg(windows)] runtime: Option<&crate::native_operations::NativeRuntime>,
+) -> Result<Value, String> {
     let op = field(input, "op")?;
     let _lock = if !matches!(
         op,
@@ -295,9 +460,27 @@ fn execute_inner(project: Project, input: &Value) -> Result<Value, String> {
     match op {
         "logs" => crate::diagnostics::query(&project.root, input),
         "changes_check" => crate::revisions::check(&project.root, input),
-        "changes_validate" => crate::candidates::validate(&project, input),
+        "changes_validate" => {
+            #[cfg(windows)]
+            {
+                crate::candidates::validate_in_runtime(&project, input, runtime)
+            }
+            #[cfg(not(windows))]
+            {
+                crate::candidates::validate(&project, input)
+            }
+        }
         "changes_last" => crate::candidates::last(&project),
-        "changes_apply" => crate::candidates::apply(&project, input),
+        "changes_apply" => {
+            #[cfg(windows)]
+            {
+                crate::candidates::apply_in_runtime(&project, input, runtime)
+            }
+            #[cfg(not(windows))]
+            {
+                crate::candidates::apply(&project, input)
+            }
+        }
         "changes_recover" => crate::transactions::recover(&project),
         "changes_undo" => crate::transactions::undo(&project, field(input, "revision_id")?),
         "changes_forget" => crate::transactions::forget(&project, field(input, "revision_id")?),
@@ -307,7 +490,7 @@ fn execute_inner(project: Project, input: &Value) -> Result<Value, String> {
         }),
         "draft_save" | "draft_read" | "draft_clear" => draft(&project, input),
         "status" => Ok(
-            json!({"name":project.config.name,"root":project.root,"godot_project":project.godot_project_dir(),"native_package":project.config.rust_package,"operations":OPERATIONS,"headless":true,"backend":"Godot","session_state":"headless MCP simulation is separate from project gameplay"}),
+            json!({"name":project.config.name,"root":project.root,"godot_project":project.godot_project_dir(),"native_package":project.config.rust_package,"operations":OPERATIONS,"headless":true,"backend":"Godot","session_state":"headless MCP simulation is separate from project gameplay","scene_authoring":scene_authoring_schema()}),
         ),
         "files" => {
             let mut paths = Vec::new();
@@ -420,6 +603,7 @@ fn execute_inner(project: Project, input: &Value) -> Result<Value, String> {
 }
 
 fn play_options(input: &Value) -> Result<(u64, Option<u64>, Vec<String>), String> {
+    crate::playtest::seed(input)?;
     let integer = |key: &str, default: u64, maximum: u64| -> Result<u64, String> {
         let value = match input.get(key) {
             Some(value) => value
@@ -567,6 +751,7 @@ fn export_job(
     let runtime = RuntimeContext {
         engine: engine_binary(project)?,
         userdata,
+        lifetime: None,
     };
     context.phase(crate::operation_context::Phase::Compiling);
     let flag = if input.get("pack").and_then(Value::as_bool).unwrap_or(false) {
@@ -696,11 +881,15 @@ fn ensure_export_preset_with_policy(
     let options = match platform {
         "Windows Desktop" | "Linux" => "binary_format/architecture=\"x86_64\"\n",
         "Web" => "variant/thread_support=false\n",
-        "Android" => "gradle_build/use_gradle_build=false\npackage/unique_name=\"org.aurum.$genname\"\npermissions/internet=false\n",
+        "Android" => {
+            "gradle_build/use_gradle_build=false\npackage/unique_name=\"org.aurum.$genname\"\npermissions/internet=false\n"
+        }
         "macOS" | "iOS" => "application/bundle_identifier=\"org.aurum.game\"\n",
         _ => "",
     };
-    let text=format!("{old}\n[preset.{index}]\nname=\"{preset}\"\nplatform=\"{platform}\"\nrunnable=true\nexport_filter=\"all_resources\"\ninclude_filter=\"\"\nexclude_filter=\".aurum/*,dist/*,builds/*\"\nexport_path=\"\"\nscript_export_mode=2\n\n[preset.{index}.options]\n{options}");
+    let text = format!(
+        "{old}\n[preset.{index}]\nname=\"{preset}\"\nplatform=\"{platform}\"\nrunnable=true\nexport_filter=\"all_resources\"\ninclude_filter=\"\"\nexclude_filter=\".aurum/*,dist/*,builds/*\"\nexport_path=\"\"\nscript_export_mode=2\n\n[preset.{index}.options]\n{options}"
+    );
     let expected = if path.exists() {
         crate::sha256_hex(old.as_bytes())
     } else {
@@ -787,6 +976,7 @@ fn package_windows(project: &Project, input: &Value) -> Result<Value, String> {
     let context = RuntimeContext {
         engine: engine_binary(project)?,
         userdata,
+        lifetime: Some(workspace.lifetime.clone()),
     };
     let check = validate_with_context(&private, Some(&context))?;
     if check["ok"] != true {
@@ -1226,6 +1416,7 @@ fn engine_run(project: &Project, args: &[String], timeout: Duration) -> Result<V
 pub(crate) struct RuntimeContext {
     pub engine: PathBuf,
     pub userdata: PathBuf,
+    pub lifetime: Option<crate::candidate_workspace::LifetimeFence>,
 }
 
 fn engine_run_with_context(
@@ -1251,6 +1442,9 @@ fn engine_run_with_storage(
         .args(args.iter().cloned())
         .directory(&project.root);
     if let Some(context) = context {
+        if let Some(lifetime) = &context.lifetime {
+            command = command.lifetime_fence(lifetime);
+        }
         command = command.candidate_storage(
             context
                 .userdata
@@ -1378,11 +1572,570 @@ fn headless_operation(project: &Project, input: &Value) -> Result<Value, String>
     headless_operation_with_context(project, input, None)
 }
 
+pub(crate) fn scene_authoring_schema() -> Value {
+    json!({
+        "resource_reference":{"fields":["resource_path","expected_type"],"path":"existing confined res:// resource; links and internal state refused","expected_types":["Texture2D","Material","StandardMaterial3D","Mesh"],"property_type_checked":true},
+        "set_transform":{"fields":["op","node","position","rotation_degrees","scale","position_snap"],"target":"local Node3D","vectors":"exactly xyz arrays; at least one of position, rotation_degrees or scale","component_abs_max":100000,"component_limit_scope":"position and rotation_degrees; scale uses its explicit admission band","scale_abs_min":0.000001,"scale_abs_max":100000,"scale_boundary_relative_tolerance":TRANSFORM_SCALE_REL_TOLERANCE,"scale_admission_abs_min":TRANSFORM_SCALE_MIN_ADMISSION,"scale_admission_abs_max":TRANSFORM_SCALE_MAX_ADMISSION,"scale_values_adjusted":false,"scale_sign":"all positive or all negative; nominal bounds admit only the documented float32 boundary band; zero/mixed/nonfinite/out-of-band refused before mutation","position_snap":"positive finite scene-unit step <=100000; only with position; componentwise nearest, exact halves away from zero; nonfinite/out-of-bounds result refused","unspecified_fields":"preserved","unknown_fields":false},
+        "animate_transform":{"fields":["op","node","animation","length","loop","tracks"],"player":"local AnimationPlayer","properties":["position","rotation","scale"],"values":"position/scale xyz arrays; normalized rotation xyzw quaternion arrays","length_seconds_max":600,"tracks_max":16,"keys_max":256,"times":"finite strictly ascending within length","method_tracks":false,"unknown_fields":false},
+        "inspection":{"resources_max":128,"surfaces_per_mesh_max":16,"tracks_per_animation_max":16,"animation_keys_max":512,"source_bodies":false}
+    })
+}
+
+const TRANSFORM_COMPONENT_LIMIT: f64 = 100_000.0;
+const TRANSFORM_SCALE_MIN: f64 = 0.000001;
+pub(crate) const TRANSFORM_SCALE_REL_TOLERANCE: f64 = 4.0 * f32::EPSILON as f64;
+pub(crate) const TRANSFORM_SCALE_MIN_ADMISSION: f64 =
+    TRANSFORM_SCALE_MIN * (1.0 - TRANSFORM_SCALE_REL_TOLERANCE);
+pub(crate) const TRANSFORM_SCALE_MAX_ADMISSION: f64 =
+    TRANSFORM_COMPONENT_LIMIT * (1.0 + TRANSFORM_SCALE_REL_TOLERANCE);
+
+fn snapped_position_component(value: f64, step: f64) -> Result<f64, String> {
+    let ratio = value / step;
+    if !ratio.is_finite() {
+        return Err("set_transform snapped position exceeds finite transform bounds".into());
+    }
+    let magnitude = ratio.abs();
+    let whole = magnitude.floor();
+    let rounded = whole + if magnitude - whole >= 0.5 { 1.0 } else { 0.0 };
+    let snapped = if ratio < 0.0 { -rounded } else { rounded } * step;
+    if !snapped.is_finite() || snapped.abs() > TRANSFORM_COMPONENT_LIMIT {
+        return Err("set_transform snapped position exceeds finite transform bounds".into());
+    }
+    Ok(snapped)
+}
+
+/// Refuse malformed typed transforms before runtime discovery, import or staging.
+/// The worker validates again and applies only supplied components to the scene.
+fn scene_transform_operations(input: &Value) -> Result<(), String> {
+    if !matches!(
+        input.get("op").and_then(Value::as_str),
+        Some("scene_create" | "scene_edit")
+    ) {
+        return Ok(());
+    }
+    let Some(operations) = input.get("operations").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    if operations.len() > 200 {
+        return Err("operations must be an array of at most 200 edits".into());
+    }
+    for operation in operations {
+        if operation.get("op").and_then(Value::as_str) != Some("set_transform") {
+            continue;
+        }
+        let fields = operation
+            .as_object()
+            .ok_or("invalid set_transform object")?;
+        if fields.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "op" | "node" | "position" | "rotation_degrees" | "scale" | "position_snap"
+            )
+        }) {
+            return Err("set_transform contains an unsupported field".into());
+        }
+        let node = operation
+            .get("node")
+            .and_then(Value::as_str)
+            .ok_or("set_transform node must be a bounded local scene path")?;
+        if node.is_empty()
+            || node.chars().count() > 512
+            || node.starts_with('/')
+            || node.contains(['\\', ':'])
+            || node.split('/').any(|part| part == "..")
+        {
+            return Err("set_transform node must be a bounded local scene path".into());
+        }
+        if !["position", "rotation_degrees", "scale"]
+            .iter()
+            .any(|key| fields.contains_key(*key))
+        {
+            return Err("set_transform requires position, rotation_degrees or scale".into());
+        }
+        if fields.contains_key("position_snap") && !fields.contains_key("position") {
+            return Err("set_transform position_snap requires position".into());
+        }
+        for key in ["position", "rotation_degrees", "scale"] {
+            if let Some(value) = fields.get(key) {
+                let vector = value
+                    .as_array()
+                    .filter(|values| values.len() == 3)
+                    .ok_or("set_transform values must be exactly three bounded finite numbers")?;
+                let component_limit = if key == "scale" {
+                    TRANSFORM_SCALE_MAX_ADMISSION
+                } else {
+                    TRANSFORM_COMPONENT_LIMIT
+                };
+                if vector.iter().any(|value| {
+                    value
+                        .as_f64()
+                        .is_none_or(|value| !value.is_finite() || value.abs() > component_limit)
+                }) {
+                    return Err(
+                        "set_transform values must be exactly three bounded finite numbers".into(),
+                    );
+                }
+                if key == "scale" {
+                    let positive = vector[0].as_f64().unwrap() > 0.0;
+                    if vector.iter().any(|value| {
+                        let component = value.as_f64().unwrap();
+                        component.abs() < TRANSFORM_SCALE_MIN_ADMISSION
+                            || (component > 0.0) != positive
+                    }) {
+                        return Err("set_transform scale requires one strict sign and nominal magnitude 0.000001..100000 with relative boundary tolerance 2^-21".into());
+                    }
+                }
+            }
+        }
+        if let Some(value) = fields.get("position_snap") {
+            let step = value
+                .as_f64()
+                .filter(|step| {
+                    step.is_finite() && *step > 0.0 && *step <= TRANSFORM_COMPONENT_LIMIT
+                })
+                .ok_or("set_transform position_snap must be a positive bounded finite number")?;
+            for component in fields["position"].as_array().unwrap() {
+                snapped_position_component(component.as_f64().unwrap(), step)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod scene_transform_tests {
+    use super::*;
+
+    fn request(operation: Value) -> Value {
+        json!({"op":"scene_edit","scene":"main.tscn","operations":[operation]})
+    }
+
+    #[test]
+    fn sparse_transform_components_and_same_sign_scales_are_accepted() {
+        for key in ["position", "rotation_degrees"] {
+            let mut operation = json!({"op":"set_transform","node":"Imported/Mesh"});
+            operation[key] = json!([-1.0, 0.0, 100000.0]);
+            scene_transform_operations(&request(operation)).unwrap();
+        }
+        for scale in [
+            json!([0.000001, 1.0, 100000.0]),
+            json!([-0.000001, -1.0, -100000.0]),
+        ] {
+            scene_transform_operations(&request(
+                json!({"op":"set_transform","node":".","scale":scale}),
+            ))
+            .unwrap();
+        }
+        scene_transform_operations(&request(json!({"op":"set_transform","node":".",
+            "position":[0.25,-0.25,0.0],"rotation_degrees":[0,90,0],"scale":[1,2,1],"position_snap":0.5}))).unwrap();
+    }
+
+    #[test]
+    fn scale_roundtrip_band_accepts_captured_readback_without_rewriting_values() {
+        // Exact JSON number observed after real Godot 4.7 rotated minimum-scale save/reopen.
+        let captured = 9.99999997475243e-7;
+        for scale in [
+            [captured, captured, captured],
+            [-captured, -captured, -captured],
+            [captured, 1.0, 100000.0078125],
+            [-captured, -1.0, -100000.0078125],
+        ] {
+            let input = request(json!({"op":"set_transform","node":".",
+                "rotation_degrees":[12.0,45.0,23.0],"scale":scale}));
+            let unchanged = input.clone();
+            scene_transform_operations(&input).unwrap();
+            assert_eq!(
+                input, unchanged,
+                "admission must not clamp, round or rewrite input"
+            );
+        }
+    }
+
+    #[test]
+    fn scale_roundtrip_band_has_inclusive_limits_and_no_other_transform_waiver() {
+        let minimum = TRANSFORM_SCALE_MIN_ADMISSION;
+        let maximum = TRANSFORM_SCALE_MAX_ADMISSION;
+        for magnitude in [minimum, TRANSFORM_SCALE_MIN, maximum] {
+            for sign in [-1.0, 1.0] {
+                scene_transform_operations(&request(json!({"op":"set_transform","node":".",
+                    "scale":[sign*magnitude,sign*magnitude,sign*magnitude]})))
+                .unwrap();
+            }
+        }
+        let below = f64::from_bits(minimum.to_bits() - 1);
+        let above = f64::from_bits(maximum.to_bits() + 1);
+        for magnitude in [below, above, 0.5e-6, 0.0] {
+            for sign in [-1.0, 1.0] {
+                assert!(scene_transform_operations(&request(
+                    json!({"op":"set_transform","node":".",
+                    "scale":[sign*magnitude,sign*magnitude,sign*magnitude]})
+                ))
+                .is_err());
+            }
+        }
+        for scale in [json!([1.0, -1.0, 1.0]), json!([1.0, null, 1.0])] {
+            assert!(scene_transform_operations(&request(
+                json!({"op":"set_transform","node":".","scale":scale})
+            ))
+            .is_err());
+        }
+        for property in ["position", "rotation_degrees"] {
+            let mut operation = json!({"op":"set_transform","node":"."});
+            operation[property] = json!([100000.0078125, 0.0, 0.0]);
+            assert!(scene_transform_operations(&request(operation)).is_err());
+        }
+    }
+
+    #[test]
+    fn position_snap_uses_exact_half_away_from_zero_and_refuses_overflow() {
+        for (value, expected) in [
+            (-0.75, -1.0),
+            (-0.25, -0.5),
+            (0.25, 0.5),
+            (0.75, 1.0),
+            (-0.24, 0.0),
+            (0.24, 0.0),
+        ] {
+            assert_eq!(snapped_position_component(value, 0.5).unwrap(), expected);
+        }
+        assert!(snapped_position_component(100000.0, 60000.0).is_err());
+        assert!(snapped_position_component(100000.0, 1e-320).is_err());
+    }
+
+    #[test]
+    fn malformed_transform_fields_vectors_and_snap_are_refused() {
+        for operation in [
+            json!({"op":"set_transform","node":"."}),
+            json!({"op":"set_transform","node":".","position_snap":1}),
+            json!({"op":"set_transform","node":".","scale":[1,1,1],"position_snap":1}),
+            json!({"op":"set_transform","node":".","position":[0,0,0],"extra":true}),
+            json!({"op":"set_transform","node":".","rotation_degrees":[0,0]}),
+            json!({"op":"set_transform","node":".","scale":[1,1,1,1]}),
+            json!({"op":"set_transform","node":".","scale":[0,1,1]}),
+            json!({"op":"set_transform","node":".","scale":[-1,1,1]}),
+            json!({"op":"set_transform","node":".","scale":[0.0000001,1,1]}),
+            json!({"op":"set_transform","node":".","scale":[-0.0000001,-1,-1]}),
+            json!({"op":"set_transform","node":".","position":{"x":0,"y":0,"z":0}}),
+            json!({"op":"set_transform","node":".","position":[0,true,0]}),
+            json!({"op":"set_transform","node":".","position":[0,100001,0]}),
+            json!({"op":"set_transform","node":".","position":[0,null,0]}),
+        ] {
+            assert!(
+                scene_transform_operations(&request(operation.clone())).is_err(),
+                "{operation}"
+            );
+        }
+        assert!(
+            scene_transform_operations(&json!({"op":"scene_edit","operations":vec![
+            json!({"op":"set_transform","node":".","position":[0,0,0]});201]}))
+            .is_err()
+        );
+        for step in [json!(0), json!(-1), json!(100001), json!("1"), json!(null)] {
+            assert!(
+                scene_transform_operations(&request(json!({"op":"set_transform","node":".",
+                "position":[0,0,0],"position_snap":step})))
+                .is_err()
+            );
+        }
+        for node in [
+            "",
+            "/outside",
+            "../outside",
+            "child/../outside",
+            "node:position",
+            "child\\node",
+        ] {
+            assert!(scene_transform_operations(&request(
+                json!({"op":"set_transform","node":node,"position":[0,0,0]})
+            ))
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn transform_refusal_precedes_missing_runtime_and_preserves_source() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-transform-refusal-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("aurum.toml"),
+            "schema_version=1\nname=\"transform\"\nmodules=[]\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("project.godot"), "config_version=5\n").unwrap();
+        let scene = root.join("main.tscn");
+        std::fs::write(
+            &scene,
+            b"[gd_scene format=3]\n[node name=\"Main\" type=\"Node3D\"]\n",
+        )
+        .unwrap();
+        let project = Project::open(&root).unwrap();
+        let before = std::fs::read(&scene).unwrap();
+        let error = headless_operation(
+            &project,
+            &request(json!({"op":"set_transform","node":".","position":[0,0]})),
+        )
+        .unwrap_err();
+        assert!(error.contains("exactly three bounded finite numbers"));
+        assert_eq!(std::fs::read(&scene).unwrap(), before);
+        assert!(!root.join(".aurum").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Precheck declared typed resources before any import or Godot execution.
+/// The real worker additionally checks class against the property's resource hint.
+fn scene_resource_references(root: &Path, value: &Value) -> Result<(), String> {
+    fn walk(root: &Path, value: &Value, depth: usize, seen: &mut usize) -> Result<(), String> {
+        *seen += 1;
+        if depth > 16 || *seen > 8192 {
+            return Err("scene resource values exceed bounded depth or entry count".into());
+        }
+        match value {
+            Value::Object(fields) => {
+                if fields.len() > 128 {
+                    return Err("scene resource object exceeds field bound".into());
+                }
+                if fields.contains_key("resource_path") || fields.contains_key("expected_type") {
+                    if fields.len() != 2
+                        || fields
+                            .keys()
+                            .any(|key| !matches!(key.as_str(), "resource_path" | "expected_type"))
+                    {
+                        return Err("typed resource reference requires only resource_path and expected_type".into());
+                    }
+                    let path = field(value, "resource_path")?;
+                    let kind = field(value, "expected_type")?;
+                    if !matches!(
+                        kind,
+                        "Texture2D" | "Material" | "StandardMaterial3D" | "Mesh"
+                    ) {
+                        return Err("unsupported expected resource type".into());
+                    }
+                    if path.len() > 1024 || !path.starts_with("res://") || path.contains('\\') {
+                        return Err("resource reference must be a bounded res:// path".into());
+                    }
+                    let relative = path.strip_prefix("res://").unwrap();
+                    if relative.is_empty()
+                        || relative
+                            .split('/')
+                            .any(|part| part.is_empty() || matches!(part, "." | ".."))
+                    {
+                        return Err("resource reference must stay inside the project".into());
+                    }
+                    let confined = managed_path(root, path)?;
+                    let mut cursor = root.to_path_buf();
+                    for part in relative.split('/') {
+                        cursor.push(part);
+                        let metadata = std::fs::symlink_metadata(&cursor)
+                            .map_err(|error| error.to_string())?;
+                        let linked = metadata.file_type().is_symlink();
+                        #[cfg(windows)]
+                        let linked = {
+                            use std::os::windows::fs::MetadataExt;
+                            linked || metadata.file_attributes() & 0x400 != 0
+                        };
+                        if linked {
+                            return Err(
+                                "resource references cannot traverse links or junctions".into()
+                            );
+                        }
+                    }
+                    let metadata =
+                        std::fs::metadata(confined).map_err(|error| error.to_string())?;
+                    if !metadata.is_file() || metadata.len() > 64 * 1024 * 1024 {
+                        return Err(
+                            "referenced resource must be an existing regular file within 64 MiB"
+                                .into(),
+                        );
+                    }
+                    return Ok(());
+                }
+                for child in fields.values() {
+                    walk(root, child, depth + 1, seen)?;
+                }
+            }
+            Value::Array(values) => {
+                if values.len() > 256 {
+                    return Err("scene resource array exceeds entry bound".into());
+                }
+                for child in values {
+                    walk(root, child, depth + 1, seen)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let mut seen = 0;
+    walk(root, value, 0, &mut seen)
+}
+
+#[cfg(test)]
+mod scene_resource_tests {
+    use super::*;
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "aurum-resource-preflight-{}",
+                crate::random::session_id()
+            ));
+            std::fs::create_dir_all(root.join("assets")).unwrap();
+            std::fs::write(
+                root.join("aurum.toml"),
+                "schema_version=1\nname=\"typed-resource\"\nmodules=[]\n",
+            )
+            .unwrap();
+            std::fs::write(root.join("project.godot"), "config_version=5\n").unwrap();
+            std::fs::write(
+                root.join("assets/texture.png"),
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../examples/relay-yard/godot/assets/textures_yard/paint_wear.png"
+                )),
+            )
+            .unwrap();
+            Self(root)
+        }
+        fn reference(path: &str) -> Value {
+            json!({"resource_path":path,"expected_type":"Texture2D"})
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn scene_resource_actual_png_is_accepted_without_import_or_state_writes() {
+        let fixture = Fixture::new();
+        let before = crate::sha256_file(&fixture.0.join("assets/texture.png")).unwrap();
+        let input = json!({"operations":[{"op":"set","properties":{"material_override":{"resource":"StandardMaterial3D","properties":{"albedo_texture":Fixture::reference("res://assets/texture.png")}}}}]});
+        scene_resource_references(&fixture.0, &input).unwrap();
+        assert_eq!(
+            before,
+            crate::sha256_file(&fixture.0.join("assets/texture.png")).unwrap()
+        );
+        assert!(!fixture.0.join(".aurum").exists());
+        assert!(!fixture.0.join(".godot").exists());
+    }
+
+    #[test]
+    fn scene_resource_paths_refuse_traversal_absolute_and_missing_files() {
+        let fixture = Fixture::new();
+        for path in [
+            "res://../texture.png",
+            "res://assets/../../texture.png",
+            "res://assets//texture.png",
+            "res://./assets/texture.png",
+            "res://A:/texture.png",
+            "A:/texture.png",
+            "res://assets\\texture.png",
+            "res://assets/missing.png",
+        ] {
+            assert!(
+                scene_resource_references(&fixture.0, &Fixture::reference(path)).is_err(),
+                "{path}"
+            );
+        }
+        assert!(!fixture.0.join(".aurum").exists());
+    }
+
+    #[test]
+    fn scene_resource_protected_state_and_keys_are_unavailable() {
+        let fixture = Fixture::new();
+        for directory in [".aurum", ".godot", ".git", ".env", ".env.private"] {
+            std::fs::create_dir(fixture.0.join(directory)).unwrap();
+            std::fs::write(
+                fixture.0.join(directory).join("texture.png"),
+                b"private fixture sentinel",
+            )
+            .unwrap();
+            assert!(scene_resource_references(
+                &fixture.0,
+                &Fixture::reference(&format!("res://{directory}/texture.png"))
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn scene_resource_unknown_fields_types_depth_and_aggregate_bounds_refuse() {
+        let fixture = Fixture::new();
+        for value in [
+            json!({"resource_path":"res://assets/texture.png"}),
+            json!({"expected_type":"Texture2D"}),
+            json!({"resource_path":"res://assets/texture.png","expected_type":"Script"}),
+            json!({"resource_path":"res://assets/texture.png","expected_type":"Texture2D","extra":true}),
+        ] {
+            assert!(scene_resource_references(&fixture.0, &value).is_err());
+        }
+        let mut nested = Fixture::reference("res://assets/texture.png");
+        for _ in 0..17 {
+            nested = json!({"properties":nested});
+        }
+        assert!(scene_resource_references(&fixture.0, &nested)
+            .unwrap_err()
+            .contains("depth"));
+        let aggregate = json!(vec![vec![0; 128]; 128]);
+        assert!(scene_resource_references(&fixture.0, &aggregate)
+            .unwrap_err()
+            .contains("entry count"));
+        assert!(scene_resource_references(&fixture.0, &json!(vec![0; 257])).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn scene_resource_windows_junction_is_refused_before_import() {
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        let link = fixture.0.join("linked");
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(outside.0.join("assets"))
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "{}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+        assert!(scene_resource_references(
+            &fixture.0,
+            &Fixture::reference("res://linked/texture.png")
+        )
+        .is_err());
+        std::fs::remove_dir(&link).unwrap();
+        assert!(outside.0.join("assets/texture.png").is_file());
+        assert!(!fixture.0.join(".aurum").exists());
+    }
+
+    #[test]
+    fn scene_resource_status_and_discovery_constraints_agree() {
+        let fixture = Fixture::new();
+        let status = execute(&fixture.0, &json!({"op":"status"}), true).unwrap();
+        for op in ["scene_create", "scene_edit", "scene_inspect"] {
+            let described = crate::project_contract::describe(Some(op)).unwrap();
+            assert_eq!(status["scene_authoring"], described["constraints"]);
+            assert_eq!(described["read_only"], json!(op == "scene_inspect"));
+        }
+    }
+}
+
 fn headless_operation_with_context(
     project: &Project,
     input: &Value,
     context: Option<&RuntimeContext>,
 ) -> Result<Value, String> {
+    scene_transform_operations(input)?;
+    let godot = godot_root(project)?;
+    scene_resource_references(godot, input)?;
     let needs_import = matches!(
         input["op"].as_str(),
         Some("scene_inspect" | "scene_create" | "scene_edit" | "set_main_scene")
@@ -1395,7 +2148,6 @@ fn headless_operation_with_context(
     if needs_import && inspection_source.is_none() {
         ensure_imported(project)?;
     }
-    let godot = godot_root(project)?;
     let root = project
         .root
         .canonicalize()
@@ -1806,6 +2558,26 @@ mod tests {
         assert!(refused.is_err());
         assert!(!root.join(".aurum").exists());
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn runtime_context_is_read_only_without_project_discovery_or_host_launch() {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-runtime-context-no-host-{}",
+            crate::random::session_id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        // No aurum.toml/project.godot exists, so generic Project::open would fail.
+        let report = execute(&root, &json!({"op":"runtime_context","project":root}), true).unwrap();
+        assert_eq!(report["state"], "unavailable");
+        assert_eq!(report["effects"]["game_started"], false);
+        assert!(execute(
+            &root,
+            &json!({"op":"runtime_context","godot_path":"private"}),
+            true
+        )
+        .is_err());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        std::fs::remove_dir(&root).unwrap();
     }
     #[test]
     fn package_stage_refuses_missing_empty_and_oversized_artifacts() {

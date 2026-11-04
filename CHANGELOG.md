@@ -6,8 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Target release: 0.4.1. Windows delivery requires a directly launchable
+`Aurum Studio.exe`; the published 0.4.0 downloads remain the released baseline
+until the 0.4.1 package passes its release gates.
+
 ### Added
 
+- Windows `Aurum Studio.exe` entry point with a hidden adjacent CLI, verified local readiness, duplicate-host reuse and visible startup errors. Installation shortcuts now target the executable directly. The 0.4.1 candidate passed fresh-install, relocation and ZIP-extraction launch checks; public binary release and broader runtime qualification remain pending.
+- Bounded portable failure bundles for headless script performance failures, with read-only inspection and explicit project-code replay. A matching 0.4.1 Windows build passed create/inspect/replay and seed 17/18 initializer plus frame-one event checks. Seed receipts retain integer values, and seeded play waits for scene readiness before events. Rendered, device, cross-environment and arbitrary-game determinism remain unverified.
 - Read-only `target_preflight` development operation for bounded local runtime/template/preset/SDK/JDK metadata and keystore presence, with explicit-path authority, provenance and missing/mismatch/unverified statuses. It performs no tool, network, installation, key-content or device actions. The compiled CLI/HTTP/MCP parity and protected-state gate passed 96 checks, followed by 22 native-session checks on the same immutable Windows binary. Synthetic SDK/JDK/template metadata and real Godot version-resource evidence keep export, signing and devices unverified; hosted confirmation and published job/package 746/158/31 remain separate boundaries.
 - Public roadmap with sequenced iteration, asset, device, performance and isolated-execution gates.
 - Bounded structured project-operation journals shared by CLI, HTTP and MCP, with operation IDs, timing, failure categories and read-only `logs` discovery/query.
@@ -31,6 +37,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Studio's status bar now shows running workspace operations instead of `Idle`, and the preview's Runtime field says `Not reported` instead of `none` until a game publishes state. Checked in headless Edge with real Orbit Break Web builds, with and without published state, and a failing scene open on a running preview. Browser acceptance has not run against this change.
+- Attended Windows workspace access now uses the packaged `Aurum Studio.exe` for helper discovery and admission, fixing the GUI filename mismatch while retaining executable hashing and held-file guards.
 - Target-preflight acceptance now includes a synthetic nonempty `android.jar` with each declared API package. Its inventory retains exclusively held empty Windows leases and verifies bigint file identity, size and timestamps around empty-byte observation; nonempty read errors, linked paths and drift remain failures. The two initial fixture failures are retained alongside the passing 96-check gate and seven controlled lock checks.
 - Native-session acceptance retains bounded compatible-replacement status/value, failure phases and sanitized host diagnostics while omitting bearer capabilities, source and checkpoint bodies. Twelve controlled helper checks and actual 22-check lifecycle runs passed. The earlier hosted native-replacement assertion lacks its returned response, so its backend cause remains unavailable.
 - Job acceptance now inspects an exact PID through CIM and verifies creation/executable identity, distinguishing a successfully absent process from lookup/access failures. The previous helper treated an absent PID's PowerShell exit code as a fixture failure. The earlier corrected-argv0 Windows snapshot passed 152 job/Godot checks plus 31 portable real Cargo cancellation/deadline/privacy checks, 739 focused Rust/doc tests and strict Clippy. Its evidence remains retained; later package/storage changes require a new qualification gate.

@@ -1,0 +1,191 @@
+use super::*;
+use aurum_studio_core::native_request_control as control;
+use std::io::Read;
+use std::time::Instant;
+
+struct Fixture {
+    root: PathBuf,
+    server: Arc<Server>,
+    serving: Option<std::thread::JoinHandle<()>>,
+}
+impl Fixture {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "aurum-request-control-{}-{}",
+            std::process::id(),
+            aurum_studio_core::random::session_id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("aurum.toml"),
+            "schema_version = 1\nname = \"request-control\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("project.godot"), "config_version=5\n").unwrap();
+        let project = Project::open(&root).unwrap();
+        let server = Arc::new(Server::bind(ServerConfig::new(project)).unwrap());
+        let running = Arc::clone(&server);
+        let serving = Some(std::thread::spawn(move || running.serve()));
+        Self {
+            root,
+            server,
+            serving,
+        }
+    }
+    fn connect(&self) -> TcpStream {
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, self.server.port())).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+    }
+    fn controlled_head(&self, length: usize, token: &str, extra: &str) -> String {
+        format!("POST /api/project HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nX-Aurum-Token: {token}\r\nX-Aurum-Request-Control: {}\r\nExpect: 100-continue\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n{extra}Connection: close\r\n\r\n",
+            self.server.port(), control::PROTOCOL)
+    }
+    fn ready(&self, body_len: usize) -> TcpStream {
+        let mut stream = self.connect();
+        stream
+            .write_all(
+                self.controlled_head(body_len, self.server.token(), "")
+                    .as_bytes(),
+            )
+            .unwrap();
+        let mut ready = vec![0; control::READY.len()];
+        stream.read_exact(&mut ready).unwrap();
+        assert_eq!(ready, control::READY);
+        stream
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.server.stop();
+        if let Some(serving) = self.serving.take() {
+            serving.join().unwrap();
+        }
+        // All writes and any later qualification execute only in this fresh temp root.
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn response(stream: &mut TcpStream) -> String {
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    reply
+}
+
+#[test]
+fn ordinary_project_post_and_native_host_capability_remain_compatible() {
+    let fixture = Fixture::new();
+    let mut probe = fixture.connect();
+    write!(
+        probe,
+        "GET /api/native_host HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Aurum-Token: {}\r\n\r\n",
+        fixture.server.token()
+    )
+    .unwrap();
+    let probe_reply = response(&mut probe);
+    let body = probe_reply.split_once("\r\n\r\n").unwrap().1;
+    let value: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(value["protocol"], "aurum-native-host/1");
+    assert_eq!(value["request_control"], control::PROTOCOL);
+    for (expectation, path) in [
+        ("", "ordinary.txt"),
+        ("Expect: 100-continue\r\n", "ordinary-expect.txt"),
+    ] {
+        let body =
+            serde_json::to_vec(&serde_json::json!({"op":"write","path":path,"text":"ordinary"}))
+                .unwrap();
+        let mut stream = fixture.connect();
+        write!(stream, "POST /api/project HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Aurum-Token: {}\r\nContent-Length: {}\r\n{expectation}\r\n",
+            fixture.server.token(), body.len()).unwrap();
+        stream.write_all(&body).unwrap();
+        let reply = response(&mut stream);
+        assert!(reply.starts_with("HTTP/1.1 200 "));
+        assert!(!reply.contains("100 Continue"));
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join(path)).unwrap(),
+            "ordinary"
+        );
+    }
+}
+
+#[test]
+fn controlled_ready_requires_auth_and_duplicates_are_refused_before_ack() {
+    let fixture = Fixture::new();
+    let length = control::body_len(2).unwrap();
+    for (token, extra, status) in [
+        ("wrong", String::new(), "HTTP/1.1 401 "),
+        (
+            fixture.server.token(),
+            format!("X-Aurum-Request-Control: {}\r\n", control::PROTOCOL),
+            "HTTP/1.1 400 ",
+        ),
+        (
+            fixture.server.token(),
+            "Expect: 100-continue\r\n".into(),
+            "HTTP/1.1 400 ",
+        ),
+        (
+            fixture.server.token(),
+            "Content-Length: 2\r\n".into(),
+            "HTTP/1.1 400 ",
+        ),
+    ] {
+        let mut stream = fixture.connect();
+        stream
+            .write_all(fixture.controlled_head(length, token, &extra).as_bytes())
+            .unwrap();
+        let reply = response(&mut stream);
+        assert!(reply.starts_with(status), "unexpected status");
+        assert!(!reply.contains("100 Continue"));
+        assert!(!fixture.root.join("controlled.txt").exists());
+    }
+}
+
+#[test]
+fn controlled_body_expiry_cannot_publish_and_valid_control_can_publish() {
+    let fixture = Fixture::new();
+    let request = br#"{"op":"write","path":"controlled.txt","text":"accepted"}"#;
+    let expired = control::encode(request, Duration::from_millis(20)).unwrap();
+    let mut stream = fixture.ready(expired.len());
+    stream
+        .write_all(&expired[..control::TIMING_PREFIX_BYTES])
+        .unwrap();
+    let started = Instant::now();
+    let reply = response(&mut stream);
+    assert!(reply.starts_with("HTTP/1.1 400 "));
+    assert!(reply.contains("deadline"));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(!fixture.root.join("controlled.txt").exists());
+    let valid = control::encode(request, Duration::from_secs(5)).unwrap();
+    let mut stream = fixture.ready(valid.len());
+    stream.write_all(&valid).unwrap();
+    assert!(response(&mut stream).starts_with("HTTP/1.1 200 "));
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.join("controlled.txt")).unwrap(),
+        "accepted"
+    );
+}
+
+#[test]
+fn controlled_envelope_cannot_override_authority_or_duplicate_timing() {
+    let fixture = Fixture::new();
+    let request = br#"{"op":"write","path":"controlled.txt","text":"refused"}"#;
+    for extra in [
+        b",\"read_only\":false".as_slice(),
+        b",\"remaining_ms\":\"00000000000000005000\"".as_slice(),
+    ] {
+        let mut body = control::encode(request, Duration::from_secs(5)).unwrap();
+        assert_eq!(body.pop(), Some(b'}'));
+        body.extend_from_slice(extra);
+        body.push(b'}');
+        let mut stream = fixture.ready(body.len());
+        stream.write_all(&body).unwrap();
+        assert!(response(&mut stream).starts_with("HTTP/1.1 400 "));
+        assert!(!fixture.root.join("controlled.txt").exists());
+    }
+}

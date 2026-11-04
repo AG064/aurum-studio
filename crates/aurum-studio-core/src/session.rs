@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::random;
 
+#[cfg(windows)]
+mod windows_token;
+
 /// Strings that must never appear in a log.
 ///
 /// Redaction is applied on the way *in*, so a secret cannot reach the file
@@ -175,9 +178,16 @@ impl Session {
     /// without restricting the metadata file.
     pub(crate) fn write_token(&self) -> std::io::Result<()> {
         let path = self.directory.join("token");
-        std::fs::write(&path, &self.token)?;
-        restrict_to_owner(&path);
-        Ok(())
+        #[cfg(windows)]
+        {
+            windows_token::write(&path, self.token.as_bytes())
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::write(&path, &self.token)?;
+            restrict_to_owner(&path);
+            Ok(())
+        }
     }
 
     /// Append a line to the session log, with this session's secrets removed.
@@ -261,28 +271,7 @@ fn now_stamp() -> String {
     }
 }
 
-/// Best-effort restriction of a file to its owner.
-///
-/// Failure is not fatal: the token still lives inside the user's own state
-/// directory, and refusing to start a session over a permission tightening is
-/// worse than proceeding without it.
-#[cfg(windows)]
-fn restrict_to_owner(path: &Path) {
-    use std::process::{Command as StdCommand, Stdio};
-    let script = format!(
-        "$p = '{}'; $a = Get-Acl $p; $a.SetAccessRuleProtection($true, $false); \
-         $r = New-Object System.Security.AccessControl.FileSystemAccessRule($env:USERNAME, 'FullControl', 'Allow'); \
-         $a.SetAccessRule($r); Set-Acl -Path $p -AclObject $a",
-        path.display()
-    );
-    let _ = StdCommand::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
+/// Preserve the existing Unix owner-only permission behavior.
 #[cfg(not(windows))]
 fn restrict_to_owner(path: &Path) {
     use std::os::unix::fs::PermissionsExt;

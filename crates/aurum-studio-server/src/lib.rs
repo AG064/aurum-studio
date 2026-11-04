@@ -38,6 +38,9 @@
 
 pub mod assets;
 pub mod http;
+mod native_request;
+#[cfg(test)]
+mod native_request_socket_tests;
 mod preview;
 
 use std::io::{BufReader, Write};
@@ -445,7 +448,7 @@ fn handle_connection(stream: TcpStream, shell: &Arc<Shell>) {
     };
     let mut reader = BufReader::new(stream);
 
-    let request = match http::read_request(&mut reader) {
+    let mut request = match http::read_request_head(&mut reader) {
         Ok(Some(request)) => request,
         Ok(None) => return,
         Err(error) => {
@@ -454,22 +457,54 @@ fn handle_connection(stream: TcpStream, shell: &Arc<Shell>) {
         }
     };
 
-    // Order matters: the loopback check runs before the token check, so a
-    // rebound request is refused without the token being compared at all.
-    if let Err(response) = check_local(&request) {
-        let _ = response.write_to(&mut writer);
-        return;
-    }
-    if let Err(response) = check_origin(&request, shell.port) {
-        let _ = response.write_to(&mut writer);
-        return;
-    }
-    if let Err(response) = check_token(&request, &shell.token) {
+    let controlled = match native_request::requested(&request) {
+        Ok(controlled) => controlled,
+        Err(response) => {
+            let _ = response.write_to(&mut writer);
+            return;
+        }
+    };
+    let context = if controlled {
+        if let Err(response) = authenticate(&request, shell) {
+            let _ = response.write_to(&mut writer);
+            return;
+        }
+        match native_request::receive(&mut reader, &mut writer, &mut request) {
+            Ok(context) => Some(context),
+            Err(message) => {
+                let _ = Response::json(400, &serde_json::json!({"ok":false,"error":message}))
+                    .write_to(&mut writer);
+                return;
+            }
+        }
+    } else {
+        request.body = match http::read_body(&mut reader, &request.headers) {
+            Ok(body) => body,
+            Err(error) => {
+                let _ = Response::error(error.status(), format!("{error}\n")).write_to(&mut writer);
+                return;
+            }
+        };
+        None
+    };
+    if let Err(response) = authenticate(&request, shell) {
         let _ = response.write_to(&mut writer);
         return;
     }
 
-    match route(&request, shell) {
+    let routed = match context {
+        Some(context) => {
+            match native_request::with_peer(reader.get_ref(), &context, || route(&request, shell)) {
+                Ok(routed) => routed,
+                Err(error) => Routed::Once(Response::json(
+                    400,
+                    &serde_json::json!({"ok":false,"error":error.to_string()}),
+                )),
+            }
+        }
+        None => route(&request, shell),
+    };
+    match routed {
         Routed::Once(mut response) => {
             response
                 .headers
@@ -497,6 +532,13 @@ fn handle_connection(stream: TcpStream, shell: &Arc<Shell>) {
             shell.hub.unsubscribe(id);
         }
     }
+}
+
+fn authenticate(request: &Request, shell: &Shell) -> Result<(), Response> {
+    // Preserve the existing order, before any controlled ready acknowledgement.
+    check_local(request)?;
+    check_origin(request, shell.port)?;
+    check_token(request, &shell.token)
 }
 
 /// Refuse anything whose `Host` is not the loopback interface.
@@ -805,7 +847,7 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
         }
         ("GET", "/api/native_host") => Routed::Once(Response::json(
             200,
-            &serde_json::json!({"protocol":"aurum-native-host/1","pid":std::process::id(),"project":shell.project_root,"port":shell.port}),
+            &serde_json::json!({"protocol":"aurum-native-host/1","request_control":aurum_studio_core::native_request_control::PROTOCOL,"pid":std::process::id(),"project":shell.project_root,"port":shell.port}),
         )),
         ("GET", "/api/agent") => {
             let command = std::env::current_exe()
