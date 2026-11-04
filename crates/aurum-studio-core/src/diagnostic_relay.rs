@@ -328,7 +328,9 @@ mod tests {
             .unwrap();
         lease.try_lock().unwrap();
         let worker = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(60));
+            // Short against final_suppression's 200 ms retry budget, so a loaded runner that
+            // delays this thread still releases the lock in time.
+            std::thread::sleep(Duration::from_millis(10));
             lease.unlock().unwrap();
         });
         final_suppression(&session, 28).unwrap();
