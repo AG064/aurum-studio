@@ -84,8 +84,8 @@ fn delayed_body_uses_the_ready_anchor_and_refuses_expired_work() {
         let worker = std::thread::spawn(move || {
             let before_ready = Instant::now();
             anchor_sent.send(before_ready).unwrap();
-            let mut reader = BufReader::new(server);
-            let mut writer = reader.get_ref().try_clone().unwrap();
+            let mut reader = BufReader::new(&server);
+            let mut writer = &server;
             let mut request = request;
             receive(&mut reader, &mut writer, &mut request)
                 .map(|context| (context.deadline(), request.body))

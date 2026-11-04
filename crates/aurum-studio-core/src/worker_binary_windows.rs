@@ -250,6 +250,13 @@ fn pool() -> &'static HostPool {
         entries: Mutex::new(std::array::from_fn(|_| Entry::Empty)),
     })
 }
+/// Serializes tests that hold slots in the process-wide pool. Per-module locks would not
+/// exclude each other. Poison is ignored so a failing test reports only its own failure.
+#[cfg(test)]
+pub(crate) fn pool_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|error| error.into_inner())
+}
 impl StreamController {
     /// Private compiler factories require this exact live Broker binding.
     pub(crate) fn check_parent(
@@ -941,6 +948,8 @@ fn pump(mut pipe: File, maximum: u64, shared: &SharedPipe) {
 struct Resources {
     // Opaque original caller resources, registered before native startup. They
     // follow this same Resources object through uncertain retirement/parking.
+    // Held only so these resources drop with this object; nothing reads it.
+    #[allow(dead_code)]
     retained: Option<Box<dyn Send>>,
     admission: Arc<Admission>,
     worker: Option<Worker>,
@@ -1080,12 +1089,16 @@ impl BinaryStream {
         Self::spawn_environment(controller, request, true)
     }
     pub(super) fn spawn_cleared_retaining(
-        controller: &StreamController, request: BinarySpawn<'_>, retained: Box<dyn Send>,
+        controller: &StreamController,
+        request: BinarySpawn<'_>,
+        retained: Box<dyn Send>,
     ) -> io::Result<Self> {
         Self::spawn_environment_retaining(controller, request, true, Some(retained))
     }
     fn spawn_environment(
-        controller: &StreamController, request: BinarySpawn<'_>, clear_environment: bool,
+        controller: &StreamController,
+        request: BinarySpawn<'_>,
+        clear_environment: bool,
     ) -> io::Result<Self> {
         Self::spawn_environment_retaining(controller, request, clear_environment, None)
     }
@@ -1203,7 +1216,13 @@ impl BinaryStream {
         clear_environment: bool,
         retained: Option<Box<dyn Send>>,
     ) -> io::Result<Self> {
-        Self::spawn_environment_fixture_retaining(controller, request, clear_environment, None, retained)
+        Self::spawn_environment_fixture_retaining(
+            controller,
+            request,
+            clear_environment,
+            None,
+            retained,
+        )
     }
     #[cfg(test)]
     fn spawn_environment_fixture(
@@ -1212,12 +1231,21 @@ impl BinaryStream {
         clear_environment: bool,
         fixture: Option<fixture_diagnostic::Sink>,
     ) -> io::Result<Self> {
-        Self::spawn_environment_fixture_retaining(controller, request, clear_environment, fixture, None)
+        Self::spawn_environment_fixture_retaining(
+            controller,
+            request,
+            clear_environment,
+            fixture,
+            None,
+        )
     }
     #[cfg(test)]
     fn spawn_environment_fixture_retaining(
-        controller: &StreamController, request: BinarySpawn<'_>, clear_environment: bool,
-        fixture: Option<fixture_diagnostic::Sink>, retained: Option<Box<dyn Send>>,
+        controller: &StreamController,
+        request: BinarySpawn<'_>,
+        clear_environment: bool,
+        fixture: Option<fixture_diagnostic::Sink>,
+        retained: Option<Box<dyn Send>>,
     ) -> io::Result<Self> {
         let BinarySpawn {
             program,
@@ -1731,30 +1759,46 @@ impl Drop for BinaryStream {
 mod configfile_retention_tests {
     use super::*;
     struct DropWitness(Arc<AtomicBool>);
-    impl Drop for DropWitness { fn drop(&mut self) { self.0.store(true,Ordering::Release); } }
+    impl Drop for DropWitness {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
     #[test]
     fn configfile_parser_retention_follows_original_pool_until_known_no_spawn_retirement() {
+        let _serial = crate::worker_windows::binary::pool_test_lock();
         // Actual pool/claim/retirement machinery, with affirmative no-spawn.
         // This does not simulate a live engine or claim process termination.
-        let broker=Arc::new(crate::workspace_access::Broker::default());
-        let controller=broker.managed_compiler_controller().unwrap();
-        let deadline=Instant::now()+Duration::from_secs(3);
-        let reserved=controller.reserve(None,deadline).unwrap();
-        let fence=LifetimeFence::default();
-        let dropped=Arc::new(AtomicBool::new(false));
-        let resources=Box::new(Resources {
-            retained:Some(Box::new(DropWitness(dropped.clone()))),admission:reserved.admission.clone(),
-            worker:None,pending:None,stdout:None,stderr:None,wake:reserved.admission.wake.clone(),
-            cancelled:reserved.admission.cancelled.clone(),context:None,claim:Some(fence.claim().unwrap()),
-            deadline,retirement_deadline:None,stdout_eof:false,stderr_eof:false,command_prefixes:None,
+        let broker = Arc::new(crate::workspace_access::Broker::default());
+        let controller = broker.managed_compiler_controller().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let reserved = controller.reserve(None, deadline).unwrap();
+        let fence = LifetimeFence::default();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let resources = Box::new(Resources {
+            retained: Some(Box::new(DropWitness(dropped.clone()))),
+            admission: reserved.admission.clone(),
+            worker: None,
+            pending: None,
+            stdout: None,
+            stderr: None,
+            wake: reserved.admission.wake.clone(),
+            cancelled: reserved.admission.cancelled.clone(),
+            context: None,
+            claim: Some(fence.claim().unwrap()),
+            deadline,
+            retirement_deadline: None,
+            stdout_eof: false,
+            stderr_eof: false,
+            command_prefixes: None,
         });
-        controller.retain(reserved.index,resources);
+        controller.retain(reserved.index, resources);
         assert!(!dropped.load(Ordering::Acquire));
         assert!(fence.unresolved());
         controller.reap().unwrap();
         assert!(dropped.load(Ordering::Acquire));
         assert!(!fence.unresolved());
-        assert_eq!(controller.retained(),0);
+        assert_eq!(controller.retained(), 0);
     }
 }
 

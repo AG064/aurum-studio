@@ -354,7 +354,9 @@ impl Worker {
         BinaryStream::spawn_cleared(controller, request)
     }
     pub(crate) fn spawn_binary_cleared_retaining(
-        controller: &StreamController, request: BinarySpawn<'_>, retained: Box<dyn Send>,
+        controller: &StreamController,
+        request: BinarySpawn<'_>,
+        retained: Box<dyn Send>,
     ) -> io::Result<BinaryStream> {
         BinaryStream::spawn_cleared_retaining(controller, request, retained)
     }

@@ -1016,10 +1016,10 @@ fn decode_page(bytes: &[u8], mut check: impl FnMut() -> Result<()>) -> Result<Ve
             .and_then(|v| v.checked_add(name_bytes))
             .ok_or("external_namespace_enumeration_overflow")?;
         if name_bytes == 0
-            || name_bytes % 2 != 0
+            || !name_bytes.is_multiple_of(2)
             || end > bytes.len()
             || (next != 0
-                && (next % 8 != 0
+                && (!next.is_multiple_of(8)
                     || next < 64 + name_bytes
                     || next - (64 + name_bytes) > 7
                     || offset.checked_add(next).is_none_or(|v| v > bytes.len())))
@@ -1027,8 +1027,10 @@ fn decode_page(bytes: &[u8], mut check: impl FnMut() -> Result<()>) -> Result<Ve
             return Err("external_namespace_enumeration_bounds".into());
         }
         let units: Vec<u16> = bytes[offset + 64..end]
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
             .collect();
         let name = String::from_utf16(&units).map_err(|_| "external_namespace_filename_utf16")?;
         if !matches!(name.as_str(), "." | "..") {
@@ -1786,6 +1788,10 @@ impl ReservedSlot<'_> {
         Ok(facts(read))
     }
 }
+type DirectoryScope = (
+    Vec<(String, DirectoryIdentity)>,
+    Vec<crate::transactions::DirectoryOrigin>,
+);
 impl WriteNamespace<'_, '_> {
     fn binding(&self) -> Result<&crate::transactions::ExternalBinding> {
         match &self.context.proof {
@@ -2191,6 +2197,8 @@ impl WriteNamespace<'_, '_> {
             &self.context,
         )
     }
+    // No caller or test reaches this yet; it belongs to the unconnected publication surface.
+    #[allow(dead_code)]
     pub(super) fn delete_slot(&self, name: &str, expected: &super::ExternalObject) -> Result<()> {
         state_name(name)?;
         delete_recorded(&self.state_parent()?, name, expected, &self.context)
@@ -2429,12 +2437,7 @@ impl WriteNamespace<'_, '_> {
         }
         Ok(())
     }
-    fn directory_scope(
-        &self,
-    ) -> Result<(
-        Vec<(String, DirectoryIdentity)>,
-        Vec<crate::transactions::DirectoryOrigin>,
-    )> {
+    fn directory_scope(&self) -> Result<DirectoryScope> {
         match &self.context.proof {
             Proof::Repair(a) => Ok(a
                 ._permit
@@ -3310,8 +3313,10 @@ impl MetadataProbe<'_> {
                 return Err("namespace_test_get_reparse_bounds".into());
             }
             Ok(readback[start..finish]
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u16::from_le_bytes(*pair))
                 .collect())
         };
         if decode(8, 10)? != self.substitute || decode(12, 14)? != self.display {

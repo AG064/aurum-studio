@@ -39,7 +39,15 @@ try {
         if($process.HasExited -or [DateTime]::UtcNow -gt $deadline){throw 'Editor bridge did not start'}
         Start-Sleep -Milliseconds 100
     }
-    $null=Request @{op='create_node';parent='.';type='Node3D';name='SavedByAgent'}
+    # The bridge can start serving before the editor finishes opening the scene.
+    $deadline=[DateTime]::UtcNow.AddSeconds(60)
+    while($true){
+        try{$null=Request @{op='create_node';parent='.';type='Node3D';name='SavedByAgent'};break}
+        catch{
+            if($_.Exception.Message -notmatch 'no scene is open' -or [DateTime]::UtcNow -gt $deadline){throw}
+            Start-Sleep -Milliseconds 200
+        }
+    }
     $null=Request @{op='save_scene'}
     if(-not (Get-Content -Raw (Join-Path $work 'main.tscn')).Contains('SavedByAgent')){throw 'Created node was not saved'}
     $null=Request @{op='undo'}

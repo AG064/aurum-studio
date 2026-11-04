@@ -32,18 +32,22 @@ impl Drop for Lease<'_> {
 
 /// Coordination only. The owner must retain this lease until its worker's
 /// retirement is known, including while retaining an uncertain worker.
+// Only the Windows external-native path uses this.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[must_use]
 pub(crate) struct ManagementLease<'a> {
     _lease: Lease<'a>,
     deadline: Instant,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 impl ManagementLease<'_> {
     pub(crate) fn deadline(&self) -> Instant {
         self.deadline
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 struct WaitingTicket<'a> {
     gate: &'a Gate,
     ticket: u64,
@@ -127,6 +131,7 @@ impl Gate {
         }
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn acquire_checked(
         &self,
         deadline: Instant,
@@ -222,6 +227,7 @@ fn management_gate() -> &'static Gate {
 /// lease with any worker whose retirement is uncertain. Queueing consumes the
 /// supplied absolute deadline, clipped to the current operation's deadline.
 /// The callback must be a bounded original-owner check, without gate reentry.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn acquire_checked_management(
     deadline: Instant,
     check_owner: impl FnMut() -> io::Result<()>,
@@ -412,11 +418,9 @@ mod tests {
         let legacy = gate.acquire(Duration::from_secs(3)).unwrap();
         let (sender, receiver) = mpsc::channel();
         let checked = std::thread::spawn(move || {
-            let lease = acquire_checked_management(
-                Instant::now() + Duration::from_secs(3),
-                || Ok(()),
-            )
-            .unwrap();
+            let lease =
+                acquire_checked_management(Instant::now() + Duration::from_secs(3), || Ok(()))
+                    .unwrap();
             assert!(sender.send(lease).is_ok());
         });
         waiters(gate, 1);
@@ -445,15 +449,12 @@ mod tests {
         let gate = Gate::default();
         let expired = gate.acquire_checked(Instant::now(), || Ok(()));
         assert_eq!(expired.err().unwrap().kind(), io::ErrorKind::TimedOut);
-        let cancelled = gate.acquire_checked(
-            Instant::now() + Duration::from_secs(3),
-            || {
-                Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "original owner cancelled",
-                ))
-            },
-        );
+        let cancelled = gate.acquire_checked(Instant::now() + Duration::from_secs(3), || {
+            Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "original owner cancelled",
+            ))
+        });
         assert_eq!(cancelled.err().unwrap().kind(), io::ErrorKind::Interrupted);
         assert!(gate.state.lock().unwrap().waiting.is_empty());
         assert!(!gate.state.lock().unwrap().active);
@@ -523,7 +524,9 @@ mod tests {
         assert_eq!(gate.state.lock().unwrap().waiting.len(), 1);
         assert!(following_receiver.try_recv().is_err());
         drop(held);
-        following_receiver.recv_timeout(Duration::from_secs(3)).unwrap();
+        following_receiver
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap();
         second.join().unwrap();
         assert!(gate.state.lock().unwrap().waiting.is_empty());
     }

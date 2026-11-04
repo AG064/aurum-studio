@@ -69,7 +69,10 @@ impl ParentDeadline {
             if replaced {
                 return Err("external_compile_read_operation_binding_mismatch".into());
             }
-            if owner.cancelled.as_ref().is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+            if owner
+                .cancelled
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
                 || !owner
                     .broker
                     .upgrade()
@@ -112,14 +115,20 @@ impl ParentDeadline {
         self.check()
     }
     pub(crate) fn bind_runtime_read_owner(
-        &mut self, broker: &Arc<crate::workspace_access::Broker>,
+        &mut self,
+        broker: &Arc<crate::workspace_access::Broker>,
         limits: crate::external_workspace::ProposalLimits,
     ) -> Result<(), String> {
         self.check()?;
-        if self.read_owner.is_some() { return Err("external_compile_read_owner_already_bound".into()); }
+        if self.read_owner.is_some() {
+            return Err("external_compile_read_owner_already_bound".into());
+        }
         // Cancellation is the captured actual operation and original runtime
         // broker closure, not a replacement request-local false flag.
-        self.read_owner = Some(NativeReadOwner { broker: Arc::downgrade(broker), cancelled: None });
+        self.read_owner = Some(NativeReadOwner {
+            broker: Arc::downgrade(broker),
+            cancelled: None,
+        });
         self.source_limits = Some(limits);
         self.check()
     }
@@ -218,17 +227,25 @@ impl NativeCompilationProvenance {
     pub(crate) fn digest(&self) -> &str {
         &self.digest
     }
-    #[cfg(all(windows,test))]
-    pub(crate) fn reported_outputs_for_test(&self,budget:&Budget<'_>)->Result<Value,String> {
-        self.local_outputs.recheck(&self.local_builds,&self.selected,&self.artifact,&self.artifact_hash,budget)?;
-        let mut observation=self.local_outputs.observations_for_test();
+    #[cfg(all(windows, test))]
+    pub(crate) fn reported_outputs_for_test(&self, budget: &Budget<'_>) -> Result<Value, String> {
+        self.local_outputs.recheck(
+            &self.local_builds,
+            &self.selected,
+            &self.artifact,
+            &self.artifact_hash,
+            budget,
+        )?;
+        let mut observation = self.local_outputs.observations_for_test();
         observation["observed_local_builds"]=json!(self.local_builds.iter().map(|build|
             Ok(json!({"observation_key_sha256":build.observation_key()?,"observation":build.digest_value()}))
         ).collect::<Result<Vec<Value>,String>>()?);
         Ok(observation)
     }
     /// Borrow original retained content and host; this issues no new authority.
-    pub(crate) fn held_binding_inputs(&self) -> (&crate::external_workspace::NativeSourceIdentity, &str) {
+    pub(crate) fn held_binding_inputs(
+        &self,
+    ) -> (&crate::external_workspace::NativeSourceIdentity, &str) {
         (&self.inputs, &self.host)
     }
     pub(crate) fn recheck(
@@ -239,17 +256,32 @@ impl NativeCompilationProvenance {
         budget: &Budget<'_>,
     ) -> Result<(), String> {
         budget.check()?;
-        if !crate::external_workspace::provenance_paths_equal(&self.artifact, artifact) || self.artifact_hash != artifact_hash
-            || !crate::external_workspace::provenance_paths_equal(&self.selected.manifest, &staged.member_manifest)
+        if !crate::external_workspace::provenance_paths_equal(&self.artifact, artifact)
+            || self.artifact_hash != artifact_hash
+            || !crate::external_workspace::provenance_paths_equal(
+                &self.selected.manifest,
+                &staged.member_manifest,
+            )
         {
             return Err("external_native_provenance_binding_changed".into());
         }
-        self.inputs.recheck(staged, &self.selected.manifest, &self.selected.source, budget)?;
+        self.inputs.recheck(
+            staged,
+            &self.selected.manifest,
+            &self.selected.source,
+            budget,
+        )?;
         for build in &self.local_builds {
             self.inputs.recheck_local_input(&build.manifest, budget)?;
             self.inputs.recheck_local_input(&build.source, budget)?;
         }
-        self.local_outputs.recheck(&self.local_builds,&self.selected,artifact,artifact_hash,budget)?;
+        self.local_outputs.recheck(
+            &self.local_builds,
+            &self.selected,
+            artifact,
+            artifact_hash,
+            budget,
+        )?;
         if self.computed_digest()? != self.digest {
             return Err("external_native_provenance_digest_changed".into());
         }
@@ -275,28 +307,40 @@ impl ObservedLocalBuild {
 const REPORTED_LOCAL_OUTPUTS_PER_RECORD: usize = 8;
 const REPORTED_LOCAL_OUTPUT_FILES: usize = 256;
 const REPORTED_LOCAL_OUTPUT_BYTES: u64 = 128 * 1024 * 1024;
-fn reported_output_remaining(files:usize,bytes:u64)->Result<u64,String> {
-    if files>=REPORTED_LOCAL_OUTPUT_FILES || bytes>REPORTED_LOCAL_OUTPUT_BYTES {
+fn reported_output_remaining(files: usize, bytes: u64) -> Result<u64, String> {
+    if files >= REPORTED_LOCAL_OUTPUT_FILES || bytes > REPORTED_LOCAL_OUTPUT_BYTES {
         return Err("external_reported_output_aggregate_bound".into());
     }
-    Ok(REPORTED_LOCAL_OUTPUT_BYTES-bytes)
+    Ok(REPORTED_LOCAL_OUTPUT_BYTES - bytes)
 }
-#[derive(Clone,Copy,PartialEq,Eq)]
-enum ReportedOutputRole { Target, Build }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReportedOutputRole {
+    Target,
+    Build,
+}
 impl ReportedOutputRole {
-    fn label(self)->&'static str {match self {Self::Target=>"target",Self::Build=>"build"}}
+    fn label(self) -> &'static str {
+        match self {
+            Self::Target => "target",
+            Self::Build => "build",
+        }
+    }
 }
 struct ReportedLocalOutputFile {
     role: ReportedOutputRole,
     held: crate::external_workspace::NativeReportedOutput,
 }
 impl ReportedLocalOutputFile {
-    fn digest_value(&self)->Value {
-        let mut value=self.held.digest_value();value["root_role"]=json!(self.role.label());value
+    fn digest_value(&self) -> Value {
+        let mut value = self.held.digest_value();
+        value["root_role"] = json!(self.role.label());
+        value
     }
-    #[cfg(all(windows,test))]
-    fn observation_for_test(&self)->Value {
-        let mut value=self.held.observation_for_test();value["root_role"]=json!(self.role.label());value
+    #[cfg(all(windows, test))]
+    fn observation_for_test(&self) -> Value {
+        let mut value = self.held.observation_for_test();
+        value["root_role"] = json!(self.role.label());
+        value
     }
 }
 struct ReportedLocalOutputRecord {
@@ -310,21 +354,36 @@ pub(crate) struct ReportedLocalOutputs {
     records: Vec<ReportedLocalOutputRecord>,
 }
 impl ObservedLocalBuild {
-    fn observation_key(&self)->Result<String,String> {
-        let encoded=serde_json::to_vec(&json!([self.package,self.target,self.profile,self.features,self.source.digest_value()]))
-            .map_err(|_|"external_reported_output_observation_encoding")?;
-        if encoded.len()>65536 {return Err("external_reported_output_observation_encoding".into());}
+    fn observation_key(&self) -> Result<String, String> {
+        let encoded = serde_json::to_vec(&json!([
+            self.package,
+            self.target,
+            self.profile,
+            self.features,
+            self.source.digest_value()
+        ]))
+        .map_err(|_| "external_reported_output_observation_encoding")?;
+        if encoded.len() > 65536 {
+            return Err("external_reported_output_observation_encoding".into());
+        }
         Ok(crate::sha256_hex(&encoded))
     }
 }
 impl ReportedLocalOutputs {
-    fn root(&self,role:ReportedOutputRole)->&crate::external_workspace::NativeReportedOutputRoot {
-        match role {ReportedOutputRole::Target=>&self.target,ReportedOutputRole::Build=>&self.build}
+    fn root(
+        &self,
+        role: ReportedOutputRole,
+    ) -> &crate::external_workspace::NativeReportedOutputRoot {
+        match role {
+            ReportedOutputRole::Target => &self.target,
+            ReportedOutputRole::Build => &self.build,
+        }
     }
-    fn recheck_roots(&self,budget:&Budget<'_>)->Result<(),String> {
-        self.target.recheck(budget)?;self.build.recheck(budget)
+    fn recheck_roots(&self, budget: &Budget<'_>) -> Result<(), String> {
+        self.target.recheck(budget)?;
+        self.build.recheck(budget)
     }
-    fn digest_value(&self)->Value {
+    fn digest_value(&self) -> Value {
         json!({"scope":"Cargo-reported local artifact content custody, not compiler reads or exact build units",
             "records":self.records.iter().map(|record|json!({"observation_key_sha256":record.observation_key,
                 "outputs":record.outputs.iter().map(|output|output.digest_value()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
@@ -332,107 +391,228 @@ impl ReportedLocalOutputs {
             "loading_or_publication_authority":false})
     }
     pub(crate) fn recheck(
-        &self,builds:&[ObservedLocalBuild],selected:&SelectedMember,artifact:&Path,artifact_hash:&str,budget:&Budget<'_>,
-    )->Result<(),String> {
+        &self,
+        builds: &[ObservedLocalBuild],
+        selected: &SelectedMember,
+        artifact: &Path,
+        artifact_hash: &str,
+        budget: &Budget<'_>,
+    ) -> Result<(), String> {
         self.recheck_roots(budget)?;
-        if builds.is_empty() || builds.len()>128 || self.records.len()!=builds.len() {
+        if builds.is_empty() || builds.len() > 128 || self.records.len() != builds.len() {
             return Err("external_reported_output_observation_bound".into());
         }
-        let expected=builds.iter().map(ObservedLocalBuild::observation_key).collect::<Result<BTreeSet<_>,_>>()?;
-        let selected_keys=builds.iter().filter(|build|build.package==selected.package_id && build.target["name"]==selected.target)
-            .map(ObservedLocalBuild::observation_key).collect::<Result<Vec<_>,_>>()?;
-        if expected.len()!=builds.len() || selected_keys.len()!=1 {return Err("external_reported_output_selected_observation".into());}
-        let mut seen=BTreeSet::new();let mut files=0usize;let mut bytes=0u64;let mut selected_matches=0usize;
+        let expected = builds
+            .iter()
+            .map(ObservedLocalBuild::observation_key)
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let selected_keys = builds
+            .iter()
+            .filter(|build| {
+                build.package == selected.package_id && build.target["name"] == selected.target
+            })
+            .map(ObservedLocalBuild::observation_key)
+            .collect::<Result<Vec<_>, _>>()?;
+        if expected.len() != builds.len() || selected_keys.len() != 1 {
+            return Err("external_reported_output_selected_observation".into());
+        }
+        let mut seen = BTreeSet::new();
+        let mut files = 0usize;
+        let mut bytes = 0u64;
+        let mut selected_matches = 0usize;
         for record in &self.records {
             budget.check()?;
-            if !expected.contains(&record.observation_key) || !seen.insert(record.observation_key.clone())
-                || record.outputs.is_empty() || record.outputs.len()>REPORTED_LOCAL_OUTPUTS_PER_RECORD
-            {return Err("external_reported_output_observation_changed".into());}
-            let mut identities=BTreeSet::new();
+            if !expected.contains(&record.observation_key)
+                || !seen.insert(record.observation_key.clone())
+                || record.outputs.is_empty()
+                || record.outputs.len() > REPORTED_LOCAL_OUTPUTS_PER_RECORD
+            {
+                return Err("external_reported_output_observation_changed".into());
+            }
+            let mut identities = BTreeSet::new();
             for output in &record.outputs {
-                let remaining=reported_output_remaining(files,bytes)?;
-                if !identities.insert(output.held.identity_key()) {return Err("external_reported_output_duplicate_file".into());}
-                output.held.recheck(self.root(output.role),remaining,budget)?;
-                files+=1;bytes=bytes.checked_add(output.held.bytes()).ok_or("external_reported_output_aggregate_bound")?;
-                if record.observation_key==selected_keys[0] && output.role==ReportedOutputRole::Target
-                    && output.held.matches_artifact(artifact,artifact_hash)? {selected_matches+=1;}
+                let remaining = reported_output_remaining(files, bytes)?;
+                if !identities.insert(output.held.identity_key()) {
+                    return Err("external_reported_output_duplicate_file".into());
+                }
+                output
+                    .held
+                    .recheck(self.root(output.role), remaining, budget)?;
+                files += 1;
+                bytes = bytes
+                    .checked_add(output.held.bytes())
+                    .ok_or("external_reported_output_aggregate_bound")?;
+                if record.observation_key == selected_keys[0]
+                    && output.role == ReportedOutputRole::Target
+                    && output.held.matches_artifact(artifact, artifact_hash)?
+                {
+                    selected_matches += 1;
+                }
             }
         }
-        if selected_matches!=1 {return Err("external_reported_output_selected_artifact".into());}
+        if selected_matches != 1 {
+            return Err("external_reported_output_selected_artifact".into());
+        }
         self.recheck_roots(budget)
     }
-    #[cfg(all(windows,test))]
-    pub(crate) fn observations_for_test(&self)->Value {
+    #[cfg(all(windows, test))]
+    pub(crate) fn observations_for_test(&self) -> Value {
         json!({"records":self.records.iter().map(|record|json!({"observation_key_sha256":record.observation_key,
             "outputs":record.outputs.iter().map(ReportedLocalOutputFile::observation_for_test).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
 }
 pub(crate) fn hold_reported_local_outputs(
-    stdout:&str,builds:&[ObservedLocalBuild],inputs:&crate::external_workspace::NativeSourceIdentity,
-    lease:&CompilationLease,target:&Path,build:&Path,budget:&Budget<'_>,
-)->Result<ReportedLocalOutputs,String> {
-    if builds.is_empty() || builds.len()>128 {return Err("external_reported_output_observation_bound".into());}
+    stdout: &str,
+    builds: &[ObservedLocalBuild],
+    inputs: &crate::external_workspace::NativeSourceIdentity,
+    lease: &CompilationLease,
+    target: &Path,
+    build: &Path,
+    budget: &Budget<'_>,
+) -> Result<ReportedLocalOutputs, String> {
+    if builds.is_empty() || builds.len() > 128 {
+        return Err("external_reported_output_observation_bound".into());
+    }
     // Exactly the two host-authored roots already held by this original lease.
-    let target=lease.reported_output_root(target,budget)?;
-    let build=lease.reported_output_root(build,budget)?;
-    let mut records=Vec::new();let mut keys=BTreeSet::new();let mut files=0usize;let mut bytes=0u64;
+    let target = lease.reported_output_root(target, budget)?;
+    let build = lease.reported_output_root(build, budget)?;
+    let mut records = Vec::new();
+    let mut keys = BTreeSet::new();
+    let mut files = 0usize;
+    let mut bytes = 0u64;
     for line in stdout.lines() {
         budget.check()?;
-        if line.len()>1024*1024 {return Err("external_reported_output_message_bound".into());}
-        let value:Value=serde_json::from_str(line).map_err(|_|"external_reported_output_message")?;
-        if value["reason"]!="compiler-artifact" {continue;}
-        let feature_rows=value["features"].as_array().filter(|rows|rows.len()<=256).ok_or("external_reported_output_features")?;
-        let mut features=feature_rows.iter().map(|row|row.as_str().filter(|s|!s.is_empty() && s.len()<=128 && !s.chars().any(char::is_control))
-            .map(str::to_owned).ok_or("external_reported_output_features")).collect::<Result<Vec<_>,_>>()?;
-        features.sort();if features.windows(2).any(|pair|pair[0]==pair[1]) {return Err("external_reported_output_features".into());}
-        let target_value=json!({"name":value["target"]["name"],"kind":value["target"]["kind"],"crate_types":value["target"]["crate_types"]});
-        let manifest=inputs.local_input(Path::new(value["manifest_path"].as_str().ok_or("external_reported_output_manifest")?),budget)?;
-        let source=inputs.local_input(Path::new(value["target"]["src_path"].as_str().ok_or("external_reported_output_source")?),budget)?;
-        let mut matching=builds.iter().filter(|build|value["package_id"]==build.package && target_value==build.target
-            && value["profile"]==build.profile && features==build.features && manifest==build.manifest && source==build.source);
-        let observation=matching.next().ok_or("external_reported_output_observation_missing")?;
-        if matching.next().is_some() {return Err("external_reported_output_observation_ambiguous".into());}
-        let key=observation.observation_key()?;
-        if !keys.insert(key.clone()) {return Err("external_reported_output_duplicate_observation".into());}
-        let names=value["filenames"].as_array().filter(|names|!names.is_empty() && names.len()<=REPORTED_LOCAL_OUTPUTS_PER_RECORD)
-            .ok_or("external_reported_output_filename_bound")?;
-        let mut outputs=Vec::new();let mut identities=BTreeSet::new();
-        for name in names {
-            let name=name.as_str().filter(|s|!s.is_empty() && s.len()<=4096 && !s.chars().any(char::is_control))
-                .ok_or("external_reported_output_filename")?;
-            let remaining=reported_output_remaining(files,bytes)?;
-            let target_match=target.contains_reported_path(name,budget)?;
-            let build_match=build.contains_reported_path(name,budget)?;
-            let role=match (target_match,build_match) {
-                (true,false)=>ReportedOutputRole::Target,
-                (false,true)=>ReportedOutputRole::Build,
-                (false,false)=>return Err("external_reported_output_unknown_root".into()),
-                (true,true)=>return Err("external_reported_output_ambiguous_root".into()),
-            };
-            let root=match role {ReportedOutputRole::Target=>&target,ReportedOutputRole::Build=>&build};
-            let output=root.hold(lease,name,remaining,budget)?;
-            if !identities.insert(output.identity_key()) {return Err("external_reported_output_duplicate_file".into());}
-            files+=1;bytes=bytes.checked_add(output.bytes()).ok_or("external_reported_output_aggregate_bound")?;
-            outputs.push(ReportedLocalOutputFile {role,held:output});
+        if line.len() > 1024 * 1024 {
+            return Err("external_reported_output_message_bound".into());
         }
-        outputs.sort_by(|a,b|(a.role.label(),a.held.relative()).cmp(&(b.role.label(),b.held.relative())));
-        records.push(ReportedLocalOutputRecord {observation_key:key,outputs});
+        let value: Value =
+            serde_json::from_str(line).map_err(|_| "external_reported_output_message")?;
+        if value["reason"] != "compiler-artifact" {
+            continue;
+        }
+        let feature_rows = value["features"]
+            .as_array()
+            .filter(|rows| rows.len() <= 256)
+            .ok_or("external_reported_output_features")?;
+        let mut features = feature_rows
+            .iter()
+            .map(|row| {
+                row.as_str()
+                    .filter(|s| !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control))
+                    .map(str::to_owned)
+                    .ok_or("external_reported_output_features")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        features.sort();
+        if features.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err("external_reported_output_features".into());
+        }
+        let target_value = json!({"name":value["target"]["name"],"kind":value["target"]["kind"],"crate_types":value["target"]["crate_types"]});
+        let manifest = inputs.local_input(
+            Path::new(
+                value["manifest_path"]
+                    .as_str()
+                    .ok_or("external_reported_output_manifest")?,
+            ),
+            budget,
+        )?;
+        let source = inputs.local_input(
+            Path::new(
+                value["target"]["src_path"]
+                    .as_str()
+                    .ok_or("external_reported_output_source")?,
+            ),
+            budget,
+        )?;
+        let mut matching = builds.iter().filter(|build| {
+            value["package_id"] == build.package
+                && target_value == build.target
+                && value["profile"] == build.profile
+                && features == build.features
+                && manifest == build.manifest
+                && source == build.source
+        });
+        let observation = matching
+            .next()
+            .ok_or("external_reported_output_observation_missing")?;
+        if matching.next().is_some() {
+            return Err("external_reported_output_observation_ambiguous".into());
+        }
+        let key = observation.observation_key()?;
+        if !keys.insert(key.clone()) {
+            return Err("external_reported_output_duplicate_observation".into());
+        }
+        let names = value["filenames"]
+            .as_array()
+            .filter(|names| !names.is_empty() && names.len() <= REPORTED_LOCAL_OUTPUTS_PER_RECORD)
+            .ok_or("external_reported_output_filename_bound")?;
+        let mut outputs = Vec::new();
+        let mut identities = BTreeSet::new();
+        for name in names {
+            let name = name
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= 4096 && !s.chars().any(char::is_control))
+                .ok_or("external_reported_output_filename")?;
+            let remaining = reported_output_remaining(files, bytes)?;
+            let target_match = target.contains_reported_path(name, budget)?;
+            let build_match = build.contains_reported_path(name, budget)?;
+            let role = match (target_match, build_match) {
+                (true, false) => ReportedOutputRole::Target,
+                (false, true) => ReportedOutputRole::Build,
+                (false, false) => return Err("external_reported_output_unknown_root".into()),
+                (true, true) => return Err("external_reported_output_ambiguous_root".into()),
+            };
+            let root = match role {
+                ReportedOutputRole::Target => &target,
+                ReportedOutputRole::Build => &build,
+            };
+            let output = root.hold(lease, name, remaining, budget)?;
+            if !identities.insert(output.identity_key()) {
+                return Err("external_reported_output_duplicate_file".into());
+            }
+            files += 1;
+            bytes = bytes
+                .checked_add(output.bytes())
+                .ok_or("external_reported_output_aggregate_bound")?;
+            outputs.push(ReportedLocalOutputFile { role, held: output });
+        }
+        outputs.sort_by(|a, b| {
+            (a.role.label(), a.held.relative()).cmp(&(b.role.label(), b.held.relative()))
+        });
+        records.push(ReportedLocalOutputRecord {
+            observation_key: key,
+            outputs,
+        });
     }
-    if records.len()!=builds.len() {return Err("external_reported_output_observation_missing".into());}
-    records.sort_by(|a,b|a.observation_key.cmp(&b.observation_key));
-    target.recheck(budget)?;build.recheck(budget)?;Ok(ReportedLocalOutputs {target,build,records})
+    if records.len() != builds.len() {
+        return Err("external_reported_output_observation_missing".into());
+    }
+    records.sort_by(|a, b| a.observation_key.cmp(&b.observation_key));
+    target.recheck(budget)?;
+    build.recheck(budget)?;
+    Ok(ReportedLocalOutputs {
+        target,
+        build,
+        records,
+    })
 }
 pub(crate) fn observed_local_builds(
-    stdout: &str, metadata: &Value, selected: &SelectedMember,
-    inputs: &crate::external_workspace::NativeSourceIdentity, budget: &Budget<'_>,
+    stdout: &str,
+    metadata: &Value,
+    selected: &SelectedMember,
+    inputs: &crate::external_workspace::NativeSourceIdentity,
+    budget: &Budget<'_>,
 ) -> Result<Vec<ObservedLocalBuild>, String> {
-    let packages = metadata["packages"].as_array()
+    let packages = metadata["packages"]
+        .as_array()
         .filter(|rows| !rows.is_empty() && rows.len() <= 128)
         .ok_or("external_local_build_metadata_bound")?;
     let mut by_id = BTreeMap::new();
     for package in packages {
         budget.check()?;
-        let id = package["id"].as_str().filter(|id| !id.is_empty() && id.len() <= 4096)
+        let id = package["id"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 4096)
             .ok_or("external_local_build_package_id")?;
         if package.get("source") != Some(&Value::Null) || by_id.insert(id, package).is_some() {
             return Err("external_local_build_package_unsupported_or_duplicate".into());
@@ -444,79 +624,172 @@ pub(crate) fn observed_local_builds(
     let mut encoded = 0usize;
     for line in stdout.lines() {
         budget.check()?;
-        if line.len() > 1024 * 1024 { return Err("external_local_build_message_bound".into()); }
-        let value: Value = serde_json::from_str(line).map_err(|_| "external_local_build_message")?;
-        if value["reason"] != "compiler-artifact" { continue; }
-        if builds.len() >= 128 { return Err("external_local_build_observation_bound".into()); }
-        let id = value["package_id"].as_str().filter(|id| by_id.contains_key(*id))
+        if line.len() > 1024 * 1024 {
+            return Err("external_local_build_message_bound".into());
+        }
+        let value: Value =
+            serde_json::from_str(line).map_err(|_| "external_local_build_message")?;
+        if value["reason"] != "compiler-artifact" {
+            continue;
+        }
+        if builds.len() >= 128 {
+            return Err("external_local_build_observation_bound".into());
+        }
+        let id = value["package_id"]
+            .as_str()
+            .filter(|id| by_id.contains_key(*id))
             .ok_or("external_local_build_unexpected_package")?;
-        let package = by_id.get(id).ok_or("external_local_build_package_missing")?;
+        let package = by_id
+            .get(id)
+            .ok_or("external_local_build_package_missing")?;
         let target = &value["target"];
-        if target["name"].as_str().filter(|name| !name.is_empty() && name.len() <= 128).is_none()
-            || !target["crate_types"].as_array().is_some_and(|types| types.len() == 1
-                && matches!(types[0].as_str(), Some("lib" | "rlib" | "cdylib")))
-        { return Err("external_local_build_target_unsupported".into()); }
-        let targets = package["targets"].as_array().filter(|rows| rows.len() <= 128)
+        if target["name"]
+            .as_str()
+            .filter(|name| !name.is_empty() && name.len() <= 128)
+            .is_none()
+            || !target["crate_types"].as_array().is_some_and(|types| {
+                types.len() == 1 && matches!(types[0].as_str(), Some("lib" | "rlib" | "cdylib"))
+            })
+        {
+            return Err("external_local_build_target_unsupported".into());
+        }
+        let targets = package["targets"]
+            .as_array()
+            .filter(|rows| rows.len() <= 128)
             .ok_or("external_local_build_target_bound")?;
         let mut matching = targets.iter().filter(|candidate| {
-            candidate["name"] == target["name"] && candidate["kind"] == target["kind"]
+            candidate["name"] == target["name"]
+                && candidate["kind"] == target["kind"]
                 && candidate["crate_types"] == target["crate_types"]
         });
-        let declared = matching.next().ok_or("external_local_build_target_missing")?;
-        if matching.next().is_some() { return Err("external_local_build_target_ambiguous".into()); }
-        let kind = target["kind"].as_array().filter(|kinds| kinds.len() == 1)
-            .and_then(|kinds| kinds[0].as_str()).ok_or("external_local_build_target_kind")?;
+        let declared = matching
+            .next()
+            .ok_or("external_local_build_target_missing")?;
+        if matching.next().is_some() {
+            return Err("external_local_build_target_ambiguous".into());
+        }
+        let kind = target["kind"]
+            .as_array()
+            .filter(|kinds| kinds.len() == 1)
+            .and_then(|kinds| kinds[0].as_str())
+            .ok_or("external_local_build_target_kind")?;
         if !matches!(kind, "lib" | "rlib" | "cdylib") {
             return Err("external_local_build_target_unsupported".into());
         }
-        let manifest = inputs.local_input(Path::new(value["manifest_path"].as_str()
-            .ok_or("external_local_build_manifest")?), budget)?;
-        let declared_manifest = inputs.local_input(Path::new(package["manifest_path"].as_str()
-            .ok_or("external_local_build_manifest")?), budget)?;
-        let source = inputs.local_input(Path::new(target["src_path"].as_str()
-            .ok_or("external_local_build_source")?), budget)?;
-        let declared_source = inputs.local_input(Path::new(declared["src_path"].as_str()
-            .ok_or("external_local_build_source")?), budget)?;
+        let manifest = inputs.local_input(
+            Path::new(
+                value["manifest_path"]
+                    .as_str()
+                    .ok_or("external_local_build_manifest")?,
+            ),
+            budget,
+        )?;
+        let declared_manifest = inputs.local_input(
+            Path::new(
+                package["manifest_path"]
+                    .as_str()
+                    .ok_or("external_local_build_manifest")?,
+            ),
+            budget,
+        )?;
+        let source = inputs.local_input(
+            Path::new(
+                target["src_path"]
+                    .as_str()
+                    .ok_or("external_local_build_source")?,
+            ),
+            budget,
+        )?;
+        let declared_source = inputs.local_input(
+            Path::new(
+                declared["src_path"]
+                    .as_str()
+                    .ok_or("external_local_build_source")?,
+            ),
+            budget,
+        )?;
         if manifest != declared_manifest || source != declared_source {
             return Err("external_local_build_content_binding_changed".into());
         }
         let profile = &value["profile"];
-        let profile_object = profile.as_object().filter(|fields| fields.len() <= 16)
+        let profile_object = profile
+            .as_object()
+            .filter(|fields| fields.len() <= 16)
             .ok_or("external_local_build_profile")?;
-        if profile["opt_level"].as_str().filter(|text| text.len() <= 8).is_none()
-            || !profile["debug_assertions"].is_boolean() || !profile["overflow_checks"].is_boolean()
+        if profile["opt_level"]
+            .as_str()
+            .filter(|text| text.len() <= 8)
+            .is_none()
+            || !profile["debug_assertions"].is_boolean()
+            || !profile["overflow_checks"].is_boolean()
             || profile["test"] != false
-            || !(profile["debuginfo"].is_null() || profile["debuginfo"].as_u64().is_some_and(|v| v <= 2))
-            || profile_object.iter().any(|(key, value)| key.len() > 64
-                || !(value.is_null() || value.is_boolean() || value.as_i64().is_some()
-                    || value.as_str().is_some_and(|text| text.len() <= 64)))
-        { return Err("external_local_build_profile".into()); }
-        let features = value["features"].as_array().filter(|rows| rows.len() <= 256)
+            || !(profile["debuginfo"].is_null()
+                || profile["debuginfo"].as_u64().is_some_and(|v| v <= 2))
+            || profile_object.iter().any(|(key, value)| {
+                key.len() > 64
+                    || !(value.is_null()
+                        || value.is_boolean()
+                        || value.as_i64().is_some()
+                        || value.as_str().is_some_and(|text| text.len() <= 64))
+            })
+        {
+            return Err("external_local_build_profile".into());
+        }
+        let features = value["features"]
+            .as_array()
+            .filter(|rows| rows.len() <= 256)
             .ok_or("external_local_build_features")?;
         let mut features_set = BTreeSet::new();
         for feature in features {
-            let feature = feature.as_str().filter(|text| !text.is_empty() && text.len() <= 128
-                && !text.chars().any(char::is_control)).ok_or("external_local_build_features")?;
-            if !features_set.insert(feature.to_owned()) { return Err("external_local_build_features".into()); }
+            let feature = feature
+                .as_str()
+                .filter(|text| {
+                    !text.is_empty() && text.len() <= 128 && !text.chars().any(char::is_control)
+                })
+                .ok_or("external_local_build_features")?;
+            if !features_set.insert(feature.to_owned()) {
+                return Err("external_local_build_features".into());
+            }
         }
         let features: Vec<_> = features_set.into_iter().collect();
         // Metadata feature sets may be a workspace union. Retain the observed set.
         let target = json!({"name":target["name"],"kind":target["kind"],
             "crate_types":target["crate_types"]});
-        let key = serde_json::to_string(&json!([id,&target,&profile,&features,
-            source.digest_value()])).map_err(|_| "external_local_build_encoding")?;
-        let build = ObservedLocalBuild { package: id.to_owned(), target,
-            profile: profile.clone(), features, manifest, source };
+        let key = serde_json::to_string(&json!([
+            id,
+            &target,
+            &profile,
+            &features,
+            source.digest_value()
+        ]))
+        .map_err(|_| "external_local_build_encoding")?;
+        let build = ObservedLocalBuild {
+            package: id.to_owned(),
+            target,
+            profile: profile.clone(),
+            features,
+            manifest,
+            source,
+        };
         let record_bytes = serde_json::to_vec(&build.digest_value())
-            .map_err(|_| "external_local_build_encoding")?.len();
-        encoded = encoded.checked_add(key.len()).and_then(|bytes| bytes.checked_add(record_bytes))
+            .map_err(|_| "external_local_build_encoding")?
+            .len();
+        encoded = encoded
+            .checked_add(key.len())
+            .and_then(|bytes| bytes.checked_add(record_bytes))
             .ok_or("external_local_build_encoding_bound")?;
-        if encoded > 65536 { return Err("external_local_build_encoding_bound".into()); }
-        if !keys.insert(key) { return Err("external_local_build_duplicate_unit".into()); }
+        if encoded > 65536 {
+            return Err("external_local_build_encoding_bound".into());
+        }
+        if !keys.insert(key) {
+            return Err("external_local_build_duplicate_unit".into());
+        }
         seen_packages.insert(id.to_owned());
         builds.push(build);
     }
-    if !seen_packages.contains(selected.package_id.as_str()) { return Err("external_local_build_selected_unobserved".into()); }
+    if !seen_packages.contains(selected.package_id.as_str()) {
+        return Err("external_local_build_selected_unobserved".into());
+    }
     builds.sort_by_key(|build| (build.package.clone(), build.digest_value().to_string()));
     budget.check()?;
     Ok(builds)
@@ -531,11 +804,21 @@ pub(crate) struct OwnedNativeValidation {
     provenance: Option<NativeCompilationProvenance>,
 }
 impl OwnedNativeValidation {
-    pub(crate) fn receipt(&self) -> &Value { &self.receipt }
+    pub(crate) fn receipt(&self) -> &Value {
+        &self.receipt
+    }
     fn into_receipt(self) -> Value {
         self.receipt
     }
-    pub(crate) fn into_parts(self) -> (Value, PathBuf, File, String, Option<NativeCompilationProvenance>) {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Value,
+        PathBuf,
+        File,
+        String,
+        Option<NativeCompilationProvenance>,
+    ) {
         (
             self.receipt,
             self.artifact,
@@ -609,16 +892,19 @@ fn configured_engine_path(
     if let Some(path) = host_setting("AURUM_GODOT") {
         return checked_engine_invocation(path);
     }
-    let home = host_setting("AURUM_STUDIO_HOME")
-        .ok_or("external_configfile_engine_not_configured")?;
-    if !home.is_absolute() { return Err("external_configfile_engine_path_refused".into()); }
+    let home =
+        host_setting("AURUM_STUDIO_HOME").ok_or("external_configfile_engine_not_configured")?;
+    if !home.is_absolute() {
+        return Err("external_configfile_engine_path_refused".into());
+    }
     text_path(&home)?;
     let directory = home.join("runtime");
     let guard = crate::snapshot::open_checked_directory(&directory, deadline)
         .map_err(|_| "external_configfile_engine_runtime_refused")?;
     let mut candidates = Vec::new();
     for (index, entry) in std::fs::read_dir(&directory)
-        .map_err(|_| "external_configfile_engine_runtime_refused")?.enumerate()
+        .map_err(|_| "external_configfile_engine_runtime_refused")?
+        .enumerate()
     {
         check()?;
         if index >= CONFIGFILE_RUNTIME_ENTRIES {
@@ -629,9 +915,16 @@ fn configured_engine_path(
         let Some(name) = name.to_str() else { continue };
         let lower = name.to_ascii_lowercase();
         if lower.starts_with("godot") && lower.ends_with(".exe") {
-            let kind = entry.file_type().map_err(|_| "external_configfile_engine_runtime_refused")?;
+            let kind = entry
+                .file_type()
+                .map_err(|_| "external_configfile_engine_runtime_refused")?;
             if kind.is_file() && !kind.is_symlink() {
-                candidates.push((!lower.contains("console"), lower.len(), lower, name.to_owned()));
+                candidates.push((
+                    !lower.contains("console"),
+                    lower.len(),
+                    lower,
+                    name.to_owned(),
+                ));
             }
         }
     }
@@ -639,14 +932,20 @@ fn configured_engine_path(
     crate::snapshot::check_opened_path(&guard, &directory, deadline)
         .map_err(|_| "external_configfile_engine_runtime_refused")?;
     check()?;
-    let name = candidates.first().ok_or("external_configfile_engine_not_configured")?;
+    let name = candidates
+        .first()
+        .ok_or("external_configfile_engine_not_configured")?;
     checked_engine_invocation(directory.join(&name.3))
 }
 
 fn checked_engine_invocation(path: PathBuf) -> Result<PathBuf, String> {
     if !path.is_absolute()
-        || !path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-    { return Err("external_configfile_engine_path_refused".into()); }
+        || !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    {
+        return Err("external_configfile_engine_path_refused".into());
+    }
     text_path(&path)?;
     Ok(path)
 }
@@ -664,14 +963,22 @@ fn configfile_engine_stamp(file: &File) -> Result<ConfigFileEngineStamp, String>
     use std::os::windows::fs::MetadataExt;
     use std::os::windows::io::AsRawHandle;
     #[repr(C)]
-    struct FileIdInfo { volume: u64, id: [u8; 16] }
+    struct FileIdInfo {
+        volume: u64,
+        id: [u8; 16],
+    }
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetFileInformationByHandleEx(
-            file: *mut std::ffi::c_void, class: u32, info: *mut std::ffi::c_void, bytes: u32,
+            file: *mut std::ffi::c_void,
+            class: u32,
+            info: *mut std::ffi::c_void,
+            bytes: u32,
         ) -> i32;
     }
-    let metadata = file.metadata().map_err(|_| "external_configfile_engine_metadata")?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| "external_configfile_engine_metadata")?;
     if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
         return Err("external_configfile_engine_file_refused".into());
     }
@@ -680,15 +987,31 @@ fn configfile_engine_stamp(file: &File) -> Result<ConfigFileEngineStamp, String>
     }
     // Same FileIdInfo ABI already used by external_workspace's held-file
     // identity checks. These are facts about this File, never serialized grants.
-    let mut identity = FileIdInfo { volume: 0, id: [0; 16] };
-    if unsafe { GetFileInformationByHandleEx(
-        file.as_raw_handle(), 0x12, (&mut identity as *mut FileIdInfo).cast(),
-        std::mem::size_of::<FileIdInfo>() as u32,
-    ) } == 0 { return Err("external_configfile_engine_identity_unavailable".into()); }
+    let mut identity = FileIdInfo {
+        volume: 0,
+        id: [0; 16],
+    };
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            0x12,
+            (&mut identity as *mut FileIdInfo).cast(),
+            std::mem::size_of::<FileIdInfo>() as u32,
+        )
+    } == 0
+    {
+        return Err("external_configfile_engine_identity_unavailable".into());
+    }
     Ok(ConfigFileEngineStamp {
-        volume: identity.volume, id: identity.id, bytes: metadata.len(),
-        created: metadata.created().map_err(|_| "external_configfile_engine_metadata")?,
-        modified: metadata.modified().map_err(|_| "external_configfile_engine_metadata")?,
+        volume: identity.volume,
+        id: identity.id,
+        bytes: metadata.len(),
+        created: metadata
+            .created()
+            .map_err(|_| "external_configfile_engine_metadata")?,
+        modified: metadata
+            .modified()
+            .map_err(|_| "external_configfile_engine_metadata")?,
     })
 }
 
@@ -701,29 +1024,46 @@ fn configfile_engine_hash(
     if expected == 0 || expected > CONFIGFILE_ENGINE_BYTES {
         return Err("external_configfile_engine_bytes_bound".into());
     }
-    let position = reader.stream_position().map_err(|_| "external_configfile_engine_cursor")?;
+    let position = reader
+        .stream_position()
+        .map_err(|_| "external_configfile_engine_cursor")?;
     let result = (|| {
         check()?;
-        reader.seek(SeekFrom::Start(0)).map_err(|_| "external_configfile_engine_cursor")?;
+        reader
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| "external_configfile_engine_cursor")?;
         let mut hash = crate::hash::Sha256::new();
         let mut bytes = 0u64;
         let mut buffer = [0u8; 64 * 1024];
         loop {
             check()?;
-            let capacity = expected.saturating_sub(bytes).saturating_add(1)
+            let capacity = expected
+                .saturating_sub(bytes)
+                .saturating_add(1)
                 .min(buffer.len() as u64) as usize;
-            let count = reader.read(&mut buffer[..capacity])
+            let count = reader
+                .read(&mut buffer[..capacity])
                 .map_err(|_| "external_configfile_engine_read")?;
-            if count == 0 { break; }
-            bytes = bytes.checked_add(count as u64).ok_or("external_configfile_engine_bytes_bound")?;
-            if bytes > expected { return Err("external_configfile_engine_length_changed".into()); }
+            if count == 0 {
+                break;
+            }
+            bytes = bytes
+                .checked_add(count as u64)
+                .ok_or("external_configfile_engine_bytes_bound")?;
+            if bytes > expected {
+                return Err("external_configfile_engine_length_changed".into());
+            }
             hash.update(&buffer[..count]);
         }
-        if bytes != expected { return Err("external_configfile_engine_length_changed".into()); }
+        if bytes != expected {
+            return Err("external_configfile_engine_length_changed".into());
+        }
         check()?;
         Ok(hash.hex())
     })();
-    reader.seek(SeekFrom::Start(position)).map_err(|_| "external_configfile_engine_cursor_restore")?;
+    reader
+        .seek(SeekFrom::Start(position))
+        .map_err(|_| "external_configfile_engine_cursor_restore")?;
     result
 }
 
@@ -737,7 +1077,9 @@ struct ConfigFileEngineImage {
 }
 impl ConfigFileEngineImage {
     fn open(
-        invocation: PathBuf, deadline: Instant, check: &dyn Fn() -> Result<(), String>,
+        invocation: PathBuf,
+        deadline: Instant,
+        check: &dyn Fn() -> Result<(), String>,
     ) -> Result<Self, String> {
         check()?;
         let invocation = checked_engine_invocation(invocation)?;
@@ -746,36 +1088,65 @@ impl ConfigFileEngineImage {
         let prior = crate::snapshot::open_checked_file(&invocation, deadline)
             .map_err(|_| "external_configfile_engine_file_refused")?;
         let before = configfile_engine_stamp(&prior)?;
-        let application = invocation.canonicalize().map(crate::project::clean_path)
+        let application = invocation
+            .canonicalize()
+            .map(crate::project::clean_path)
             .map_err(|_| "external_configfile_engine_file_refused")?;
         checked_engine_invocation(application.clone())?;
-        let guard = OpenOptions::new().read(true).custom_flags(0x0020_0000).share_mode(1)
-            .open(&invocation).map_err(|_| "external_configfile_engine_file_refused")?;
+        let guard = OpenOptions::new()
+            .read(true)
+            .custom_flags(0x0020_0000)
+            .share_mode(1)
+            .open(&invocation)
+            .map_err(|_| "external_configfile_engine_file_refused")?;
         if configfile_engine_stamp(&guard)? != before {
             return Err("external_configfile_engine_changed".into());
         }
-        let mut image = Self { invocation, application, guard, stamp: before, sha256: String::new() };
+        let mut image = Self {
+            invocation,
+            application,
+            guard,
+            stamp: before,
+            sha256: String::new(),
+        };
         image.check_identity(deadline, check)?;
         image.sha256 = configfile_engine_hash(&mut &image.guard, image.stamp.bytes, check)?;
         image.check_identity(deadline, check)?;
         Ok(image)
     }
-    fn check_identity(&self, deadline: Instant, check: &dyn Fn() -> Result<(), String>) -> Result<(), String> {
+    fn check_identity(
+        &self,
+        deadline: Instant,
+        check: &dyn Fn() -> Result<(), String>,
+    ) -> Result<(), String> {
         check()?;
         crate::snapshot::check_opened_path(&self.guard, &self.invocation, deadline)
-            .and_then(|_| crate::snapshot::check_opened_path(&self.guard, &self.application, deadline))
+            .and_then(|_| {
+                crate::snapshot::check_opened_path(&self.guard, &self.application, deadline)
+            })
             .map_err(|_| "external_configfile_engine_identity_changed")?;
-        let application = self.invocation.canonicalize().map(crate::project::clean_path)
+        let application = self
+            .invocation
+            .canonicalize()
+            .map(crate::project::clean_path)
             .map_err(|_| "external_configfile_engine_identity_changed")?;
         if !crate::ownership::paths_equal(&application, &self.application)
             || configfile_engine_stamp(&self.guard)? != self.stamp
-        { return Err("external_configfile_engine_changed".into()); }
+        {
+            return Err("external_configfile_engine_changed".into());
+        }
         check()
     }
-    fn recheck(&self, deadline: Instant, check: &dyn Fn() -> Result<(), String>) -> Result<(), String> {
+    fn recheck(
+        &self,
+        deadline: Instant,
+        check: &dyn Fn() -> Result<(), String>,
+    ) -> Result<(), String> {
         self.check_identity(deadline, check)?;
         let sha256 = configfile_engine_hash(&mut &self.guard, self.stamp.bytes, check)?;
-        if sha256 != self.sha256 { return Err("external_configfile_engine_hash_changed".into()); }
+        if sha256 != self.sha256 {
+            return Err("external_configfile_engine_hash_changed".into());
+        }
         self.check_identity(deadline, check)
     }
 }
@@ -791,8 +1162,10 @@ pub(crate) struct HeldConfigFileEngine<'a> {
 }
 impl<'a> HeldConfigFileEngine<'a> {
     pub(crate) fn hold_configured(
-        runtime: &'a crate::native_operations::NativeRuntime, root: &Path,
-        parent: &'a ParentDeadline, controller: &'a StreamController,
+        runtime: &'a crate::native_operations::NativeRuntime,
+        root: &Path,
+        parent: &'a ParentDeadline,
+        controller: &'a StreamController,
     ) -> Result<Self, String> {
         let check = || {
             parent.check_read_controller(controller)?;
@@ -800,17 +1173,26 @@ impl<'a> HeldConfigFileEngine<'a> {
         };
         check()?;
         let invocation = configured_engine_path(
-            |name| std::env::var_os(name).map(PathBuf::from), parent.instant(), &check,
+            |name| std::env::var_os(name).map(PathBuf::from),
+            parent.instant(),
+            &check,
         )?;
         let image = ConfigFileEngineImage::open(invocation, parent.instant(), &check)?;
-        let held = Self { runtime, root: root.to_path_buf(), parent, controller, image };
+        let held = Self {
+            runtime,
+            root: root.to_path_buf(),
+            parent,
+            controller,
+            image,
+        };
         held.recheck()?;
         Ok(held)
     }
     pub(crate) fn recheck(&self) -> Result<(), String> {
         let check = || {
             self.parent.check_read_controller(self.controller)?;
-            self.runtime.check_managed_native_output(&self.root, self.controller)
+            self.runtime
+                .check_managed_native_output(&self.root, self.controller)
         };
         self.image.recheck(self.parent.instant(), &check)
     }
@@ -819,56 +1201,111 @@ impl<'a> HeldConfigFileEngine<'a> {
 const CONFIGFILE_PARSER_SCRIPT: &str = include_str!("configfile_parser.gd");
 const CONFIGFILE_PARSER_OUTPUT: usize = 256 * 1024;
 const CONFIGFILE_TARGET_TAGS: [&str; 6] = crate::external_workspace::PRIVATE_GDEXTENSION_FEATURES;
-const CONFIGFILE_OBSERVED_TAGS: [&str; 11] = ["windows", "debug", "release", "x86_64", "arm64", "single", "double", "64", "32", "editor", "template"];
+const CONFIGFILE_OBSERVED_TAGS: [&str; 11] = [
+    "windows", "debug", "release", "x86_64", "arm64", "single", "double", "64", "32", "editor",
+    "template",
+];
 
-#[derive(serde::Deserialize,serde::Serialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
-enum ConfigFileValue { Text(String), Boolean(bool) }
-#[derive(serde::Deserialize,serde::Serialize)]
+enum ConfigFileValue {
+    Text(String),
+    Boolean(bool),
+}
+#[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct ConfigFileEntry { key:String, #[serde(rename="type")] kind:String, value:ConfigFileValue }
-#[derive(serde::Deserialize,serde::Serialize)]
+struct ConfigFileEntry {
+    key: String,
+    #[serde(rename = "type")]
+    kind: String,
+    value: ConfigFileValue,
+}
+#[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct ConfigFileSection { name:String, entries:Vec<ConfigFileEntry> }
-#[derive(serde::Deserialize,serde::Serialize)]
+struct ConfigFileSection {
+    name: String,
+    entries: Vec<ConfigFileEntry>,
+}
+#[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct ConfigFileLibrary { key:String, flags:Vec<String>, path:String, matches_target:bool }
-#[derive(serde::Deserialize,serde::Serialize)]
+struct ConfigFileLibrary {
+    key: String,
+    flags: Vec<String>,
+    path: String,
+    matches_target: bool,
+}
+#[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFileOutput {
-    schema:String, parse_error:i64, sections:Vec<ConfigFileSection>, libraries:Vec<ConfigFileLibrary>,
-    dependencies:Vec<()>, target_tags:Vec<String>, observed_tags:Vec<String>,
+    schema: String,
+    parse_error: i64,
+    sections: Vec<ConfigFileSection>,
+    libraries: Vec<ConfigFileLibrary>,
+    dependencies: Vec<()>,
+    target_tags: Vec<String>,
+    observed_tags: Vec<String>,
 }
 
 fn configfile_parser_output(bytes: &[u8], expected: &Value) -> Result<Vec<String>, String> {
-    if bytes.len() > CONFIGFILE_PARSER_OUTPUT { return Err("configfile_parser_output_bound".into()); }
-    if !bytes.ends_with(b"\n") { return Err("configfile_parser_output_unterminated".into()); }
+    if bytes.len() > CONFIGFILE_PARSER_OUTPUT {
+        return Err("configfile_parser_output_bound".into());
+    }
+    if !bytes.ends_with(b"\n") {
+        return Err("configfile_parser_output_unterminated".into());
+    }
     let text = std::str::from_utf8(bytes).map_err(|_| "configfile_parser_output_utf8")?;
-    let mut lines = text.lines().filter_map(|line| line.strip_prefix("AURUM_CONFIGFILE_PARSED "));
+    let mut lines = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("AURUM_CONFIGFILE_PARSED "));
     let line = lines.next().ok_or("configfile_parser_output_missing")?;
-    if lines.next().is_some() { return Err("configfile_parser_output_duplicate".into()); }
+    if lines.next().is_some() {
+        return Err("configfile_parser_output_duplicate".into());
+    }
     // Derived closed structs reject repeated fields too; parsing first into
     // Value would silently discard a duplicate property's earlier value.
-    let typed: ConfigFileOutput = serde_json::from_str(line).map_err(|_| "configfile_parser_output_json")?;
+    let typed: ConfigFileOutput =
+        serde_json::from_str(line).map_err(|_| "configfile_parser_output_json")?;
     let parsed = serde_json::to_value(typed).map_err(|_| "configfile_parser_output_json")?;
-    let row = parsed.as_object().ok_or("configfile_parser_output_schema")?;
-    let keys = ["schema", "parse_error", "sections", "libraries", "dependencies", "target_tags", "observed_tags"];
-    if row.len() != keys.len() || row.keys().any(|key| !keys.contains(&key.as_str()))
-        || parsed["schema"] != "aurum.configfile.output/1" || parsed["parse_error"].as_i64() != Some(0)
+    let row = parsed
+        .as_object()
+        .ok_or("configfile_parser_output_schema")?;
+    let keys = [
+        "schema",
+        "parse_error",
+        "sections",
+        "libraries",
+        "dependencies",
+        "target_tags",
+        "observed_tags",
+    ];
+    if row.len() != keys.len()
+        || row.keys().any(|key| !keys.contains(&key.as_str()))
+        || parsed["schema"] != "aurum.configfile.output/1"
+        || parsed["parse_error"].as_i64() != Some(0)
         || parsed["target_tags"] != json!(CONFIGFILE_TARGET_TAGS)
-        || parsed["sections"] != expected["sections"] || parsed["libraries"] != expected["libraries"]
-        || parsed["dependencies"] != json!([]) || expected["dependencies"] != json!([])
-    { return Err("configfile_parser_supported_subset_mismatch".into()); }
-    let tags = parsed["observed_tags"].as_array().ok_or("configfile_parser_observed_tags")?;
-    if tags.len() > CONFIGFILE_OBSERVED_TAGS.len() { return Err("configfile_parser_observed_tags".into()); }
+        || parsed["sections"] != expected["sections"]
+        || parsed["libraries"] != expected["libraries"]
+        || parsed["dependencies"] != json!([])
+        || expected["dependencies"] != json!([])
+    {
+        return Err("configfile_parser_supported_subset_mismatch".into());
+    }
+    let tags = parsed["observed_tags"]
+        .as_array()
+        .ok_or("configfile_parser_observed_tags")?;
+    if tags.len() > CONFIGFILE_OBSERVED_TAGS.len() {
+        return Err("configfile_parser_observed_tags".into());
+    }
     let mut seen = BTreeSet::new();
-    tags.iter().map(|value| {
-        let tag = value.as_str().ok_or("configfile_parser_observed_tags")?;
-        if !CONFIGFILE_OBSERVED_TAGS.contains(&tag) || !seen.insert(tag) {
-            return Err("configfile_parser_observed_tags".into());
-        }
-        Ok(tag.to_owned())
-    }).collect()
+    tags.iter()
+        .map(|value| {
+            let tag = value.as_str().ok_or("configfile_parser_observed_tags")?;
+            if !CONFIGFILE_OBSERVED_TAGS.contains(&tag) || !seen.insert(tag) {
+                return Err("configfile_parser_observed_tags".into());
+            }
+            Ok(tag.to_owned())
+        })
+        .collect()
 }
 
 struct ConfigFileParserState {
@@ -881,27 +1318,44 @@ impl Drop for ConfigFileParserState {
     fn drop(&mut self) {
         // Normal cleanup is explicit under the original budget. Error/expiry
         // cannot silently grant late deletion or release a live allocation.
-        if let Some(workspace) = self.workspace.take() { std::mem::forget(workspace); }
+        if let Some(workspace) = self.workspace.take() {
+            std::mem::forget(workspace);
+        }
     }
 }
 
 fn configfile_parser_file(
-    root: &Path, name: &str, bytes: &[u8], parent: &ParentDeadline,
+    root: &Path,
+    name: &str,
+    bytes: &[u8],
+    parent: &ParentDeadline,
 ) -> Result<(PathBuf, File, ConfigFileEngineStamp, String), String> {
     use std::io::Write;
     parent.check()?;
-    if bytes.is_empty() || bytes.len() > CONFIGFILE_PARSER_OUTPUT { return Err("configfile_parser_input_bound".into()); }
+    if bytes.is_empty() || bytes.len() > CONFIGFILE_PARSER_OUTPUT {
+        return Err("configfile_parser_input_bound".into());
+    }
     let path = root.join(name);
-    let mut file = OpenOptions::new().read(true).write(true).create_new(true).share_mode(1)
-        .custom_flags(0x0020_0000).open(&path).map_err(|_| "configfile_parser_input_create")?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .share_mode(1)
+        .custom_flags(0x0020_0000)
+        .open(&path)
+        .map_err(|_| "configfile_parser_input_create")?;
     for chunk in bytes.chunks(8192) {
         parent.check()?;
-        file.write_all(chunk).map_err(|_| "configfile_parser_input_write")?;
+        file.write_all(chunk)
+            .map_err(|_| "configfile_parser_input_write")?;
     }
-    file.sync_all().map_err(|_| "configfile_parser_input_flush")?;
+    file.sync_all()
+        .map_err(|_| "configfile_parser_input_flush")?;
     crate::snapshot::check_opened_path(&file, &path, parent.instant())?;
     let hash = configfile_engine_hash(&mut &file, bytes.len() as u64, &|| parent.check())?;
-    if hash != crate::sha256_hex(bytes) { return Err("configfile_parser_input_readback".into()); }
+    if hash != crate::sha256_hex(bytes) {
+        return Err("configfile_parser_input_readback".into());
+    }
     let stamp = configfile_engine_stamp(&file)?;
     Ok((path, file, stamp, hash))
 }
@@ -909,120 +1363,202 @@ fn configfile_parser_file(
 /// Run only the fixed parser in a fresh recognized peer allocation. All source
 /// text has already passed the strict quoted-subset barrier in held custody.
 pub(crate) fn compare_configfile(
-    compiler_workspace: &Workspace, input: &crate::external_workspace::ConfigFileInput<'_>,
-    parent: &ParentDeadline, controller: &StreamController,
+    compiler_workspace: &Workspace,
+    input: &crate::external_workspace::ConfigFileInput<'_>,
+    parent: &ParentDeadline,
+    controller: &StreamController,
     permission: &crate::native_operations::ConfigFileParsePermission<'_>,
 ) -> Result<Value, String> {
     let check = || permission.check(parent, controller);
     check()?;
-    let (manifest_root,manifest_path,text,expected) = input.parts();
-    permission.check_manifest(manifest_root,manifest_path)?;
-    if text.is_empty() || text.len() > 65536 { return Err("configfile_parser_input_bound".into()); }
+    let (manifest_root, manifest_path, text, expected) = input.parts();
+    permission.check_manifest(manifest_root, manifest_path)?;
+    if text.is_empty() || text.len() > 65536 {
+        return Err("configfile_parser_input_bound".into());
+    }
     if &crate::external_workspace::configfile_parser_document(text)? != expected {
         return Err("configfile_parser_strict_admission_document_mismatch".into());
     }
     let held = permission.hold_engine(parent, controller)?;
     let image = held.image; // owned File, not a leaked borrowed runtime/parent
     let workspace = compiler_workspace.parser_peer_checked(parent.instant(), &check)?;
-    let deadline = parent.instant().min(Instant::now() + parent.budget(Duration::from_secs(30))?);
-    let management = crate::native_runtime::acquire_checked_management(deadline, || check().map_err(io::Error::other))
-        .map_err(|_| "configfile_parser_management_admission")?;
+    let deadline = parent
+        .instant()
+        .min(Instant::now() + parent.budget(Duration::from_secs(30))?);
+    let management = crate::native_runtime::acquire_checked_management(deadline, || {
+        check().map_err(io::Error::other)
+    })
+    .map_err(|_| "configfile_parser_management_admission")?;
     let deadline = management.deadline();
     let root = workspace.path.clone();
     let state = Arc::new(std::sync::Mutex::new(ConfigFileParserState {
-        image, _management: management, workspace: Some(workspace), files: Vec::new(),
+        image,
+        _management: management,
+        workspace: Some(workspace),
+        files: Vec::new(),
     }));
-    let result: Result<Value,String> = (|| {
+    let result: Result<Value, String> = (|| {
         let input = serde_json::to_vec(&json!({"schema":"aurum.configfile.input/1", "text":text,
-            "target_tags":CONFIGFILE_TARGET_TAGS})).map_err(|_| "configfile_parser_input_json")?;
-        let mut owner = state.lock().map_err(|_| "configfile_parser_owner_poisoned")?;
+            "target_tags":CONFIGFILE_TARGET_TAGS}))
+        .map_err(|_| "configfile_parser_input_json")?;
+        let mut owner = state
+            .lock()
+            .map_err(|_| "configfile_parser_owner_poisoned")?;
         for name in ["profile", "temp"] {
             check()?;
             std::fs::create_dir(root.join(name)).map_err(|_| "configfile_parser_directory")?;
         }
         for (name, bytes) in [
-            ("project.godot", b"config_version=5\n[application]\nconfig/name=\"Aurum ConfigFile Parser\"\n".as_slice()),
-            ("parser.gd", CONFIGFILE_PARSER_SCRIPT.as_bytes()), ("input.json", input.as_slice()),
-        ] { owner.files.push(configfile_parser_file(&root, name, bytes, parent)?); }
-        let system = trusted_directory(std::env::var_os("SystemRoot").map(PathBuf::from), parent)?.0;
+            (
+                "project.godot",
+                b"config_version=5\n[application]\nconfig/name=\"Aurum ConfigFile Parser\"\n"
+                    .as_slice(),
+            ),
+            ("parser.gd", CONFIGFILE_PARSER_SCRIPT.as_bytes()),
+            ("input.json", input.as_slice()),
+        ] {
+            owner
+                .files
+                .push(configfile_parser_file(&root, name, bytes, parent)?);
+        }
+        let system =
+            trusted_directory(std::env::var_os("SystemRoot").map(PathBuf::from), parent)?.0;
         let mut env = vec![
-            ("SystemRoot".into(), text_path(&system)?), ("WINDIR".into(), text_path(&system)?),
+            ("SystemRoot".into(), text_path(&system)?),
+            ("WINDIR".into(), text_path(&system)?),
             ("SystemDrive".into(), compiler_system_drive(&system)?),
             ("PATH".into(), text_path(&system.join("System32"))?),
         ];
-        for (name, leaf) in [("HOME","profile"),("USERPROFILE","profile"),("APPDATA","profile"),
-            ("LOCALAPPDATA","profile"),("XDG_DATA_HOME","profile"),("XDG_CONFIG_HOME","profile"),
-            ("XDG_CACHE_HOME","profile"),("TEMP","temp"),("TMP","temp"),("TMPDIR","temp")]
-        { env.push((name.into(), text_path(&root.join(leaf))?)); }
+        for (name, leaf) in [
+            ("HOME", "profile"),
+            ("USERPROFILE", "profile"),
+            ("APPDATA", "profile"),
+            ("LOCALAPPDATA", "profile"),
+            ("XDG_DATA_HOME", "profile"),
+            ("XDG_CONFIG_HOME", "profile"),
+            ("XDG_CACHE_HOME", "profile"),
+            ("TEMP", "temp"),
+            ("TMP", "temp"),
+            ("TMPDIR", "temp"),
+        ] {
+            env.push((name.into(), text_path(&root.join(leaf))?));
+        }
         let program = owner.image.application.clone();
         let argv0 = owner.image.invocation.clone();
         let image_sha256 = owner.image.sha256.clone();
-        let fence = owner.workspace.as_ref().ok_or("configfile_parser_allocation_missing")?.lifetime.clone();
+        let fence = owner
+            .workspace
+            .as_ref()
+            .ok_or("configfile_parser_allocation_missing")?
+            .lifetime
+            .clone();
         drop(owner);
         check()?;
-        let args = vec!["--headless".into(),"--path".into(),text_path(&root)?,
-            "--script".into(),text_path(&root.join("parser.gd"))?];
+        let args = vec![
+            "--headless".into(),
+            "--path".into(),
+            text_path(&root)?,
+            "--script".into(),
+            text_path(&root.join("parser.gd"))?,
+        ];
         // The clone is installed in the same binary Resources BEFORE startup.
         // A failed/uncertain creator parks this original image/gate/allocation.
-        let mut stream = Worker::spawn_binary_cleared_retaining(controller, BinarySpawn {
-            program:&program, argv0:&argv0, args:&args, directory:Some(&root), overrides:&env,
-            lifetime:&fence, deadline, limits:StreamLimits {stdout_bytes:CONFIGFILE_PARSER_OUTPUT as u64,stderr_bytes:65536},
-        }, Box::new(state.clone())).map_err(|_| "configfile_parser_startup_refused")?;
-        let observed: Result<(Value,Vec<String>),String> = (|| {
+        let mut stream = Worker::spawn_binary_cleared_retaining(
+            controller,
+            BinarySpawn {
+                program: &program,
+                argv0: &argv0,
+                args: &args,
+                directory: Some(&root),
+                overrides: &env,
+                lifetime: &fence,
+                deadline,
+                limits: StreamLimits {
+                    stdout_bytes: CONFIGFILE_PARSER_OUTPUT as u64,
+                    stderr_bytes: 65536,
+                },
+            },
+            Box::new(state.clone()),
+        )
+        .map_err(|_| "configfile_parser_startup_refused")?;
+        let observed: Result<(Value, Vec<String>), String> = (|| {
             let mut bytes = Vec::new();
-            let mut buffer = [0u8;8192];
+            let mut buffer = [0u8; 8192];
             let mut monitor = |effective| {
                 check().map_err(io::Error::other)?;
                 observe_storage_root(&root, parent, effective)
             };
             loop {
-                let count = stream.read_before_checked(&mut buffer,deadline,&mut monitor)
+                let count = stream
+                    .read_before_checked(&mut buffer, deadline, &mut monitor)
                     .map_err(|_| "configfile_parser_read_refused")?;
-                if count == 0 { break; }
-                if bytes.len()+count > CONFIGFILE_PARSER_OUTPUT { return Err("configfile_parser_output_bound".into()); }
+                if count == 0 {
+                    break;
+                }
+                if bytes.len() + count > CONFIGFILE_PARSER_OUTPUT {
+                    return Err("configfile_parser_output_bound".into());
+                }
                 bytes.extend_from_slice(&buffer[..count]);
             }
-            let receipt = stream.finish_checked(&mut monitor).map_err(|_| "configfile_parser_retirement_or_exit")?;
+            let receipt = stream
+                .finish_checked(&mut monitor)
+                .map_err(|_| "configfile_parser_retirement_or_exit")?;
             check()?;
-            let receipt = accepted_stream(&receipt,bytes.len(),parent)?;
-            let tags = configfile_parser_output(&bytes,expected)?;
-            Ok((receipt,tags))
+            let receipt = accepted_stream(&receipt, bytes.len(), parent)?;
+            let tags = configfile_parser_output(&bytes, expected)?;
+            Ok((receipt, tags))
         })();
-        if observed.is_err() { let _ = stream.retire(); }
+        if observed.is_err() {
+            let _ = stream.retire();
+        }
         drop(stream);
-        let (receipt,tags) = observed?;
+        let (receipt, tags) = observed?;
         let acceptance_check = || {
             check()?;
-            if Instant::now() >= deadline { return Err("configfile_parser_phase_deadline".into()); }
+            if Instant::now() >= deadline {
+                return Err("configfile_parser_phase_deadline".into());
+            }
             Ok(())
         };
         acceptance_check()?;
-        let owner = state.lock().map_err(|_| "configfile_parser_owner_poisoned")?;
+        let owner = state
+            .lock()
+            .map_err(|_| "configfile_parser_owner_poisoned")?;
         owner.image.recheck(parent.instant(), &acceptance_check)?;
-        for (path,file,stamp,hash) in &owner.files {
-            crate::snapshot::check_opened_path(file,path,parent.instant())?;
+        for (path, file, stamp, hash) in &owner.files {
+            crate::snapshot::check_opened_path(file, path, parent.instant())?;
             if configfile_engine_stamp(file)? != *stamp
-                || configfile_engine_hash(&mut &*file,stamp.bytes,&acceptance_check)? != *hash
+                || configfile_engine_hash(&mut &*file, stamp.bytes, &acceptance_check)? != *hash
                 || configfile_engine_stamp(file)? != *stamp
             {
                 return Err("configfile_parser_held_input_changed".into());
             }
-            crate::snapshot::check_opened_path(file,path,parent.instant())?;
+            crate::snapshot::check_opened_path(file, path, parent.instant())?;
         }
         acceptance_check()?;
-        Ok(json!({"status":"matched_supported_quoted_subset","declared_target_tags":CONFIGFILE_TARGET_TAGS,
+        Ok(
+            json!({"status":"matched_supported_quoted_subset","declared_target_tags":CONFIGFILE_TARGET_TAGS,
             "observed_engine_tags":tags,"engine_sha256":image_sha256,"worker":receipt,
-            "dependencies":[],"loaded":false,"abi_verified":false,"source_publish":false}))
+            "dependencies":[],"loaded":false,"abi_verified":false,"source_publish":false}),
+        )
     })();
-    let mut owner = state.lock().map_err(|_| "configfile_parser_owner_poisoned")?;
-    let unresolved = owner.workspace.as_ref().is_some_and(|workspace| workspace.lifetime.unresolved());
+    let mut owner = state
+        .lock()
+        .map_err(|_| "configfile_parser_owner_poisoned")?;
+    let unresolved = owner
+        .workspace
+        .as_ref()
+        .is_some_and(|workspace| workspace.lifetime.unresolved());
     if unresolved {
         permission.mark_unconfirmed();
         return Err("configfile_parser_retirement_unconfirmed_resources_retained".into());
     }
     if check().is_ok() {
         owner.files.clear();
-        let mut workspace = owner.workspace.take().ok_or("configfile_parser_allocation_missing")?;
+        let mut workspace = owner
+            .workspace
+            .take()
+            .ok_or("configfile_parser_allocation_missing")?;
         if workspace.clean().is_err() {
             permission.mark_unconfirmed();
             std::mem::forget(workspace);
@@ -1039,9 +1575,15 @@ pub(crate) fn compare_configfile(
 
 fn observe_storage_root(root: &Path, parent: &ParentDeadline, deadline: Instant) -> io::Result<()> {
     parent.check().map_err(io::Error::other)?;
-    crate::candidate_workspace::usage_with_budget(root, WORKSPACE_BYTES,
-        deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(250)))
-        .map(|_| ()).map_err(io::Error::other)
+    crate::candidate_workspace::usage_with_budget(
+        root,
+        WORKSPACE_BYTES,
+        deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(250)),
+    )
+    .map(|_| ())
+    .map_err(io::Error::other)
 }
 
 struct Tools {
@@ -2268,12 +2810,31 @@ fn validate_inner(
         let resolution = crate::cargo_graph::capture(&metadata_value, &selected.package_id, &host)?;
         let inputs = lease.native_source_identity(&selected.manifest, &selected.source, &budget)?;
         let local_builds = observed_local_builds(
-            &strict_text(&build.bytes, parent)?, &metadata_value, &selected, &inputs, &budget,
+            &strict_text(&build.bytes, parent)?,
+            &metadata_value,
+            &selected,
+            &inputs,
+            &budget,
         )?;
-        let local_outputs=hold_reported_local_outputs(&strict_text(&build.bytes,parent)?,&local_builds,&inputs,&lease,&state.target,&state.build,&budget)?;
+        let local_outputs = hold_reported_local_outputs(
+            &strict_text(&build.bytes, parent)?,
+            &local_builds,
+            &inputs,
+            &lease,
+            &state.target,
+            &state.build,
+            &budget,
+        )?;
         let mut retained = NativeCompilationProvenance {
-            selected, host: host.clone(), inputs, resolution, local_builds, local_outputs,
-            artifact: artifact.clone(), artifact_hash: artifact_hash.clone(), digest: String::new(),
+            selected,
+            host: host.clone(),
+            inputs,
+            resolution,
+            local_builds,
+            local_outputs,
+            artifact: artifact.clone(),
+            artifact_hash: artifact_hash.clone(),
+            digest: String::new(),
         };
         retained.digest = retained.computed_digest()?;
         retained.recheck(staged, &artifact, &artifact_hash, &budget)?;
@@ -2346,30 +2907,48 @@ pub(crate) fn validate_owned_with_parent_diagnostic_for_test(
     parent: &ParentDeadline,
     controller: &StreamController,
     permit: crate::external_workspace::KnownCargoFixturePermit,
-    retained: &mut Option<std::mem::ManuallyDrop<
-        crate::worker_windows::binary::real_cargo_diagnostic::DiagnosticHandle,
-    >>,
+    retained: &mut Option<
+        std::mem::ManuallyDrop<
+            crate::worker_windows::binary::real_cargo_diagnostic::DiagnosticHandle,
+        >,
+    >,
 ) -> Result<OwnedNativeValidation, String> {
     parent.check()?;
-    if retained.is_some() { return Err("test_known_cargo_handle_already_retained".into()); }
+    if retained.is_some() {
+        return Err("test_known_cargo_handle_already_retained".into());
+    }
     let tools = Tools::discover(parent)?;
     let state = CompilerState::create(workspace, staged, tools, parent)?;
     let invocation = KnownCargoInvocation {
         program: state.tools.cargo.application.clone(),
         argv0: state.tools.cargo.invocation.clone(),
-        cwd: state.cwd.clone(), env: state.env.clone(), target: state.target.clone(),
+        cwd: state.cwd.clone(),
+        env: state.env.clone(),
+        target: state.target.clone(),
         application_sha256: state.tools.cargo.sha256.clone(),
         parent_deadline: parent.instant(),
     };
-    let handle = crate::worker_windows::binary::real_cargo_diagnostic::DiagnosticHandle::for_fixture(
-        permit, workspace, staged, controller, invocation,
-    ).map_err(|_| "test_known_cargo_permit_refused")?;
+    let handle =
+        crate::worker_windows::binary::real_cargo_diagnostic::DiagnosticHandle::for_fixture(
+            permit, workspace, staged, controller, invocation,
+        )
+        .map_err(|_| "test_known_cargo_permit_refused")?;
     *retained = Some(std::mem::ManuallyDrop::new(handle));
     let diagnostic = retained.as_ref().unwrap();
-    let result = validate_inner(workspace, staged, parent, state,
-        &mut KnownCargoRunner { inner: RetainedRunner(controller), diagnostic },
-        Some(RealProvenanceRequest));
-    if result.is_err() { diagnostic.scope_refusal("validation_result_refused"); }
+    let result = validate_inner(
+        workspace,
+        staged,
+        parent,
+        state,
+        &mut KnownCargoRunner {
+            inner: RetainedRunner(controller),
+            diagnostic,
+        },
+        Some(RealProvenanceRequest),
+    );
+    if result.is_err() {
+        diagnostic.scope_refusal("validation_result_refused");
+    }
     result
 }
 
@@ -2634,7 +3213,8 @@ pub(crate) fn actual_copied_config_witness_for_test(
         member: staged.member_manifest.clone(),
         witnesses: 0,
     };
-    let mut value = validate_inner(workspace, staged, &parent, state, &mut runner, None)?.into_receipt();
+    let mut value =
+        validate_inner(workspace, staged, &parent, state, &mut runner, None)?.into_receipt();
     if runner.witnesses != 2 {
         return Err("test_config_witness_count_refused".into());
     }
@@ -2918,8 +3498,14 @@ pub(crate) struct NamedPeExport {
     rva: u32,
 }
 impl NamedPeExport {
-    pub(crate) fn name(&self) -> &str { &self.name }
-    pub(crate) fn rva(&self) -> u32 { self.rva }
+    // Reached only by tests until external-source publication is connected.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+    pub(crate) fn rva(&self) -> u32 {
+        self.rva
+    }
 }
 
 struct PeExportRead<'a, 'b, R> {
@@ -2931,17 +3517,30 @@ struct PeExportRead<'a, 'b, R> {
 impl<R: Read + io::Seek> PeExportRead<'_, '_, R> {
     fn admit(&mut self, offset: u64, count: usize) -> Result<(), String> {
         self.budget.check()?;
-        let charged = self.charged.checked_add(count).ok_or("external_named_export_read_bound")?;
-        if charged > NAMED_EXPORT_READ_BYTES { return Err("external_named_export_read_bound".into()); }
-        if count == 0 || offset.checked_add(count as u64).is_none_or(|end| end > self.bytes) {
+        let charged = self
+            .charged
+            .checked_add(count)
+            .ok_or("external_named_export_read_bound")?;
+        if charged > NAMED_EXPORT_READ_BYTES {
+            return Err("external_named_export_read_bound".into());
+        }
+        if count == 0
+            || offset
+                .checked_add(count as u64)
+                .is_none_or(|end| end > self.bytes)
+        {
             return Err("external_named_export_file_range".into());
         }
         self.charged = charged;
         Ok(())
     }
     fn read_admitted(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), String> {
-        self.reader.seek(io::SeekFrom::Start(offset)).map_err(|_| "external_named_export_seek_failed")?;
-        self.reader.read_exact(bytes).map_err(|_| "external_named_export_read_failed")?;
+        self.reader
+            .seek(io::SeekFrom::Start(offset))
+            .map_err(|_| "external_named_export_seek_failed")?;
+        self.reader
+            .read_exact(bytes)
+            .map_err(|_| "external_named_export_read_failed")?;
         self.budget.check()
     }
     fn array<const N: usize>(&mut self, offset: u64) -> Result<[u8; N], String> {
@@ -2978,46 +3577,70 @@ struct PeExportLayout {
 impl PeExportLayout {
     fn range(&self, rva: u32, count: usize) -> Result<(u64, usize), String> {
         let count = u32::try_from(count).map_err(|_| "external_named_export_rva_range")?;
-        let end = rva.checked_add(count).ok_or("external_named_export_rva_range")?;
-        if count == 0 || end > self.image_bytes { return Err("external_named_export_rva_range".into()); }
-        if rva < self.header_bytes { return Err("external_named_export_header_mapping".into()); }
+        let end = rva
+            .checked_add(count)
+            .ok_or("external_named_export_rva_range")?;
+        if count == 0 || end > self.image_bytes {
+            return Err("external_named_export_rva_range".into());
+        }
+        if rva < self.header_bytes {
+            return Err("external_named_export_header_mapping".into());
+        }
         let mut matched = None;
         for (index, section) in self.sections.iter().enumerate() {
-            if rva < section.mapped_end && section.rva < end {
-                if matched.replace(index).is_some() { return Err("external_named_export_ambiguous_rva".into()); }
+            if rva < section.mapped_end && section.rva < end && matched.replace(index).is_some() {
+                return Err("external_named_export_ambiguous_rva".into());
             }
         }
         let index = matched.ok_or("external_named_export_unbacked_rva")?;
         let section = &self.sections[index];
-        let delta = rva.checked_sub(section.rva).ok_or("external_named_export_unbacked_rva")?;
-        let relative_end = delta.checked_add(count).ok_or("external_named_export_rva_range")?;
+        let delta = rva
+            .checked_sub(section.rva)
+            .ok_or("external_named_export_unbacked_rva")?;
+        let relative_end = delta
+            .checked_add(count)
+            .ok_or("external_named_export_rva_range")?;
         if relative_end > section.virtual_bytes || relative_end > section.raw_bytes {
             return Err("external_named_export_unbacked_rva".into());
         }
-        let offset = section.raw.checked_add(delta).ok_or("external_named_export_file_range")?;
-        if offset < self.header_bytes { return Err("external_named_export_header_mapping".into()); }
+        let offset = section
+            .raw
+            .checked_add(delta)
+            .ok_or("external_named_export_file_range")?;
+        if offset < self.header_bytes {
+            return Err("external_named_export_header_mapping".into());
+        }
         Ok((u64::from(offset), index))
     }
     fn name_window(&self, rva: u32) -> Result<(u64, usize), String> {
         let (_, index) = self.range(rva, 1)?;
         let section = &self.sections[index];
         let delta = rva - section.rva;
-        let available = (section.virtual_bytes - delta).min(section.raw_bytes - delta)
+        let available = (section.virtual_bytes - delta)
+            .min(section.raw_bytes - delta)
             .min((NAMED_EXPORT_NAME_BYTES + 1) as u32) as usize;
         let (offset, _) = self.range(rva, available)?;
         Ok((offset, available))
     }
 }
 fn pe_export_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
-    let end = offset.checked_add(4).ok_or("external_named_export_pe_refused")?;
-    Ok(u32::from_le_bytes(bytes.get(offset..end).ok_or("external_named_export_pe_refused")?
-        .try_into().map_err(|_| "external_named_export_pe_refused")?))
+    let end = offset
+        .checked_add(4)
+        .ok_or("external_named_export_pe_refused")?;
+    Ok(u32::from_le_bytes(
+        bytes
+            .get(offset..end)
+            .ok_or("external_named_export_pe_refused")?
+            .try_into()
+            .map_err(|_| "external_named_export_pe_refused")?,
+    ))
 }
 
 /// Bounded read-backed counterpart of pe_receipt's existing header/section
 /// rules. The old receipt stays byte-exact; only export-specific checks are new.
 fn pe_export_layout<R: Read + io::Seek>(
-    input: &mut PeExportRead<'_, '_, R>, host: &str,
+    input: &mut PeExportRead<'_, '_, R>,
+    host: &str,
 ) -> Result<PeExportLayout, String> {
     let machine = match host {
         "x86_64-pc-windows-msvc" => 0x8664u16,
@@ -3029,78 +3652,160 @@ fn pe_export_layout<R: Read + io::Seek>(
     }
     let dos = input.array::<64>(0)?;
     let offset = u64::from(pe_export_u32(&dos, 60)?);
-    if &dos[..2] != b"MZ" || offset < 64 { return Err("external_named_export_pe_refused".into()); }
+    if &dos[..2] != b"MZ" || offset < 64 {
+        return Err("external_named_export_pe_refused".into());
+    }
     let header = input.array::<24>(offset)?;
     let sections = u16::from_le_bytes([header[6], header[7]]) as usize;
     let optional = u16::from_le_bytes([header[20], header[21]]) as usize;
-    if &header[..4] != b"PE\0\0" || u16::from_le_bytes([header[4], header[5]]) != machine
-        || sections == 0 || sections > 96 || optional < 120
+    if &header[..4] != b"PE\0\0"
+        || u16::from_le_bytes([header[4], header[5]]) != machine
+        || sections == 0
+        || sections > 96
+        || optional < 120
         || u16::from_le_bytes([header[22], header[23]]) & 0x2000 == 0
-    { return Err("external_named_export_pe_refused".into()); }
-    let optional_start = offset.checked_add(24).ok_or("external_named_export_file_range")?;
-    let table_start = optional_start.checked_add(optional as u64).ok_or("external_named_export_file_range")?;
+    {
+        return Err("external_named_export_pe_refused".into());
+    }
+    let optional_start = offset
+        .checked_add(24)
+        .ok_or("external_named_export_file_range")?;
+    let table_start = optional_start
+        .checked_add(optional as u64)
+        .ok_or("external_named_export_file_range")?;
     let optional_header = input.array::<120>(optional_start)?;
     if u16::from_le_bytes([optional_header[0], optional_header[1]]) != 0x20b {
         return Err("external_named_export_pe_refused".into());
     }
     let directories = pe_export_u32(&optional_header, 108)? as usize;
-    if directories == 0 { return Err("external_named_export_missing".into()); }
-    if directories > (optional - 112) / 8 { return Err("external_named_export_pe_refused".into()); }
+    if directories == 0 {
+        return Err("external_named_export_missing".into());
+    }
+    if directories > (optional - 112) / 8 {
+        return Err("external_named_export_pe_refused".into());
+    }
     let image_bytes = pe_export_u32(&optional_header, 56)?;
     let header_bytes = pe_export_u32(&optional_header, 60)?;
-    let table_bytes = sections.checked_mul(40).ok_or("external_named_export_pe_refused")?;
-    let table_end = table_start.checked_add(table_bytes as u64).ok_or("external_named_export_file_range")?;
-    if u64::from(header_bytes) < table_end || u64::from(header_bytes) > input.bytes || header_bytes > image_bytes {
+    let table_bytes = sections
+        .checked_mul(40)
+        .ok_or("external_named_export_pe_refused")?;
+    let table_end = table_start
+        .checked_add(table_bytes as u64)
+        .ok_or("external_named_export_file_range")?;
+    if u64::from(header_bytes) < table_end
+        || u64::from(header_bytes) > input.bytes
+        || header_bytes > image_bytes
+    {
         return Err("external_named_export_header_extent".into());
     }
     let export_rva = pe_export_u32(&optional_header, 112)?;
     let export_bytes = pe_export_u32(&optional_header, 116)?;
-    let export_end = export_rva.checked_add(export_bytes).ok_or("external_named_export_rva_range")?;
-    if export_rva == 0 || export_bytes < 40 { return Err("external_named_export_missing".into()); }
-    if export_end > image_bytes { return Err("external_named_export_rva_range".into()); }
+    let export_end = export_rva
+        .checked_add(export_bytes)
+        .ok_or("external_named_export_rva_range")?;
+    if export_rva == 0 || export_bytes < 40 {
+        return Err("external_named_export_missing".into());
+    }
+    if export_end > image_bytes {
+        return Err("external_named_export_rva_range".into());
+    }
     let table = input.vector(table_start, table_bytes)?;
     let mut parsed = Vec::with_capacity(sections);
-    for section in table.chunks_exact(40) {
+    for section in table.as_chunks::<40>().0 {
         input.budget.check()?;
         let virtual_bytes = pe_export_u32(section, 8)?;
         let rva = pe_export_u32(section, 12)?;
         let raw_bytes = pe_export_u32(section, 16)?;
         let raw = pe_export_u32(section, 20)?;
-        if u64::from(raw).checked_add(u64::from(raw_bytes)).is_none_or(|end| end > input.bytes) {
+        if u64::from(raw)
+            .checked_add(u64::from(raw_bytes))
+            .is_none_or(|end| end > input.bytes)
+        {
             return Err("external_named_export_file_range".into());
         }
-        let mapped_end = rva.checked_add(virtual_bytes.max(raw_bytes)).ok_or("external_named_export_rva_range")?;
-        if mapped_end > image_bytes { return Err("external_named_export_rva_range".into()); }
-        parsed.push(PeExportSection { rva, virtual_bytes, raw, raw_bytes, mapped_end, flags: pe_export_u32(section, 36)? });
+        let mapped_end = rva
+            .checked_add(virtual_bytes.max(raw_bytes))
+            .ok_or("external_named_export_rva_range")?;
+        if mapped_end > image_bytes {
+            return Err("external_named_export_rva_range".into());
+        }
+        parsed.push(PeExportSection {
+            rva,
+            virtual_bytes,
+            raw,
+            raw_bytes,
+            mapped_end,
+            flags: pe_export_u32(section, 36)?,
+        });
     }
-    Ok(PeExportLayout { sections: parsed, image_bytes, header_bytes, export_rva, export_end })
+    Ok(PeExportLayout {
+        sections: parsed,
+        image_bytes,
+        header_bytes,
+        export_rva,
+        export_end,
+    })
 }
 
 /// Examine bytes only, never load an image. Reader position is restored even
 /// after missing symbols, malformed data, cancellation, expiry or read failure.
 pub(crate) fn named_direct_pe_export<R: Read + io::Seek>(
-    reader: &mut R, bytes: u64, host: &str, name: &str, budget: &Budget<'_>,
+    reader: &mut R,
+    bytes: u64,
+    host: &str,
+    name: &str,
+    budget: &Budget<'_>,
 ) -> Result<NamedPeExport, String> {
-    let position = reader.stream_position().map_err(|_| "external_named_export_cursor_unavailable")?;
+    let position = reader
+        .stream_position()
+        .map_err(|_| "external_named_export_cursor_unavailable")?;
     let result = (|| {
         budget.check()?;
-        if name.is_empty() || name.len() > NAMED_EXPORT_NAME_BYTES || !name.is_ascii()
+        if name.is_empty()
+            || name.len() > NAMED_EXPORT_NAME_BYTES
+            || !name.is_ascii()
             || name.bytes().any(|b| b == 0 || b.is_ascii_control())
-        { return Err("external_named_export_name_bound".into()); }
-        let mut input = PeExportRead { reader: &mut *reader, bytes, charged: 0, budget };
+        {
+            return Err("external_named_export_name_bound".into());
+        }
+        let mut input = PeExportRead {
+            reader: &mut *reader,
+            bytes,
+            charged: 0,
+            budget,
+        };
         let layout = pe_export_layout(&mut input, host)?;
         let (directory_offset, _) = layout.range(layout.export_rva, 40)?;
         let directory = input.array::<40>(directory_offset)?;
-        if pe_export_u32(&directory, 0)? != 0 { return Err("external_named_export_pe_refused".into()); }
+        if pe_export_u32(&directory, 0)? != 0 {
+            return Err("external_named_export_pe_refused".into());
+        }
         let functions = pe_export_u32(&directory, 20)? as usize;
         let names = pe_export_u32(&directory, 24)? as usize;
-        if functions == 0 || names == 0 { return Err("external_named_export_missing".into()); }
+        if functions == 0 || names == 0 {
+            return Err("external_named_export_missing".into());
+        }
         if functions > NAMED_EXPORT_ENTRIES || names > NAMED_EXPORT_ENTRIES {
             return Err("external_named_export_entry_bound".into());
         }
-        let (function_offset, _) = layout.range(pe_export_u32(&directory, 28)?, functions.checked_mul(4).ok_or("external_named_export_entry_bound")?)?;
-        let (name_offset, _) = layout.range(pe_export_u32(&directory, 32)?, names.checked_mul(4).ok_or("external_named_export_entry_bound")?)?;
-        let (ordinal_offset, _) = layout.range(pe_export_u32(&directory, 36)?, names.checked_mul(2).ok_or("external_named_export_entry_bound")?)?;
+        let (function_offset, _) = layout.range(
+            pe_export_u32(&directory, 28)?,
+            functions
+                .checked_mul(4)
+                .ok_or("external_named_export_entry_bound")?,
+        )?;
+        let (name_offset, _) = layout.range(
+            pe_export_u32(&directory, 32)?,
+            names
+                .checked_mul(4)
+                .ok_or("external_named_export_entry_bound")?,
+        )?;
+        let (ordinal_offset, _) = layout.range(
+            pe_export_u32(&directory, 36)?,
+            names
+                .checked_mul(2)
+                .ok_or("external_named_export_entry_bound")?,
+        )?;
         let functions = input.vector(function_offset, functions * 4)?;
         let pointers = input.vector(name_offset, names * 4)?;
         let ordinals = input.vector(ordinal_offset, names * 2)?;
@@ -3108,24 +3813,37 @@ pub(crate) fn named_direct_pe_export<R: Read + io::Seek>(
         let mut selected = None;
         for index in 0..names {
             budget.check()?;
-            let ordinal = u16::from_le_bytes([ordinals[index * 2], ordinals[index * 2 + 1]]) as usize;
+            let ordinal =
+                u16::from_le_bytes([ordinals[index * 2], ordinals[index * 2 + 1]]) as usize;
             // Name ordinals are unbiased indexes. Do not subtract OrdinalBase.
-            if ordinal >= functions.len() / 4 { return Err("external_named_export_ordinal_refused".into()); }
+            if ordinal >= functions.len() / 4 {
+                return Err("external_named_export_ordinal_refused".into());
+            }
             let (offset, available) = layout.name_window(pe_export_u32(&pointers, index * 4)?)?;
             let mut buffer = [0u8; NAMED_EXPORT_NAME_BYTES + 1];
             input.admit(offset, available)?;
             input.read_admitted(offset, &mut buffer[..available])?;
-            let end = buffer[..available].iter().position(|b| *b == 0)
+            let end = buffer[..available]
+                .iter()
+                .position(|b| *b == 0)
                 .ok_or("external_named_export_name_bound")?;
             let current = &buffer[..end];
-            if current.is_empty() || !current.is_ascii() { return Err("external_named_export_name_bound".into()); }
-            if index > 0 && previous.as_slice() >= current { return Err("external_named_export_name_order".into()); }
-            if current == name.as_bytes() { selected = Some(pe_export_u32(&functions, ordinal * 4)?); }
+            if current.is_empty() || !current.is_ascii() {
+                return Err("external_named_export_name_bound".into());
+            }
+            if index > 0 && previous.as_slice() >= current {
+                return Err("external_named_export_name_order".into());
+            }
+            if current == name.as_bytes() {
+                selected = Some(pe_export_u32(&functions, ordinal * 4)?);
+            }
             previous.clear();
             previous.extend_from_slice(current);
         }
         let rva = selected.ok_or("external_named_export_missing")?;
-        if rva == 0 { return Err("external_named_export_zero_target".into()); }
+        if rva == 0 {
+            return Err("external_named_export_zero_target".into());
+        }
         if (layout.export_rva..layout.export_end).contains(&rva) {
             return Err("external_named_export_forwarder_refused".into());
         }
@@ -3136,10 +3854,16 @@ pub(crate) fn named_direct_pe_export<R: Read + io::Seek>(
         // Corroborate file backing through this same reader, never execute it.
         let _ = input.array::<1>(target_offset)?;
         budget.check()?;
-        Ok(NamedPeExport { name: name.to_owned(), rva })
+        Ok(NamedPeExport {
+            name: name.to_owned(),
+            rva,
+        })
     })();
     match (result, reader.seek(io::SeekFrom::Start(position))) {
-        (Ok(value), Ok(_)) => { budget.check()?; Ok(value) }
+        (Ok(value), Ok(_)) => {
+            budget.check()?;
+            Ok(value)
+        }
         (Err(error), Ok(_)) => Err(error),
         (_, Err(_)) => Err("external_named_export_cursor_restore_failed".into()),
     }
@@ -3231,11 +3955,18 @@ pub(crate) fn pe_receipt(bytes: &[u8], host: &str) -> Result<Value, String> {
 #[cfg(test)]
 impl OwnedNativeValidation {
     // Negative fixture only: true receipt fields cannot manufacture typed evidence.
-    pub(crate) fn unproven_for_test(artifact: PathBuf, artifact_guard: File, artifact_hash: String) -> Self {
+    pub(crate) fn unproven_for_test(
+        artifact: PathBuf,
+        artifact_guard: File,
+        artifact_hash: String,
+    ) -> Self {
         Self {
             receipt: json!({"native_artifact_produced":true,"cargo_executed":true,
                 "artifact":{"path":artifact.file_name().unwrap().to_string_lossy(),"sha256":artifact_hash}}),
-            artifact, artifact_guard, artifact_hash, provenance: None,
+            artifact,
+            artifact_guard,
+            artifact_hash,
+            provenance: None,
         }
     }
 }
@@ -3249,12 +3980,21 @@ impl NativeCompilationProvenance {
         corrupt: bool,
     ) -> Result<Value, String> {
         self.inputs.staged_content_custody_for_test(
-            staged, &self.selected.manifest, &self.selected.source, paths, budget, corrupt,
+            staged,
+            &self.selected.manifest,
+            &self.selected.source,
+            paths,
+            budget,
+            corrupt,
         )
     }
     // Borrows only a record already issued by the genuine producer. No constructor.
     pub(crate) fn check_corruptions_for_test(
-        &mut self, staged: &StagedSources, artifact: &Path, artifact_hash: &str, budget: &Budget<'_>,
+        &mut self,
+        staged: &StagedSources,
+        artifact: &Path,
+        artifact_hash: &str,
+        budget: &Budget<'_>,
     ) -> Result<Value, String> {
         fn refused(result: Result<(), String>, expected: &str) -> Result<(), String> {
             if result.as_ref().err().map(String::as_str) != Some(expected) {
@@ -3266,16 +4006,34 @@ impl NativeCompilationProvenance {
         // without mutating the retained record, its digest, File or compiler owner.
         let mut equivalent = staged.clone();
         equivalent.envelope = PathBuf::from(staged.envelope.to_str().unwrap().replace('\\', "/"));
-        equivalent.cargo_manifest = PathBuf::from(staged.cargo_manifest.to_str().unwrap().replace('\\', "/"));
-        equivalent.member_manifest = PathBuf::from(staged.member_manifest.to_str().unwrap().replace('/', "\\").to_ascii_uppercase());
+        equivalent.cargo_manifest =
+            PathBuf::from(staged.cargo_manifest.to_str().unwrap().replace('\\', "/"));
+        equivalent.member_manifest = PathBuf::from(
+            staged
+                .member_manifest
+                .to_str()
+                .unwrap()
+                .replace('/', "\\")
+                .to_ascii_uppercase(),
+        );
         let artifact_alias = PathBuf::from(artifact.to_str().unwrap().replace('\\', "/"));
         self.recheck(&equivalent, &artifact_alias, artifact_hash, budget)?;
         drop(equivalent);
         self.recheck(staged, artifact, artifact_hash, budget)?;
         let original_digest = self.digest.clone();
-        let graph_hash = self.resolution["sha256"].as_str()
-            .ok_or("fixture_provenance_graph_hash_missing")?.to_owned();
-        let altered = format!("{}{}", if graph_hash.starts_with('0') { "1" } else { "0" }, &graph_hash[1..]);
+        let graph_hash = self.resolution["sha256"]
+            .as_str()
+            .ok_or("fixture_provenance_graph_hash_missing")?
+            .to_owned();
+        let altered = format!(
+            "{}{}",
+            if graph_hash.starts_with('0') {
+                "1"
+            } else {
+                "0"
+            },
+            &graph_hash[1..]
+        );
         self.resolution["sha256"] = json!(altered);
         let observed = self.recheck(staged, artifact, artifact_hash, budget);
         self.resolution["sha256"] = json!(graph_hash);
@@ -3286,7 +4044,10 @@ impl NativeCompilationProvenance {
         self.digest = original_digest.clone();
         refused(observed, "external_native_provenance_digest_changed")?;
 
-        let manifest = std::mem::replace(&mut self.selected.manifest, staged.envelope.join("foreign/Cargo.toml"));
+        let manifest = std::mem::replace(
+            &mut self.selected.manifest,
+            staged.envelope.join("foreign/Cargo.toml"),
+        );
         let observed = self.recheck(staged, artifact, artifact_hash, budget);
         self.selected.manifest = manifest;
         refused(observed, "external_native_provenance_binding_changed")?;
@@ -3297,7 +4058,10 @@ impl NativeCompilationProvenance {
         self.selected.target = target;
         refused(observed, "external_native_provenance_digest_changed")?;
 
-        let source = std::mem::replace(&mut self.selected.source, staged.envelope.join("foreign.rs"));
+        let source = std::mem::replace(
+            &mut self.selected.source,
+            staged.envelope.join("foreign.rs"),
+        );
         let observed = self.recheck(staged, artifact, artifact_hash, budget);
         self.selected.source = source;
         refused(observed, "external_provenance_held_input_changed")?;
@@ -3316,23 +4080,31 @@ impl NativeCompilationProvenance {
         if self.digest != original_digest {
             return Err("fixture_provenance_restoration_changed_digest".into());
         }
-        Ok(json!({"status":"REAL_TYPED_RECORD_RECHECKED","sha256":original_digest,
+        Ok(
+            json!({"status":"REAL_TYPED_RECORD_RECHECKED","sha256":original_digest,
             "corruption_refusals":7,"corruption_cases":["resolution_digest","record_digest",
                 "selected_manifest","selected_target","selected_source","artifact_path","artifact_hash"],
             "all_mutations_restored":true,"dependency_content_closure_verified":false,
-            "exact_build_units_or_gdextension_loading_verified":false}))
+            "exact_build_units_or_gdextension_loading_verified":false}),
+        )
     }
 }
 #[cfg(test)]
 mod tests {
     #[test]
     fn reported_local_output_admission_bounds() {
-        assert_eq!(reported_output_remaining(0,0).unwrap(),128*1024*1024);
-        assert_eq!(reported_output_remaining(255,128*1024*1024-1).unwrap(),1);
-        assert_eq!(reported_output_remaining(255,128*1024*1024).unwrap(),0);
-        assert!(reported_output_remaining(256,0).is_err());
-        assert!(reported_output_remaining(0,128*1024*1024+1).is_err());
-        assert!(reported_output_remaining(usize::MAX,u64::MAX).is_err());
+        assert_eq!(reported_output_remaining(0, 0).unwrap(), 128 * 1024 * 1024);
+        assert_eq!(
+            reported_output_remaining(255, 128 * 1024 * 1024 - 1).unwrap(),
+            1
+        );
+        assert_eq!(
+            reported_output_remaining(255, 128 * 1024 * 1024).unwrap(),
+            0
+        );
+        assert!(reported_output_remaining(256, 0).is_err());
+        assert!(reported_output_remaining(0, 128 * 1024 * 1024 + 1).is_err());
+        assert!(reported_output_remaining(usize::MAX, u64::MAX).is_err());
     }
     fn configfile_parser_test_document() -> Value {
         json!({"sections":[{"name":"configuration","entries":[{"key":"entry_symbol","type":"string","value":"value"}]}],
@@ -3348,41 +4120,69 @@ mod tests {
     fn configfile_parser_typed_output_compares_order_types_and_separate_observed_tags() {
         let expected = configfile_parser_test_document();
         let frame = configfile_parser_test_frame(&expected);
-        let encode = |value:&Value| format!("Godot banner\nAURUM_CONFIGFILE_PARSED {}\n",value).into_bytes();
-        assert_eq!(configfile_parser_output(&encode(&frame),&expected).unwrap(),["windows","editor"]);
-        for field in ["sections","libraries","dependencies","target_tags"] {
-            let mut altered=frame.clone();altered[field]=json!(["different"]);
-            assert!(configfile_parser_output(&encode(&altered),&expected).is_err());
+        let encode = |value: &Value| {
+            format!("Godot banner\nAURUM_CONFIGFILE_PARSED {}\n", value).into_bytes()
+        };
+        assert_eq!(
+            configfile_parser_output(&encode(&frame), &expected).unwrap(),
+            ["windows", "editor"]
+        );
+        for field in ["sections", "libraries", "dependencies", "target_tags"] {
+            let mut altered = frame.clone();
+            altered[field] = json!(["different"]);
+            assert!(configfile_parser_output(&encode(&altered), &expected).is_err());
         }
-        for wrong in [json!(true),json!("0"),json!(1)] {
-            let mut altered=frame.clone();altered["parse_error"]=wrong;
-            assert!(configfile_parser_output(&encode(&altered),&expected).is_err());
+        for wrong in [json!(true), json!("0"), json!(1)] {
+            let mut altered = frame.clone();
+            altered["parse_error"] = wrong;
+            assert!(configfile_parser_output(&encode(&altered), &expected).is_err());
         }
-        let mut altered=frame.clone();altered["extra"]=json!(true);
-        assert!(configfile_parser_output(&encode(&altered),&expected).is_err());
-        altered=frame.clone();altered["observed_tags"]=json!(["windows","windows"]);
-        assert!(configfile_parser_output(&encode(&altered),&expected).is_err());
-        altered["observed_tags"]=json!(["unapproved"]);
-        assert!(configfile_parser_output(&encode(&altered),&expected).is_err());
-        let mut ordered=expected.clone();
-        ordered["sections"][0]["entries"].as_array_mut().unwrap()
+        let mut altered = frame.clone();
+        altered["extra"] = json!(true);
+        assert!(configfile_parser_output(&encode(&altered), &expected).is_err());
+        altered = frame.clone();
+        altered["observed_tags"] = json!(["windows", "windows"]);
+        assert!(configfile_parser_output(&encode(&altered), &expected).is_err());
+        altered["observed_tags"] = json!(["unapproved"]);
+        assert!(configfile_parser_output(&encode(&altered), &expected).is_err());
+        let mut ordered = expected.clone();
+        ordered["sections"][0]["entries"]
+            .as_array_mut()
+            .unwrap()
             .push(json!({"key":"reloadable","type":"bool","value":false}));
-        let mut changed=configfile_parser_test_frame(&ordered);
-        changed["sections"][0]["entries"].as_array_mut().unwrap().reverse();
-        assert!(configfile_parser_output(&encode(&changed),&ordered).is_err());
+        let mut changed = configfile_parser_test_frame(&ordered);
+        changed["sections"][0]["entries"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        assert!(configfile_parser_output(&encode(&changed), &ordered).is_err());
     }
     #[test]
     fn configfile_parser_output_refuses_duplicates_truncation_prefix_repair_and_bounds() {
-        let expected=configfile_parser_test_document();let frame=configfile_parser_test_frame(&expected);
-        let one=format!("AURUM_CONFIGFILE_PARSED {frame}\n");
-        for raw in [format!("{one}{one}"),format!("\x1b[7;1H{one}"),
+        let expected = configfile_parser_test_document();
+        let frame = configfile_parser_test_frame(&expected);
+        let one = format!("AURUM_CONFIGFILE_PARSED {frame}\n");
+        for raw in [
+            format!("{one}{one}"),
+            format!("\x1b[7;1H{one}"),
             one.trim_end().to_owned(),
-            one.replace("\"parse_error\":0","\"parse_error\":true,\"parse_error\":0"),
-            one.replace("\"type\":\"string\"","\"type\":\"bool\",\"type\":\"string\""),
-            "AURUM_CONFIGFILE_PARSED {".into(),"unframed".into()]
-        {assert!(configfile_parser_output(raw.as_bytes(),&expected).is_err());}
-        assert!(configfile_parser_output(&[0xff],&expected).is_err());
-        assert!(configfile_parser_output(&vec![b' ';CONFIGFILE_PARSER_OUTPUT+1],&expected).is_err());
+            one.replace(
+                "\"parse_error\":0",
+                "\"parse_error\":true,\"parse_error\":0",
+            ),
+            one.replace(
+                "\"type\":\"string\"",
+                "\"type\":\"bool\",\"type\":\"string\"",
+            ),
+            "AURUM_CONFIGFILE_PARSED {".into(),
+            "unframed".into(),
+        ] {
+            assert!(configfile_parser_output(raw.as_bytes(), &expected).is_err());
+        }
+        assert!(configfile_parser_output(&[0xff], &expected).is_err());
+        assert!(
+            configfile_parser_output(&vec![b' '; CONFIGFILE_PARSER_OUTPUT + 1], &expected).is_err()
+        );
     }
     #[test]
     fn held_configfile_engine_selection_uses_only_explicit_host_settings() {
@@ -3390,22 +4190,36 @@ mod tests {
         let runtime = fixture.0.join("runtime");
         std::fs::create_dir(&runtime).unwrap();
         for name in ["Godot.exe", "Godot_console.exe", "Godot_long_console.exe"] {
-            std::fs::write(runtime.join(name), b"ordinary selection fixture, never executed").unwrap();
+            std::fs::write(
+                runtime.join(name),
+                b"ordinary selection fixture, never executed",
+            )
+            .unwrap();
         }
         let names = std::cell::RefCell::new(Vec::new());
         let explicit = fixture.0.join("explicit.exe");
         let deadline = Instant::now() + Duration::from_secs(10);
-        let selected = configured_engine_path(|name| {
-            names.borrow_mut().push(name.to_owned());
-            Some(explicit.clone())
-        }, deadline, &|| Ok(())).unwrap();
+        let selected = configured_engine_path(
+            |name| {
+                names.borrow_mut().push(name.to_owned());
+                Some(explicit.clone())
+            },
+            deadline,
+            &|| Ok(()),
+        )
+        .unwrap();
         assert_eq!(selected, explicit);
         assert_eq!(*names.borrow(), ["AURUM_GODOT"]);
         names.borrow_mut().clear();
-        let selected = configured_engine_path(|name| {
-            names.borrow_mut().push(name.to_owned());
-            (name == "AURUM_STUDIO_HOME").then(|| fixture.0.clone())
-        }, deadline, &|| Ok(())).unwrap();
+        let selected = configured_engine_path(
+            |name| {
+                names.borrow_mut().push(name.to_owned());
+                (name == "AURUM_STUDIO_HOME").then(|| fixture.0.clone())
+            },
+            deadline,
+            &|| Ok(()),
+        )
+        .unwrap();
         assert_eq!(selected, runtime.join("Godot_console.exe"));
         assert_eq!(*names.borrow(), ["AURUM_GODOT", "AURUM_STUDIO_HOME"]);
     }
@@ -3414,16 +4228,26 @@ mod tests {
     fn held_configfile_engine_selection_refuses_fallbacks_invalid_paths_and_unbounded_runtime() {
         let fixture = CompilerContextFixture::new();
         let deadline = Instant::now() + Duration::from_secs(10);
-        assert_eq!(configured_engine_path(|_| None, deadline, &|| Ok(())).unwrap_err(),
-            "external_configfile_engine_not_configured");
-        for value in [PathBuf::from(""), PathBuf::from("relative.exe"), fixture.0.join("wrong.dll"),
-            fixture.0.join("bad\nname.exe")]
-        {
+        assert_eq!(
+            configured_engine_path(|_| None, deadline, &|| Ok(())).unwrap_err(),
+            "external_configfile_engine_not_configured"
+        );
+        for value in [
+            PathBuf::from(""),
+            PathBuf::from("relative.exe"),
+            fixture.0.join("wrong.dll"),
+            fixture.0.join("bad\nname.exe"),
+        ] {
             let requested = std::cell::RefCell::new(Vec::new());
-            assert!(configured_engine_path(|name| {
-                requested.borrow_mut().push(name.to_owned());
-                Some(value.clone())
-            }, deadline, &|| Ok(())).is_err());
+            assert!(configured_engine_path(
+                |name| {
+                    requested.borrow_mut().push(name.to_owned());
+                    Some(value.clone())
+                },
+                deadline,
+                &|| Ok(())
+            )
+            .is_err());
             assert_eq!(*requested.borrow(), ["AURUM_GODOT"]);
         }
         let runtime = fixture.0.join("runtime");
@@ -3431,9 +4255,15 @@ mod tests {
         for index in 0..=CONFIGFILE_RUNTIME_ENTRIES {
             std::fs::write(runtime.join(format!("entry{index}")), b"not an engine").unwrap();
         }
-        assert_eq!(configured_engine_path(|name| {
-            (name == "AURUM_STUDIO_HOME").then(|| fixture.0.clone())
-        }, deadline, &|| Ok(())).unwrap_err(), "external_configfile_engine_runtime_bounds");
+        assert_eq!(
+            configured_engine_path(
+                |name| { (name == "AURUM_STUDIO_HOME").then(|| fixture.0.clone()) },
+                deadline,
+                &|| Ok(())
+            )
+            .unwrap_err(),
+            "external_configfile_engine_runtime_bounds"
+        );
     }
 
     #[test]
@@ -3468,7 +4298,9 @@ mod tests {
         fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
             self.largest_read = self.largest_read.max(buffer.len());
             self.read_count += 1;
-            if self.fail_read { return Err(io::Error::other("fixed unit read failure")); }
+            if self.fail_read {
+                return Err(io::Error::other("fixed unit read failure"));
+            }
             self.inner.read(buffer)
         }
     }
@@ -3483,7 +4315,13 @@ mod tests {
     fn engine_hash_test_reader() -> EngineHashTestReader {
         let mut inner = std::io::Cursor::new(vec![23; 200_000]);
         inner.set_position(7);
-        EngineHashTestReader { inner, fail_read: false, fail_restore: false, largest_read: 0, read_count: 0 }
+        EngineHashTestReader {
+            inner,
+            fail_read: false,
+            fail_restore: false,
+            largest_read: 0,
+            read_count: 0,
+        }
     }
 
     #[test]
@@ -3496,22 +4334,32 @@ mod tests {
         assert_eq!(reader.largest_read, 64 * 1024);
         assert!(reader.read_count > 3);
         for length in [expected - 1, expected + 1] {
-            assert_eq!(configfile_engine_hash(&mut reader, length, &|| Ok(())).unwrap_err(),
-                "external_configfile_engine_length_changed");
+            assert_eq!(
+                configfile_engine_hash(&mut reader, length, &|| Ok(())).unwrap_err(),
+                "external_configfile_engine_length_changed"
+            );
             assert_eq!(reader.inner.position(), 7);
         }
         reader.fail_read = true;
-        assert_eq!(configfile_engine_hash(&mut reader, expected, &|| Ok(())).unwrap_err(),
-            "external_configfile_engine_read");
+        assert_eq!(
+            configfile_engine_hash(&mut reader, expected, &|| Ok(())).unwrap_err(),
+            "external_configfile_engine_read"
+        );
         assert_eq!(reader.inner.position(), 7);
         reader.fail_read = false;
         let checks = std::cell::Cell::new(0);
         let cancelled = || {
             checks.set(checks.get() + 1);
-            if checks.get() >= 3 { Err("fixed original-owner cancellation".into()) } else { Ok(()) }
+            if checks.get() >= 3 {
+                Err("fixed original-owner cancellation".into())
+            } else {
+                Ok(())
+            }
         };
-        assert_eq!(configfile_engine_hash(&mut reader, expected, &cancelled).unwrap_err(),
-            "fixed original-owner cancellation");
+        assert_eq!(
+            configfile_engine_hash(&mut reader, expected, &cancelled).unwrap_err(),
+            "fixed original-owner cancellation"
+        );
         assert_eq!(reader.inner.position(), 7);
     }
 
@@ -3519,16 +4367,20 @@ mod tests {
     fn held_configfile_engine_hash_bound_and_failed_restoration_never_return_digest() {
         let mut reader = engine_hash_test_reader();
         for length in [0, CONFIGFILE_ENGINE_BYTES + 1] {
-            assert_eq!(configfile_engine_hash(&mut reader, length, &|| Ok(())).unwrap_err(),
-                "external_configfile_engine_bytes_bound");
+            assert_eq!(
+                configfile_engine_hash(&mut reader, length, &|| Ok(())).unwrap_err(),
+                "external_configfile_engine_bytes_bound"
+            );
             assert_eq!(reader.read_count, 0);
             assert_eq!(reader.inner.position(), 7);
         }
         reader.fail_restore = true;
-        assert_eq!(configfile_engine_hash(&mut reader, 200_000, &|| Ok(())).unwrap_err(),
-            "external_configfile_engine_cursor_restore");
+        assert_eq!(
+            configfile_engine_hash(&mut reader, 200_000, &|| Ok(())).unwrap_err(),
+            "external_configfile_engine_cursor_restore"
+        );
         assert_eq!(CONFIGFILE_ENGINE_BYTES, 256 * 1024 * 1024);
-        assert!(178_485_256 < CONFIGFILE_ENGINE_BYTES);
+        const { assert!(178_485_256 < CONFIGFILE_ENGINE_BYTES) };
     }
 
     #[test]
@@ -3540,22 +4392,38 @@ mod tests {
         let mut image = ConfigFileEngineImage::open(path.clone(), deadline, &|| Ok(())).unwrap();
         let old_digest = image.sha256.clone();
         image.sha256 = "0".repeat(64);
-        assert_eq!(image.recheck(deadline, &|| Ok(())).unwrap_err(),
-            "external_configfile_engine_hash_changed");
+        assert_eq!(
+            image.recheck(deadline, &|| Ok(())).unwrap_err(),
+            "external_configfile_engine_hash_changed"
+        );
         image.sha256 = old_digest;
         image.stamp.id[0] ^= 1;
-        assert_eq!(image.recheck(deadline, &|| Ok(())).unwrap_err(), "external_configfile_engine_changed");
+        assert_eq!(
+            image.recheck(deadline, &|| Ok(())).unwrap_err(),
+            "external_configfile_engine_changed"
+        );
         image.stamp.id[0] ^= 1;
         let foreign = fixture.0.join("foreign.exe");
         std::fs::write(&foreign, b"fixed private read witness").unwrap();
         image.guard = File::open(&foreign).unwrap();
         assert!(image.recheck(deadline, &|| Ok(())).is_err());
-        assert!(ConfigFileEngineImage::open(path.clone(), Instant::now() - Duration::from_millis(1), &|| Ok(())).is_err());
-        assert!(ConfigFileEngineImage::open(path, deadline, &|| Err("original owner cancelled".into())).is_err());
+        assert!(ConfigFileEngineImage::open(
+            path.clone(),
+            Instant::now() - Duration::from_millis(1),
+            &|| Ok(())
+        )
+        .is_err());
+        assert!(ConfigFileEngineImage::open(path, deadline, &|| Err(
+            "original owner cancelled".into()
+        ))
+        .is_err());
         let empty = fixture.0.join("empty.exe");
         std::fs::write(&empty, b"").unwrap();
         assert!(ConfigFileEngineImage::open(empty, deadline, &|| Ok(())).is_err());
-        assert!(ConfigFileEngineImage::open(fixture.0.join("missing.exe"), deadline, &|| Ok(())).is_err());
+        assert!(
+            ConfigFileEngineImage::open(fixture.0.join("missing.exe"), deadline, &|| Ok(()))
+                .is_err()
+        );
         let directory = fixture.0.join("directory.exe");
         std::fs::create_dir(&directory).unwrap();
         assert!(ConfigFileEngineImage::open(directory, deadline, &|| Ok(())).is_err());
@@ -3567,23 +4435,39 @@ mod tests {
         let runtime = crate::native_operations::NativeRuntime::controller(&fixture.0);
         let controller = runtime.managed_native_output(&fixture.0).unwrap();
         let parent = ParentDeadline::at(Instant::now() + Duration::from_secs(10)).unwrap();
-        assert_eq!(HeldConfigFileEngine::hold_configured(&runtime, &fixture.0, &parent, &controller)
-            .err().unwrap(), "external_compile_read_owner_missing");
+        assert_eq!(
+            HeldConfigFileEngine::hold_configured(&runtime, &fixture.0, &parent, &controller)
+                .err()
+                .unwrap(),
+            "external_compile_read_owner_missing"
+        );
         let broker = Arc::new(crate::workspace_access::Broker::default());
         let foreign = broker.managed_compiler_controller().unwrap();
         let mut bound = ParentDeadline::at(Instant::now() + Duration::from_secs(10)).unwrap();
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let check = || Ok(());
         let budget = Budget::new(Duration::from_secs(10), &check).unwrap();
-        bound.bind_read_owner(&broker, cancelled.clone(),
-            crate::external_workspace::ProposalLimits::from_budget(&budget)).unwrap();
+        bound
+            .bind_read_owner(
+                &broker,
+                cancelled.clone(),
+                crate::external_workspace::ProposalLimits::from_budget(&budget),
+            )
+            .unwrap();
         // The original read binding is real, but belongs to another broker.
         // Every complete-token attempt in this unit is required to refuse.
-        assert!(HeldConfigFileEngine::hold_configured(&runtime, &fixture.0, &bound, &foreign).is_err());
+        assert!(
+            HeldConfigFileEngine::hold_configured(&runtime, &fixture.0, &bound, &foreign).is_err()
+        );
         cancelled.store(true, std::sync::atomic::Ordering::Release);
-        assert!(HeldConfigFileEngine::hold_configured(&runtime, &fixture.0, &bound, &foreign).is_err());
+        assert!(
+            HeldConfigFileEngine::hold_configured(&runtime, &fixture.0, &bound, &foreign).is_err()
+        );
         let expired = ParentDeadline::expired_for_test();
-        assert!(HeldConfigFileEngine::hold_configured(&runtime, &fixture.0, &expired, &controller).is_err());
+        assert!(
+            HeldConfigFileEngine::hold_configured(&runtime, &fixture.0, &expired, &controller)
+                .is_err()
+        );
         assert_eq!(controller.retained(), 0);
         assert_eq!(foreign.retained(), 0);
     }
@@ -3893,7 +4777,13 @@ mod tests {
             (1, 0x2000, 0x1000, 0x600, 0x1000, 0x4000_0040),
         ] {
             let section = 328 + index * 40;
-            for (field, value) in [(8, virtual_bytes), (12, rva), (16, raw_bytes), (20, raw), (36, flags)] {
+            for (field, value) in [
+                (8, virtual_bytes),
+                (12, rva),
+                (16, raw_bytes),
+                (20, raw),
+                (36, flags),
+            ] {
                 export_set32(&mut bytes, section + field, value);
             }
         }
@@ -3915,9 +4805,18 @@ mod tests {
     fn read_test_export(bytes: &[u8], name: &str) -> Result<NamedPeExport, String> {
         let mut reader = io::Cursor::new(bytes);
         reader.set_position(7);
-        let result = named_direct_pe_export(&mut reader, bytes.len() as u64,
-            "x86_64-pc-windows-msvc", name, &named_export_budget());
-        assert_eq!(reader.position(), 7, "all parser results restore the same reader");
+        let result = named_direct_pe_export(
+            &mut reader,
+            bytes.len() as u64,
+            "x86_64-pc-windows-msvc",
+            name,
+            &named_export_budget(),
+        );
+        assert_eq!(
+            reader.position(),
+            7,
+            "all parser results restore the same reader"
+        );
         result
     }
     #[test]
@@ -3933,7 +4832,10 @@ mod tests {
         // Two distinct names may validly alias the one function, with base17.
         assert_eq!(read_test_export(&bytes, "Value").unwrap().rva(), 0x1000);
         assert_eq!(read_test_export(&bytes, "value").unwrap().rva(), 0x1000);
-        assert_eq!(read_test_export(&bytes, "VALUE").unwrap_err(), "external_named_export_missing");
+        assert_eq!(
+            read_test_export(&bytes, "VALUE").unwrap_err(),
+            "external_named_export_missing"
+        );
         let mut longest = named_export_fixture();
         longest[0x680..0x700].fill(b'a');
         longest[0x700] = 0;
@@ -3965,17 +4867,32 @@ mod tests {
             assert!(read_test_export(&bytes, "value").is_err());
         }
         for (offset, value) in [
-            (60, u32::MAX), (88 + 60, 0), (88 + 60, 407), (88 + 60, u32::MAX),
-            (88 + 108, 0), (88 + 108, 17),
-            (88 + 112, 0), (88 + 112, u32::MAX - 10), (88 + 116, 39),
-            (0x600, 1), (0x600 + 20, 0), (0x600 + 20, 4097),
-            (0x600 + 24, 0), (0x600 + 24, 4097),
-            (0x600 + 28, u32::MAX), (0x600 + 32, u32::MAX), (0x600 + 36, u32::MAX),
-            (328 + 20, u32::MAX), (328 + 12, u32::MAX - 10),
+            (60, u32::MAX),
+            (88 + 60, 0),
+            (88 + 60, 407),
+            (88 + 60, u32::MAX),
+            (88 + 108, 0),
+            (88 + 108, 17),
+            (88 + 112, 0),
+            (88 + 112, u32::MAX - 10),
+            (88 + 116, 39),
+            (0x600, 1),
+            (0x600 + 20, 0),
+            (0x600 + 20, 4097),
+            (0x600 + 24, 0),
+            (0x600 + 24, 4097),
+            (0x600 + 28, u32::MAX),
+            (0x600 + 32, u32::MAX),
+            (0x600 + 36, u32::MAX),
+            (328 + 20, u32::MAX),
+            (328 + 12, u32::MAX - 10),
         ] {
             let mut bytes = named_export_fixture();
             export_set32(&mut bytes, offset, value);
-            assert!(read_test_export(&bytes, "value").is_err(), "malformed range/count was accepted");
+            assert!(
+                read_test_export(&bytes, "value").is_err(),
+                "malformed range/count was accepted"
+            );
         }
         let mut too_many = named_export_fixture();
         too_many[70..72].copy_from_slice(&97u16.to_le_bytes());
@@ -3989,42 +4906,69 @@ mod tests {
         }
         let mut reader = io::Cursor::new(&bytes);
         reader.set_position(7);
-        assert!(named_direct_pe_export(&mut reader, 128 * 1024 * 1024 + 1,
-            "x86_64-pc-windows-msvc", "value", &named_export_budget()).is_err());
+        assert!(named_direct_pe_export(
+            &mut reader,
+            128 * 1024 * 1024 + 1,
+            "x86_64-pc-windows-msvc",
+            "value",
+            &named_export_budget()
+        )
+        .is_err());
         assert_eq!(reader.position(), 7);
     }
     #[test]
     fn named_pe_export_requires_sorted_unique_bounded_ascii_names_and_valid_ordinals() {
-        for (first, second) in [(b"value\0".as_slice(), b"value\0".as_slice()),
-            (b"zebra\0".as_slice(), b"value\0".as_slice())] {
+        for (first, second) in [
+            (b"value\0".as_slice(), b"value\0".as_slice()),
+            (b"zebra\0".as_slice(), b"value\0".as_slice()),
+        ] {
             let mut bytes = named_export_fixture();
             export_set32(&mut bytes, 0x600 + 24, 2);
             export_set32(&mut bytes, 0x654, 0x2090);
             bytes[0x680..0x686].copy_from_slice(first);
             bytes[0x690..0x696].copy_from_slice(second);
-            assert_eq!(read_test_export(&bytes, "value").unwrap_err(), "external_named_export_name_order");
+            assert_eq!(
+                read_test_export(&bytes, "value").unwrap_err(),
+                "external_named_export_name_order"
+            );
         }
         let mut invalid = named_export_fixture();
         invalid[0x660..0x662].copy_from_slice(&1u16.to_le_bytes());
-        assert_eq!(read_test_export(&invalid, "value").unwrap_err(), "external_named_export_ordinal_refused");
+        assert_eq!(
+            read_test_export(&invalid, "value").unwrap_err(),
+            "external_named_export_ordinal_refused"
+        );
         let mut non_ascii = named_export_fixture();
         non_ascii[0x680] = 0xff;
-        assert_eq!(read_test_export(&non_ascii, "value").unwrap_err(), "external_named_export_name_bound");
+        assert_eq!(
+            read_test_export(&non_ascii, "value").unwrap_err(),
+            "external_named_export_name_bound"
+        );
         let mut overlong = named_export_fixture();
         overlong[0x680..0x701].fill(b'a');
-        assert_eq!(read_test_export(&overlong, "value").unwrap_err(), "external_named_export_name_bound");
+        assert_eq!(
+            read_test_export(&overlong, "value").unwrap_err(),
+            "external_named_export_name_bound"
+        );
         let mut unterminated = named_export_fixture();
         export_set32(&mut unterminated, 0x650, 0x2ff0);
         unterminated[0x15f0..].fill(b'a');
-        assert_eq!(read_test_export(&unterminated, "value").unwrap_err(), "external_named_export_name_bound");
-        for name in ["", "a\0b", "é"] { assert!(read_test_export(&named_export_fixture(), name).is_err()); }
+        assert_eq!(
+            read_test_export(&unterminated, "value").unwrap_err(),
+            "external_named_export_name_bound"
+        );
+        for name in ["", "a\0b", "é"] {
+            assert!(read_test_export(&named_export_fixture(), name).is_err());
+        }
         assert!(read_test_export(&named_export_fixture(), &"a".repeat(129)).is_err());
     }
     #[test]
     fn named_pe_export_refuses_forwarded_zero_data_virtual_tail_and_ambiguous_targets() {
-        for (rva, error) in [(0, "external_named_export_zero_target"),
+        for (rva, error) in [
+            (0, "external_named_export_zero_target"),
             (0x20a0, "external_named_export_forwarder_refused"),
-            (0x2400, "external_named_export_executable_target_required")] {
+            (0x2400, "external_named_export_executable_target_required"),
+        ] {
             let mut bytes = named_export_fixture();
             export_set32(&mut bytes, 0x640, rva);
             assert_eq!(read_test_export(&bytes, "value").unwrap_err(), error);
@@ -4032,22 +4976,40 @@ mod tests {
         let mut tail = named_export_fixture();
         export_set32(&mut tail, 328 + 8, 0x400);
         export_set32(&mut tail, 0x640, 0x1200);
-        assert_eq!(read_test_export(&tail, "value").unwrap_err(), "external_named_export_unbacked_rva");
+        assert_eq!(
+            read_test_export(&tail, "value").unwrap_err(),
+            "external_named_export_unbacked_rva"
+        );
         for raw in [0, 0x3ff] {
             let mut header_alias = named_export_fixture();
             export_set32(&mut header_alias, 328 + 20, raw);
-            assert_eq!(read_test_export(&header_alias, "value").unwrap_err(), "external_named_export_header_mapping");
+            assert_eq!(
+                read_test_export(&header_alias, "value").unwrap_err(),
+                "external_named_export_header_mapping"
+            );
         }
         let mut rva_alias = named_export_fixture();
         export_set32(&mut rva_alias, 328 + 12, 0x100);
         export_set32(&mut rva_alias, 0x640, 0x100);
-        assert_eq!(read_test_export(&rva_alias, "value").unwrap_err(), "external_named_export_header_mapping");
+        assert_eq!(
+            read_test_export(&rva_alias, "value").unwrap_err(),
+            "external_named_export_header_mapping"
+        );
         let mut ambiguous = named_export_fixture();
         ambiguous[70..72].copy_from_slice(&3u16.to_le_bytes());
-        for (field, value) in [(8, 0x200), (12, 0x1000), (16, 0x200), (20, 0x1400), (36, 0x6000_0020)] {
+        for (field, value) in [
+            (8, 0x200),
+            (12, 0x1000),
+            (16, 0x200),
+            (20, 0x1400),
+            (36, 0x6000_0020),
+        ] {
             export_set32(&mut ambiguous, 328 + 80 + field, value);
         }
-        assert_eq!(read_test_export(&ambiguous, "value").unwrap_err(), "external_named_export_ambiguous_rva");
+        assert_eq!(
+            read_test_export(&ambiguous, "value").unwrap_err(),
+            "external_named_export_ambiguous_rva"
+        );
     }
     struct ExportReadFailure {
         inner: io::Cursor<Vec<u8>>,
@@ -4058,7 +5020,9 @@ mod tests {
     impl Read for ExportReadFailure {
         fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
             self.reads += 1;
-            if self.fail_read && self.reads == 3 { return Err(io::Error::other("synthetic bounded export read refusal")); }
+            if self.fail_read && self.reads == 3 {
+                return Err(io::Error::other("synthetic bounded export read refusal"));
+            }
             self.inner.read(bytes)
         }
     }
@@ -4076,27 +5040,63 @@ mod tests {
         let calls = std::cell::Cell::new(0usize);
         let cancel = || {
             calls.set(calls.get() + 1);
-            if calls.get() == 10 { Err("named_export_test_cancelled".into()) } else { Ok(()) }
+            if calls.get() == 10 {
+                Err("named_export_test_cancelled".into())
+            } else {
+                Ok(())
+            }
         };
         let cancelled = Budget::new(Duration::from_secs(30), &cancel).unwrap();
         let mut reader = io::Cursor::new(&bytes);
         reader.set_position(7);
-        assert_eq!(named_direct_pe_export(&mut reader, bytes.len() as u64,
-            "x86_64-pc-windows-msvc", "value", &cancelled).unwrap_err(), "named_export_test_cancelled");
+        assert_eq!(
+            named_direct_pe_export(
+                &mut reader,
+                bytes.len() as u64,
+                "x86_64-pc-windows-msvc",
+                "value",
+                &cancelled
+            )
+            .unwrap_err(),
+            "named_export_test_cancelled"
+        );
         assert_eq!(calls.get(), 10);
         assert_eq!(reader.position(), 7);
         let expired = ParentDeadline::expired_for_test();
         let check = || expired.check();
         let budget = Budget::new(Duration::from_secs(30), &check).unwrap();
-        assert!(named_direct_pe_export(&mut reader, bytes.len() as u64,
-            "x86_64-pc-windows-msvc", "value", &budget).is_err());
+        assert!(named_direct_pe_export(
+            &mut reader,
+            bytes.len() as u64,
+            "x86_64-pc-windows-msvc",
+            "value",
+            &budget
+        )
+        .is_err());
         assert_eq!(reader.position(), 7);
-        let mut failing = ExportReadFailure { inner: io::Cursor::new(bytes.clone()), reads: 0, fail_read: true, fail_restore: false };
+        let mut failing = ExportReadFailure {
+            inner: io::Cursor::new(bytes.clone()),
+            reads: 0,
+            fail_read: true,
+            fail_restore: false,
+        };
         failing.inner.set_position(7);
-        assert_eq!(named_direct_pe_export(&mut failing, bytes.len() as u64,
-            "x86_64-pc-windows-msvc", "value", &named_export_budget()).unwrap_err(), "external_named_export_read_failed");
+        assert_eq!(
+            named_direct_pe_export(
+                &mut failing,
+                bytes.len() as u64,
+                "x86_64-pc-windows-msvc",
+                "value",
+                &named_export_budget()
+            )
+            .unwrap_err(),
+            "external_named_export_read_failed"
+        );
         assert_eq!(failing.inner.position(), 7);
-        assert_eq!(read_test_export(&bytes, "missing_value").unwrap_err(), "external_named_export_missing");
+        assert_eq!(
+            read_test_export(&bytes, "missing_value").unwrap_err(),
+            "external_named_export_missing"
+        );
     }
     #[test]
     fn named_pe_export_aggregate_admission_and_restore_failure_never_return_descriptor() {
@@ -4104,17 +5104,41 @@ mod tests {
         let budget = named_export_budget();
         let mut cursor = io::Cursor::new(&bytes);
         cursor.set_position(7);
-        let mut input = PeExportRead { reader: &mut cursor, bytes: bytes.len() as u64,
-            charged: NAMED_EXPORT_READ_BYTES - 1, budget: &budget };
-        assert_eq!(input.array::<2>(0).unwrap_err(), "external_named_export_read_bound");
+        let mut input = PeExportRead {
+            reader: &mut cursor,
+            bytes: bytes.len() as u64,
+            charged: NAMED_EXPORT_READ_BYTES - 1,
+            budget: &budget,
+        };
+        assert_eq!(
+            input.array::<2>(0).unwrap_err(),
+            "external_named_export_read_bound"
+        );
         assert_eq!(input.reader.position(), 7, "admission precedes seek/read");
         input.charged = 0;
-        assert_eq!(input.array::<4>(u64::MAX).unwrap_err(), "external_named_export_file_range");
+        assert_eq!(
+            input.array::<4>(u64::MAX).unwrap_err(),
+            "external_named_export_file_range"
+        );
         assert_eq!(input.reader.position(), 7);
-        let mut failing = ExportReadFailure { inner: io::Cursor::new(bytes.clone()), reads: 0, fail_read: false, fail_restore: true };
+        let mut failing = ExportReadFailure {
+            inner: io::Cursor::new(bytes.clone()),
+            reads: 0,
+            fail_read: false,
+            fail_restore: true,
+        };
         failing.inner.set_position(7);
-        assert_eq!(named_direct_pe_export(&mut failing, bytes.len() as u64,
-            "x86_64-pc-windows-msvc", "value", &budget).unwrap_err(), "external_named_export_cursor_restore_failed");
+        assert_eq!(
+            named_direct_pe_export(
+                &mut failing,
+                bytes.len() as u64,
+                "x86_64-pc-windows-msvc",
+                "value",
+                &budget
+            )
+            .unwrap_err(),
+            "external_named_export_cursor_restore_failed"
+        );
     }
 
     pub(super) fn fixture_pe() -> Vec<u8> {

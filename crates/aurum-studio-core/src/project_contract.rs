@@ -120,7 +120,8 @@ fn parameters() -> Value {
         "preset":{"type":"string"},"output":{"type":"string","description":"New project-relative destination; existing outputs are refused"}
     });
     result["seed"] = json!({"type":"integer","minimum":0,"maximum":4294967295u64,"description":"Optional global Godot RNG seed before the selected main scene loads; custom RNG and prior autoload work are not controlled"});
-    result["metric"] = json!({"type":"string","description":"Single performance failure predicate metric"});
+    result["metric"] =
+        json!({"type":"string","description":"Single performance failure predicate metric"});
     result["allow_project_code"] = json!({"type":"boolean","description":"Explicit current-user replay execution, without a sandbox"});
     result["mode"] = json!({"type":"string","enum":["dependency_read"],"description":"Attended native confirmation required; ordinary project authorization cannot approve"});
     result["compile_native"] = json!({"type":"boolean","default":false,"description":"Opt-in frozen/offline compilation of the selected local-only member into an owned private target; no library load, activation or source publication"});
@@ -497,7 +498,10 @@ mod tests {
         assert_eq!(selection["properties"]["path"]["type"], "string");
         assert_eq!(selection["properties"]["path"]["minLength"], 1);
         assert_eq!(selection["properties"]["path"]["maxLength"], 1024);
-        assert_eq!(selection["properties"]["path"]["pattern"], r"\.gdextension$");
+        assert_eq!(
+            selection["properties"]["path"]["pattern"],
+            r"\.gdextension$"
+        );
         for cargo_manifest in ["workspace", "member"] {
             assert_eq!(
                 schema["properties"][cargo_manifest]["properties"]["root_id"]["pattern"],
@@ -781,13 +785,28 @@ mod tests {
         assert_eq!(resources["maxItems"], crate::runtime_context::MANIFESTS);
         assert_eq!(resources["uniqueItems"], true);
         assert_eq!(resources["items"]["type"], "string");
-        assert_eq!(resources["items"]["maxLength"], crate::runtime_context::PATH_BYTES);
-        assert!(resources["items"]["pattern"].as_str().unwrap().starts_with("^res://"));
+        assert_eq!(
+            resources["items"]["maxLength"],
+            crate::runtime_context::PATH_BYTES
+        );
+        assert!(resources["items"]["pattern"]
+            .as_str()
+            .unwrap()
+            .starts_with("^res://"));
         assert_eq!(input_schema(true)["properties"]["resources"], *resources);
         assert!(input_schema(false)["properties"].get("resources").is_none());
-        assert_eq!(details["constraints"]["resource_filter_scope"], "returned_rows_only");
-        assert_eq!(details["constraints"]["verification_scope"], "whole_accepted_session");
-        assert_eq!(details["constraints"]["resource_filter_IO_or_token_savings_claimed"], false);
+        assert_eq!(
+            details["constraints"]["resource_filter_scope"],
+            "returned_rows_only"
+        );
+        assert_eq!(
+            details["constraints"]["verification_scope"],
+            "whole_accepted_session"
+        );
+        assert_eq!(
+            details["constraints"]["resource_filter_IO_or_token_savings_claimed"],
+            false
+        );
     }
     #[test]
     fn runtime_context_selection_schema_and_host_agree_on_array_and_closed_fields() {
@@ -798,18 +817,31 @@ mod tests {
             .iter()
             .find(|row| row["if"]["properties"]["op"]["const"] == "runtime_context")
             .unwrap();
-        assert_eq!(branch["then"], describe(Some("runtime_context")).unwrap()["input_schema"]);
+        assert_eq!(
+            branch["then"],
+            describe(Some("runtime_context")).unwrap()["input_schema"]
+        );
         let valid = json!({"op":"runtime_context","resources":["res://addons/a.gdextension"]});
-        assert_eq!(crate::runtime_context::operation_request(&valid).unwrap(), valid);
-        for resources in [Value::Null, json!([]), json!("res://a.gdextension"), json!([true]),
-            json!(["res://a.gdextension","res://a.gdextension"])] {
+        assert_eq!(
+            crate::runtime_context::operation_request(&valid).unwrap(),
+            valid
+        );
+        for resources in [
+            Value::Null,
+            json!([]),
+            json!("res://a.gdextension"),
+            json!([true]),
+            json!(["res://a.gdextension", "res://a.gdextension"]),
+        ] {
             assert!(crate::runtime_context::operation_request(
                 &json!({"op":"runtime_context","resources":resources})
-            ).is_err());
+            )
+            .is_err());
         }
         assert!(crate::runtime_context::operation_request(&json!({
             "op":"runtime_context","resources":["res://a.gdextension"],"unknown":true
-        })).is_err());
+        }))
+        .is_err());
     }
     #[test]
     fn target_preflight_is_read_only_with_curated_bounded_metadata_paths() {

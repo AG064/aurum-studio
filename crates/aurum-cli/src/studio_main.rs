@@ -1415,7 +1415,10 @@ mod tests {
         }
         let normalized = base.to_string_lossy().replace('/', "\\");
         let normalized = normalized.strip_prefix(r"\\?\").unwrap_or(&normalized);
-        if !normalized.starts_with(r"A:\CodexData\temp\")
+        let temporary = std::env::temp_dir().to_string_lossy().replace('/', "\\");
+        let temporary = temporary.strip_prefix(r"\\?\").unwrap_or(&temporary);
+        let temporary = format!("{}\\", temporary.trim_end_matches('\\')).to_ascii_lowercase();
+        if !normalized.to_ascii_lowercase().starts_with(&temporary)
             || normalized.len() > 1024
             || !local_root(base)
         {

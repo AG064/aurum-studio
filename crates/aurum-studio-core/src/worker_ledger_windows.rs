@@ -689,11 +689,9 @@ fn discover_job_members(job: &OwnedHandle, shared: &Shared) -> io::Result<()> {
         .state
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    if !counts_represented(current.total_processes, state.births.len())? {
-        return Err(io::Error::other(
-            "owned lifetime census has an uncaptured process object",
-        ));
-    }
+    // A gap here can be a birth whose debug CREATE event is still queued, so it is not a
+    // failure. `complete_members` confirms retirement only once every count is retained.
+    counts_represented(current.total_processes, state.births.len())?;
     Ok(())
 }
 fn counts_represented(total: u32, retained: usize) -> io::Result<bool> {

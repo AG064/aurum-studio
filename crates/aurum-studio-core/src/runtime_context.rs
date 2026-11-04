@@ -199,7 +199,10 @@ fn fits(value: &Value, limit: usize) -> bool {
     serde_json::to_writer(&mut ByteLimit { bytes: 0, limit }, value).is_ok()
 }
 
-fn requested_resources(input: &Value, request: &Request) -> Result<Option<BTreeSet<String>>, String> {
+fn requested_resources(
+    input: &Value,
+    request: &Request,
+) -> Result<Option<BTreeSet<String>>, String> {
     if input.get("resources").is_none() {
         return Ok(None);
     }
@@ -938,7 +941,11 @@ fn collect(
     // Resolve it before calling project code; all later verification stays whole-session.
     if let Some(selection) = selection {
         for resource in selection {
-            match manifests.iter().filter(|row| row.resource == *resource).count() {
+            match manifests
+                .iter()
+                .filter(|row| row.resource == *resource)
+                .count()
+            {
                 1 => {}
                 0 => return Err(Failure::Evidence("unknown_dependency_selection")),
                 _ => return Err(Failure::Evidence("ambiguous_dependency_selection")),
@@ -1319,7 +1326,10 @@ mod tests {
                     &root.join("godot/addons/vendor/vendor.gdextension"),
                     b"[libraries]\nwindows.debug.x86_64=\"res://addons/vendor/vendor.dll\"\n",
                 );
-                Self::file(&root.join("godot/addons/vendor/vendor.dll"), b"vendor binary");
+                Self::file(
+                    &root.join("godot/addons/vendor/vendor.dll"),
+                    b"vendor binary",
+                );
             }
             let mut preparation = self.preparation();
             let manifest = self.private.join("godot/addons/vendor/vendor.gdextension");
@@ -1415,7 +1425,9 @@ mod tests {
             json!({"resource":"res://a.gdextension"}),
             json!([42]),
             json!(["res://a.gdextension", "res://a.gdextension"]),
-            json!((0..=MANIFESTS).map(|n| format!("res://m{n}.gdextension")).collect::<Vec<_>>()),
+            json!((0..=MANIFESTS)
+                .map(|n| format!("res://m{n}.gdextension"))
+                .collect::<Vec<_>>()),
             json!(["res://../a.gdextension"]),
             json!(["res://addons/../a.gdextension"]),
             json!(["res://addons//a.gdextension"]),
@@ -1439,7 +1451,10 @@ mod tests {
             )
             .is_err());
         }
-        assert!(operation_request(&json!({"op":"runtime_context","resources":["res://a.gdextension"],"limit":1})).is_err());
+        assert!(operation_request(
+            &json!({"op":"runtime_context","resources":["res://a.gdextension"],"limit":1})
+        )
+        .is_err());
     }
     #[test]
     fn runtime_context_selection_filters_rows_without_narrowing_whole_session_queries() {
@@ -1462,20 +1477,41 @@ mod tests {
         );
         assert_eq!(selected["state"], all["state"]);
         assert_eq!(selected["complete"], true);
-        assert_eq!(selected["dependencies"], json!([all["dependencies"][1].clone()]));
-        assert_eq!(selected["dependency_selection"]["scope"], "returned_rows_only");
-        assert_eq!(selected["dependency_selection"]["verification_scope"], "whole_accepted_session");
-        assert_eq!(selected["dependency_selection"]["checked_manifest_count"], 2);
-        assert_eq!(selected["dependency_selection"]["returned_manifest_count"], 1);
+        assert_eq!(
+            selected["dependencies"],
+            json!([all["dependencies"][1].clone()])
+        );
+        assert_eq!(
+            selected["dependency_selection"]["scope"],
+            "returned_rows_only"
+        );
+        assert_eq!(
+            selected["dependency_selection"]["verification_scope"],
+            "whole_accepted_session"
+        );
+        assert_eq!(
+            selected["dependency_selection"]["checked_manifest_count"],
+            2
+        );
+        assert_eq!(
+            selected["dependency_selection"]["returned_manifest_count"],
+            1
+        );
         let requests = requests.borrow();
         assert_eq!(requests.len(), 3);
-        let dependencies: Vec<_> = requests.iter().filter(|row| row["op"] == "context_dependencies").collect();
+        let dependencies: Vec<_> = requests
+            .iter()
+            .filter(|row| row["op"] == "context_dependencies")
+            .collect();
         assert_eq!(dependencies.len(), 2);
         for request in dependencies {
-            assert_eq!(request["resources"], json!([
-                "res://addons/native/bin/active.gdextension",
-                "res://addons/vendor/vendor.gdextension"
-            ]));
+            assert_eq!(
+                request["resources"],
+                json!([
+                    "res://addons/native/bin/active.gdextension",
+                    "res://addons/vendor/vendor.gdextension"
+                ])
+            );
         }
         assert!(!selected.to_string().contains("PRIVATE-"));
         assert!(!fixture.public.join(".aurum").exists());
@@ -1492,8 +1528,14 @@ mod tests {
             "res://addons/vendor/vendor.gdextension", "res://addons/native/bin/active.gdextension"
         ]}));
         assert_eq!(forward, reversed);
-        assert_eq!(forward["dependencies"][0]["resource"], "res://addons/native/bin/active.gdextension");
-        assert_eq!(forward["dependencies"][1]["resource"], "res://addons/vendor/vendor.gdextension");
+        assert_eq!(
+            forward["dependencies"][0]["resource"],
+            "res://addons/native/bin/active.gdextension"
+        );
+        assert_eq!(
+            forward["dependencies"][1]["resource"],
+            "res://addons/vendor/vendor.gdextension"
+        );
     }
     #[test]
     fn runtime_context_selection_unknown_or_ambiguous_roster_refuses_before_game_queries() {
@@ -1512,10 +1554,21 @@ mod tests {
                 calls.fetch_add(1, Ordering::Relaxed);
                 Err("unreached".into())
             };
-            let report = fixture.inspect_request(&preparation, &query, &json!({"op":"runtime_context","resources":[resource]}));
+            let report = fixture.inspect_request(
+                &preparation,
+                &query,
+                &json!({"op":"runtime_context","resources":[resource]}),
+            );
             assert_eq!(report["state"], "incomplete");
             assert_eq!(report["complete"], false);
-            assert_eq!(report["reasons"][0], if ambiguous {"ambiguous_dependency_selection"} else {"unknown_dependency_selection"});
+            assert_eq!(
+                report["reasons"][0],
+                if ambiguous {
+                    "ambiguous_dependency_selection"
+                } else {
+                    "unknown_dependency_selection"
+                }
+            );
             assert_eq!(calls.load(Ordering::Relaxed), 0);
             assert!(report["dependencies"].as_array().unwrap().is_empty());
             assert!(!report.to_string().contains("not-retained"));
@@ -1532,28 +1585,42 @@ mod tests {
             }
             Ok(reply)
         };
-        let report = fixture.inspect_request(&preparation, &query, &json!({"op":"runtime_context","resources":[
-            "res://addons/native/bin/active.gdextension"
-        ]}));
+        let report = fixture.inspect_request(
+            &preparation,
+            &query,
+            &json!({"op":"runtime_context","resources":[
+                "res://addons/native/bin/active.gdextension"
+            ]}),
+        );
         assert_eq!(report["state"], "unhealthy");
         assert_eq!(report["complete"], false);
         assert_eq!(report["dependencies"].as_array().unwrap().len(), 1);
         assert_eq!(report["dependencies"][0]["loaded_resource"], true);
-        assert!(report["reasons"].as_array().unwrap().contains(&json!("native_extension_not_loaded")));
+        assert!(report["reasons"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("native_extension_not_loaded")));
     }
     #[test]
     fn runtime_context_selection_unselected_disk_drift_remains_nonavailable() {
         let fixture = Fixture::new();
         let preparation = fixture.two_manifest_preparation();
-        Fixture::file(&fixture.private.join("godot/addons/vendor/vendor.dll"), b"changed vendor");
+        Fixture::file(
+            &fixture.private.join("godot/addons/vendor/vendor.dll"),
+            b"changed vendor",
+        );
         let calls = AtomicUsize::new(0);
         let query = |_: &Value, _: Duration| {
             calls.fetch_add(1, Ordering::Relaxed);
             Err("unreached".into())
         };
-        let report = fixture.inspect_request(&preparation, &query, &json!({"op":"runtime_context","resources":[
-            "res://addons/native/bin/active.gdextension"
-        ]}));
+        let report = fixture.inspect_request(
+            &preparation,
+            &query,
+            &json!({"op":"runtime_context","resources":[
+                "res://addons/native/bin/active.gdextension"
+            ]}),
+        );
         assert_eq!(report["state"], "drift");
         assert_eq!(report["complete"], false);
         assert_eq!(report["reasons"][0], "private_preparation_drift");
@@ -1571,9 +1638,13 @@ mod tests {
             }
             Ok(reply)
         };
-        let report = fixture.inspect_request(&preparation, &query, &json!({"op":"runtime_context","resources":[
-            "res://addons/native/bin/active.gdextension"
-        ]}));
+        let report = fixture.inspect_request(
+            &preparation,
+            &query,
+            &json!({"op":"runtime_context","resources":[
+                "res://addons/native/bin/active.gdextension"
+            ]}),
+        );
         assert_eq!(report["state"], "drift");
         assert_eq!(report["complete"], false);
         assert_eq!(report["reasons"][0], "runtime_metadata_drift");

@@ -258,9 +258,7 @@ impl Server {
                     if self.shell.connections_count() >= MAX_CONNECTIONS {
                         // Refused rather than queued: the ceiling is the
                         // point, and a slow refusal costs nothing.
-                        let mut stream = stream;
-                        let _ =
-                            Response::error(503, "too many connections\n").write_to(&mut stream);
+                        refuse(stream);
                         continue;
                     }
                     self.shell.connections_add();
@@ -436,17 +434,68 @@ fn spawn_pump(supervisor: Arc<Supervisor>, hub: Arc<Hub>, running: Arc<AtomicBoo
 
 // -- connections ----------------------------------------------------------
 
+/// Answer a connection over the ceiling without blocking the accept loop. Closing a socket with
+/// unread request bytes resets it, which can discard the reply before the client reads it, so a
+/// short bounded drain owns the close. Past `MAX_CONNECTIONS` drains it closes at once instead.
+fn refuse(mut stream: TcpStream) {
+    use std::io::Read;
+    use std::sync::atomic::AtomicUsize;
+    static DRAINS: AtomicUsize = AtomicUsize::new(0);
+    const DRAIN_BUDGET: Duration = Duration::from_secs(1);
+    const DRAIN_QUIET: Duration = Duration::from_millis(200);
+
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_write_timeout(Some(DRAIN_QUIET));
+    let _ = Response::error(503, "too many connections\n").write_to(&mut stream);
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    if DRAINS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+        DRAINS.fetch_sub(1, Ordering::SeqCst);
+        return;
+    }
+    std::thread::spawn(move || {
+        let _ = stream.set_read_timeout(Some(DRAIN_QUIET));
+        let deadline = std::time::Instant::now() + DRAIN_BUDGET;
+        let mut unread = [0; 4096];
+        while std::time::Instant::now() < deadline
+            && matches!(stream.read(&mut unread), Ok(count) if count > 0)
+        {}
+        DRAINS.fetch_sub(1, Ordering::SeqCst);
+    });
+}
+
+/// Clone a socket for a thread that must own it, without letting child processes inherit it.
+/// A child holding a copy keeps the connection open until it exits, then resets it.
+pub(crate) fn private_clone(stream: &TcpStream) -> std::io::Result<TcpStream> {
+    let clone = stream.try_clone()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
+        }
+        const HANDLE_FLAG_INHERIT: u32 = 1;
+        // SAFETY: `clone` owns this live socket handle for the whole call.
+        let set = unsafe {
+            SetHandleInformation(clone.as_raw_socket() as *mut _, HANDLE_FLAG_INHERIT, 0)
+        };
+        if set == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(clone)
+}
+
 fn handle_connection(stream: TcpStream, shell: &Arc<Shell>) {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_nodelay(true);
 
-    let mut writer = match stream.try_clone() {
-        Ok(clone) => clone,
-        Err(_) => return,
-    };
-    let mut reader = BufReader::new(stream);
+    // Borrow instead of cloning: try_clone can return an inheritable socket on Windows, and
+    // a child spawned meanwhile would hold the connection open and reset it when it exits.
+    let mut writer = &stream;
+    let mut reader = BufReader::new(&stream);
 
     let mut request = match http::read_request_head(&mut reader) {
         Ok(Some(request)) => request,
@@ -1032,7 +1081,7 @@ fn projects_response(shell: &Arc<Shell>, request: Option<&Request>) -> Response 
 
 /// Write an event stream until the client goes away.
 fn stream_events(
-    writer: &mut TcpStream,
+    writer: &mut &TcpStream,
     receiver: Receiver<Event>,
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<()> {

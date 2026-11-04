@@ -10,7 +10,7 @@ From an A: source checkout with PowerShell 7, Rust 1.98/Windows C++ tools and th
 
 ```powershell
 Set-Location A:/Projects/aurum-studio
-$buildDirectory = Join-Path A:/CodexData/temp ('aurum-041-build-' + [guid]::NewGuid().ToString('N'))
+$buildDirectory = Join-Path ([IO.Path]::GetTempPath()) ('aurum-041-build-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path (Join-Path $buildDirectory 'tmp') -Force | Out-Null
 $env:TEMP = Join-Path $buildDirectory 'tmp'
 $env:TMP = $env:TEMP

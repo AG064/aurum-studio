@@ -350,7 +350,6 @@ mod tests {
     use super::*;
     use crate::candidate_workspace::Workspace;
     const CHILD: &str = "worker_windows::binary::fixture_diagnostic::tests::fixture_child";
-    static SERIAL: Mutex<()> = Mutex::new(());
     fn workspace() -> std::mem::ManuallyDrop<Workspace> {
         for path in [
             std::env::temp_dir().canonicalize().unwrap(),
@@ -408,7 +407,7 @@ mod tests {
     }
     #[test]
     fn fixture_nonzero_keeps_original_completion_and_private_bytes() {
-        let _serial = SERIAL.lock().unwrap();
+        let _serial = crate::worker_windows::binary::pool_test_lock();
         let mut ws = workspace();
         let c = StreamController::for_runtime();
         let cap = fixture(&ws, "nonzero");
@@ -432,7 +431,7 @@ mod tests {
     }
     #[test]
     fn fixture_success_and_bounded_prefixes_continue_to_real_eof() {
-        let _serial = SERIAL.lock().unwrap();
+        let _serial = crate::worker_windows::binary::pool_test_lock();
         let mut ws = workspace();
         let c = StreamController::for_runtime();
         let cap = fixture(&ws, "bulk");
@@ -456,7 +455,7 @@ mod tests {
     }
     #[test]
     fn default_capture_has_no_raw_tap_and_mismatched_request_is_refused() {
-        let _serial = SERIAL.lock().unwrap();
+        let _serial = crate::worker_windows::binary::pool_test_lock();
         let mut ws = workspace();
         let c = StreamController::for_runtime();
         let cap = fixture(&ws, "success");
@@ -493,7 +492,7 @@ mod tests {
     }
     #[test]
     fn late_observer_preserves_physical_receipt_without_success() {
-        let _serial = SERIAL.lock().unwrap();
+        let _serial = crate::worker_windows::binary::pool_test_lock();
         let mut ws = workspace();
         let c = StreamController::for_runtime();
         let cap = fixture(&ws, "success");
@@ -524,7 +523,7 @@ mod tests {
     }
     #[test]
     fn uncertain_readers_retain_sink_and_cannot_create_completion_receipt() {
-        let _serial = SERIAL.lock().unwrap();
+        let _serial = crate::worker_windows::binary::pool_test_lock();
         let mut ws = workspace();
         let c = StreamController::for_runtime();
         let cap = fixture(&ws, "success");

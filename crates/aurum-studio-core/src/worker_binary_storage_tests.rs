@@ -6,7 +6,6 @@ use std::path::{Component, PathBuf, Prefix};
 use std::sync::atomic::AtomicUsize;
 
 const CHILD: &str = "worker_windows::binary::storage_tests::fixture_child";
-static SERIAL: Mutex<()> = Mutex::new(());
 static LATE_RELEASE: Mutex<Option<thread::ThreadId>> = Mutex::new(None);
 static LATE_RELEASE_CALLS: AtomicUsize = AtomicUsize::new(0);
 pub(super) fn after_verified_retirement(deadline: Instant) {
@@ -114,7 +113,7 @@ fn drain_checked(
 
 #[test]
 fn checked_read_failure_stops_readers_without_replacing_the_original_retirement_path() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut fixture = Fixture::new();
     let controller = StreamController::for_runtime();
     let absolute = Instant::now() + Duration::from_secs(5);
@@ -159,7 +158,7 @@ fn checked_read_failure_stops_readers_without_replacing_the_original_retirement_
 }
 #[test]
 fn checked_callback_cancellation_is_observed_before_returning_available_bytes() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut fixture = Fixture::new();
     let controller = StreamController::for_runtime();
     let absolute = Instant::now() + Duration::from_secs(5);
@@ -182,7 +181,7 @@ fn checked_callback_cancellation_is_observed_before_returning_available_bytes() 
 }
 #[test]
 fn checked_observer_overrun_cannot_return_bytes_or_reset_the_work_deadline() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut fixture = Fixture::new();
     let controller = StreamController::for_runtime();
     let absolute = Instant::now() + Duration::from_secs(1);
@@ -206,7 +205,7 @@ fn checked_observer_overrun_cannot_return_bytes_or_reset_the_work_deadline() {
 }
 #[test]
 fn checked_storage_scan_rejects_genuine_sparse_excess_and_retires_owned_worker() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut fixture = Fixture::new();
     let controller = StreamController::for_runtime();
     let path = fixture.workspace.path.join("actual-sparse-excess");
@@ -304,7 +303,7 @@ fn checked_storage_scan_rejects_genuine_sparse_excess_and_retires_owned_worker()
 }
 #[test]
 fn checked_finish_callback_failure_stops_readers_and_requires_caller_retirement() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut fixture = Fixture::new();
     let controller = StreamController::for_runtime();
     let absolute = Instant::now() + Duration::from_secs(5);
@@ -330,7 +329,7 @@ fn checked_finish_callback_failure_stops_readers_and_requires_caller_retirement(
 }
 #[test]
 fn checked_finish_releases_verified_resources_before_rejecting_late_cleanup() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut fixture = Fixture::new();
     let controller = StreamController::for_runtime();
     let absolute = Instant::now() + Duration::from_secs(2);
@@ -366,7 +365,7 @@ fn checked_finish_releases_verified_resources_before_rejecting_late_cleanup() {
 }
 #[test]
 fn successful_checked_callbacks_keep_eof_receipt_deadline_and_context_intact() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut fixture = Fixture::new();
     let controller = StreamController::for_runtime();
     let absolute = Instant::now() + Duration::from_secs(5);
@@ -505,7 +504,7 @@ fn host_deadline_failure(
 }
 #[test]
 fn actual_child_env_isolation_and_default_inheritance_preserve_host_context() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut fixture = Fixture::new();
     let before = [
         "AURUM_FAKE_CREDENTIAL",
@@ -544,6 +543,8 @@ fn actual_child_env_isolation_and_default_inheritance_preserve_host_context() {
             host_deadline_failure(&mut host, original, &mut host_claim);
         }
         match fs::read(&ready) {
+            // fs::write creates the file before writing it, so empty means not ready yet.
+            Ok(bytes) if bytes.is_empty() => {}
             Ok(bytes) => {
                 assert_eq!(bytes, b"ready for live image binding");
                 break;

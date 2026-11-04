@@ -7,7 +7,6 @@ use std::io::Write;
 use std::path::{Component, Prefix};
 
 const CHILD: &str = "worker_windows::binary::owner_tests::fixture_child";
-static SERIAL: Mutex<()> = Mutex::new(());
 static SELECTED: Mutex<Option<Arc<Hooks>>> = Mutex::new(None);
 #[derive(Default)]
 struct Gate(Mutex<(bool, bool)>, Condvar);
@@ -276,7 +275,7 @@ fn drain(stream: &mut BinaryStream, deadline: Instant) {
 
 #[test]
 fn close_published_before_registration_prevents_original_driver_launch() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut f = Fixture::new();
     let c = StreamController::for_runtime();
     let h = Selected::new(&c, true);
@@ -310,7 +309,7 @@ fn close_published_before_registration_prevents_original_driver_launch() {
 }
 #[test]
 fn raw_finish_rejects_final_observer_crossing_original_retirement_bound() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut f = Fixture::new();
     let c = StreamController::for_runtime();
     let h = Selected::new(&c, false);
@@ -343,7 +342,7 @@ fn raw_finish_rejects_final_observer_crossing_original_retirement_bound() {
 }
 #[test]
 fn old_clone_cannot_reserve_or_enter_registered_start_after_close() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut f = Fixture::new();
     let c = StreamController::for_runtime();
     let old = c.clone();
@@ -357,7 +356,7 @@ fn old_clone_cannot_reserve_or_enter_registered_start_after_close() {
 }
 #[test]
 fn closed_reap_counts_collector_owned_reserved_entry() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let c = StreamController::for_runtime();
     let r = c
         .reserve(None, Instant::now() + Duration::from_secs(10))
@@ -370,7 +369,7 @@ fn closed_reap_counts_collector_owned_reserved_entry() {
 }
 #[test]
 fn pure_latched_deadline_clips_acceptance_before_control_binding_or_propagation() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let c = StreamController::for_runtime();
     let work = Instant::now() + Duration::from_secs(20);
     let r = c.reserve(None, work).unwrap();
@@ -394,7 +393,7 @@ fn pure_latched_deadline_clips_acceptance_before_control_binding_or_propagation(
 }
 #[test]
 fn reservation_keeps_exact_parent_and_foreign_binding_is_refused_without_cycle() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let parent = Arc::new(crate::workspace_access::Broker::default());
     let weak = Arc::downgrade(&parent);
     let c = parent.managed_compiler_controller().unwrap();
@@ -416,7 +415,7 @@ fn reservation_keeps_exact_parent_and_foreign_binding_is_refused_without_cycle()
 }
 #[test]
 fn post_conversion_result_gate_refuses_owner_close() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut f = Fixture::new();
     let c = StreamController::for_runtime();
     let result = command(&f, &c, Instant::now() + Duration::from_secs(15))
@@ -433,7 +432,7 @@ fn post_conversion_result_gate_refuses_owner_close() {
 }
 #[test]
 fn positive_retirement_recovers_both_committed_slots_without_eof_promotion() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut f = Fixture::new();
     let c = StreamController::for_runtime();
     let work = Instant::now() + Duration::from_secs(15);

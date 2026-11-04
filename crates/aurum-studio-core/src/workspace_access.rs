@@ -75,13 +75,27 @@ pub(crate) fn preflight(input: &Value) -> Result<(), String> {
                 fields(selection, &["root_id", "path"])?;
                 if selection.as_object().is_none_or(|row| row.len() != 2)
                     || input["compile_native"].as_bool() != Some(true)
-                { return Err("gdextension_manifest requires closed selection and compile_native:true".into()); }
-                let id = selection["root_id"].as_str().ok_or("manifest root_id must be a string")?;
-                let path = selection["path"].as_str().ok_or("manifest path must be a string")?;
-                if !relative(path) || !path.ends_with(".gdextension")
-                    || (id != "project" && !input["root_ids"].as_array()
-                        .is_some_and(|ids| ids.iter().any(|value| value.as_str() == Some(id))))
-                { return Err("invalid gdextension_manifest selected root or path".into()); }
+                {
+                    return Err(
+                        "gdextension_manifest requires closed selection and compile_native:true"
+                            .into(),
+                    );
+                }
+                let id = selection["root_id"]
+                    .as_str()
+                    .ok_or("manifest root_id must be a string")?;
+                let path = selection["path"]
+                    .as_str()
+                    .ok_or("manifest path must be a string")?;
+                if !relative(path)
+                    || !path.ends_with(".gdextension")
+                    || (id != "project"
+                        && !input["root_ids"]
+                            .as_array()
+                            .is_some_and(|ids| ids.iter().any(|value| value.as_str() == Some(id))))
+                {
+                    return Err("invalid gdextension_manifest selected root or path".into());
+                }
             }
             let ids = input["root_ids"]
                 .as_array()
@@ -240,7 +254,7 @@ impl OwnerConfirmation {
         self.digest == digest
     }
 }
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) fn simulated_private_confirmation_for_test(digest: &str) -> OwnerConfirmation {
     OwnerConfirmation {
         digest: digest.into(),
@@ -476,7 +490,9 @@ impl std::fmt::Debug for Broker {
 }
 impl Broker {
     #[cfg(windows)]
-    pub(crate) fn mark_parser_unconfirmed(&self) { self.unconfirmed.store(true,Ordering::Release); }
+    pub(crate) fn mark_parser_unconfirmed(&self) {
+        self.unconfirmed.store(true, Ordering::Release);
+    }
     #[cfg(windows)]
     pub(crate) fn managed_output_is_open(&self) -> bool {
         !self.closed.load(Ordering::Acquire) && !self.unconfirmed.load(Ordering::Acquire)
@@ -712,17 +728,22 @@ impl Broker {
             )
         }
     }
+    #[cfg(test)]
     pub(crate) fn validate(&self, root: &Path, input: &Value) -> Result<Value, String> {
         self.validate_with_parser(root, input, None)
     }
     pub(crate) fn validate_with_parser(
-        &self, root: &Path, input: &Value,
+        &self,
+        root: &Path,
+        input: &Value,
         permission: Option<&crate::native_operations::ConfigFileParsePermission<'_>>,
     ) -> Result<Value, String> {
         self.check()?;
         preflight(input)?;
         if input.get("gdextension_manifest").is_some() {
-            permission.ok_or("configfile_parser_execution_permission_required")?.check_request(self,input)?;
+            permission
+                .ok_or("configfile_parser_execution_permission_required")?
+                .check_request(self, input)?;
         }
         #[cfg(not(windows))]
         {
@@ -772,15 +793,20 @@ impl Broker {
                 });
             let budget = Budget::clipped(parent_deadline, &check)?;
             let parser_owner = if input.get("gdextension_manifest").is_some() {
-                let permission = permission.ok_or("configfile_parser_execution_permission_required")?;
+                let permission =
+                    permission.ok_or("configfile_parser_execution_permission_required")?;
                 permission.check_broker(self)?;
                 let controller = permission.controller()?;
                 let mut parent = crate::external_native::ParentDeadline::at(parent_deadline)?;
-                parent.bind_runtime_read_owner(permission.broker(),
-                    crate::external_workspace::ProposalLimits::from_budget(&budget))?;
-                permission.check(&parent,&controller)?;
-                Some((parent,controller))
-            } else { None };
+                parent.bind_runtime_read_owner(
+                    permission.broker(),
+                    crate::external_workspace::ProposalLimits::from_budget(&budget),
+                )?;
+                permission.check(&parent, &controller)?;
+                Some((parent, controller))
+            } else {
+                None
+            };
             let revision =
                 Revision::new(&crate::external_workspace::current_revision(root, &budget)?)?;
             let project = ImportedProject::bind(root, revision.clone(), &budget)?;
@@ -836,12 +862,13 @@ impl Broker {
             } else {
                 crate::candidate_workspace::Workspace::for_test_project(root)?
             };
-            if let Some((parent,controller)) = &parser_owner {
-                let permission = permission.ok_or("configfile_parser_execution_permission_required")?;
-                permission.check(parent,controller)?;
+            if let Some((parent, controller)) = &parser_owner {
+                let permission =
+                    permission.ok_or("configfile_parser_execution_permission_required")?;
+                permission.check(parent, controller)?;
                 let selection = reference("gdextension_manifest")?;
                 let mut value = crate::external_workspace::validate_configfile_operation(
-                    workspace,&plan,&selection,parent,controller,&budget,permission,
+                    workspace, &plan, &selection, parent, controller, &budget, permission,
                 )?;
                 value["revision"] = json!(revision.as_str());
                 return Ok(value);
@@ -2116,35 +2143,54 @@ mod tests {
         let mut selected = request.clone();
         selected["gdextension_manifest"]["root_id"] = selected["root_ids"][0].clone();
         preflight(&selected).unwrap();
-        for selection in [json!(null),json!([]),json!({}),
+        for selection in [
+            json!(null),
+            json!([]),
+            json!({}),
             json!({"root_id":"project","path":"bin/checked.gdextension","extra":true}),
             json!({"root_id":"b".repeat(32),"path":"bin/checked.gdextension"}),
             json!({"root_id":"project","path":"../checked.gdextension"}),
             json!({"root_id":"project","path":"A:/checked.gdextension"}),
-            json!({"root_id":"project","path":"bin/checked.dll"})]
-        { let mut invalid=request.clone(); invalid["gdextension_manifest"]=selection; assert!(preflight(&invalid).is_err()); }
-        for value in [json!(false),json!(null),json!(1)] {
-            let mut invalid=request.clone();invalid["compile_native"]=value;assert!(preflight(&invalid).is_err());
+            json!({"root_id":"project","path":"bin/checked.dll"}),
+        ] {
+            let mut invalid = request.clone();
+            invalid["gdextension_manifest"] = selection;
+            assert!(preflight(&invalid).is_err());
         }
-        let mut cargo=request.clone();cargo["member"]["root_id"]=json!("project");
+        for value in [json!(false), json!(null), json!(1)] {
+            let mut invalid = request.clone();
+            invalid["compile_native"] = value;
+            assert!(preflight(&invalid).is_err());
+        }
+        let mut cargo = request.clone();
+        cargo["member"]["root_id"] = json!("project");
         assert!(preflight(&cargo).is_err());
     }
     #[test]
     fn configfile_parser_compatibility_entry_refuses_permission_before_source_io() {
         let broker = Broker::default();
         let missing = Path::new("absent-configfile-source-must-not-be-opened");
-        assert_eq!(broker.validate(missing,&configfile_parser_request()).unwrap_err(),
-            "configfile_parser_execution_permission_required");
+        assert_eq!(
+            broker
+                .validate(missing, &configfile_parser_request())
+                .unwrap_err(),
+            "configfile_parser_execution_permission_required"
+        );
         assert!(!missing.exists());
     }
     #[cfg(windows)]
     #[test]
     fn configfile_parser_unconfirmed_peer_fence_blocks_further_staging() {
-        let broker=Arc::new(Broker::default());
+        let broker = Arc::new(Broker::default());
         broker.check().unwrap();
         broker.mark_parser_unconfirmed();
-        assert!(broker.validate(Path::new("absent-parser-reentry"),&configfile_parser_request())
-            .unwrap_err().contains("unconfirmed"));
+        assert!(broker
+            .validate(
+                Path::new("absent-parser-reentry"),
+                &configfile_parser_request()
+            )
+            .unwrap_err()
+            .contains("unconfirmed"));
         assert!(broker.managed_compiler_controller().is_err());
     }
     #[test]

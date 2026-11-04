@@ -46,11 +46,16 @@ impl ConfigFileParsePermission<'_> {
     pub(crate) fn broker(&self) -> &Arc<crate::workspace_access::Broker> {
         &self.runtime.workspace_access
     }
-    pub(crate) fn check_broker(&self, broker: &crate::workspace_access::Broker) -> Result<(), String> {
+    pub(crate) fn check_broker(
+        &self,
+        broker: &crate::workspace_access::Broker,
+    ) -> Result<(), String> {
         if self.runtime.closed.load(Ordering::Acquire)
             || !self.runtime.is_controller_for(&self.root)
             || !std::ptr::eq(Arc::as_ptr(self.broker()), broker)
-        { return Err("configfile_parser_original_runtime_permission_required".into()); }
+        {
+            return Err("configfile_parser_original_runtime_permission_required".into());
+        }
         Ok(())
     }
     pub(crate) fn check_manifest(&self, root: &str, path: &str) -> Result<(), String> {
@@ -59,11 +64,23 @@ impl ConfigFileParsePermission<'_> {
         }
         Ok(())
     }
-    pub(crate) fn check_request(&self, broker:&crate::workspace_access::Broker, input:&Value) -> Result<(),String> {
+    pub(crate) fn check_request(
+        &self,
+        broker: &crate::workspace_access::Broker,
+        input: &Value,
+    ) -> Result<(), String> {
         self.check_broker(broker)?;
-        if input["compile_native"].as_bool()!=Some(true) { return Err("configfile_parser_native_compile_required".into()); }
-        self.check_manifest(input["gdextension_manifest"]["root_id"].as_str().ok_or("configfile_parser_selection")?,
-            input["gdextension_manifest"]["path"].as_str().ok_or("configfile_parser_selection")?)
+        if input["compile_native"].as_bool() != Some(true) {
+            return Err("configfile_parser_native_compile_required".into());
+        }
+        self.check_manifest(
+            input["gdextension_manifest"]["root_id"]
+                .as_str()
+                .ok_or("configfile_parser_selection")?,
+            input["gdextension_manifest"]["path"]
+                .as_str()
+                .ok_or("configfile_parser_selection")?,
+        )
     }
     #[cfg(windows)]
     pub(crate) fn controller(&self) -> Result<crate::worker_windows::StreamController, String> {
@@ -71,24 +88,32 @@ impl ConfigFileParsePermission<'_> {
         self.runtime.managed_native_output(&self.root)
     }
     #[cfg(windows)]
-    pub(crate) fn mark_unconfirmed(&self) { self.broker().mark_parser_unconfirmed(); }
+    pub(crate) fn mark_unconfirmed(&self) {
+        self.broker().mark_parser_unconfirmed();
+    }
     #[cfg(windows)]
     pub(crate) fn check(
-        &self, parent: &crate::external_native::ParentDeadline,
+        &self,
+        parent: &crate::external_native::ParentDeadline,
         controller: &crate::worker_windows::StreamController,
     ) -> Result<(), String> {
         self.check_broker(self.broker())?;
         parent.check_read_controller(controller)?;
-        self.runtime.check_managed_native_output(&self.root, controller)
+        self.runtime
+            .check_managed_native_output(&self.root, controller)
     }
     #[cfg(windows)]
     pub(crate) fn hold_engine<'a>(
-        &'a self, parent: &'a crate::external_native::ParentDeadline,
+        &'a self,
+        parent: &'a crate::external_native::ParentDeadline,
         controller: &'a crate::worker_windows::StreamController,
     ) -> Result<crate::external_native::HeldConfigFileEngine<'a>, String> {
         self.check(parent, controller)?;
         crate::external_native::HeldConfigFileEngine::hold_configured(
-            self.runtime, &self.root, parent, controller,
+            self.runtime,
+            &self.root,
+            parent,
+            controller,
         )
     }
 }
@@ -229,14 +254,22 @@ impl NativeRuntime {
         &self,
         root: &Path,
     ) -> Result<
-        (&Arc<crate::workspace_access::Broker>, crate::worker_windows::StreamController),
+        (
+            &Arc<crate::workspace_access::Broker>,
+            crate::worker_windows::StreamController,
+        ),
         String,
     > {
         let controller = self.managed_native_output(root)?;
         self.check_managed_native_output(root, &controller)?;
         Ok((&self.workspace_access, controller))
     }
-    pub(crate) fn workspace_access(&self, root: &Path, input: &Value, write_authorized: bool) -> Result<Value, String> {
+    pub(crate) fn workspace_access(
+        &self,
+        root: &Path,
+        input: &Value,
+        write_authorized: bool,
+    ) -> Result<Value, String> {
         if !write_authorized && input["op"] != "workspace_access_status" {
             return Err("workspace action requires write permission".into());
         }
@@ -259,14 +292,24 @@ impl NativeRuntime {
                     .ok_or("invalid request identity")?,
             ),
             "external_workspace_validate" => {
-                let permission = if let Some(selection)=input.get("gdextension_manifest") {
+                let permission = if let Some(selection) = input.get("gdextension_manifest") {
                     Some(ConfigFileParsePermission {
-                        runtime:self,root:root.to_path_buf(),
-                        manifest_root:selection["root_id"].as_str().ok_or("configfile_parser_selection")?.to_owned(),
-                        manifest_path:selection["path"].as_str().ok_or("configfile_parser_selection")?.to_owned(),
+                        runtime: self,
+                        root: root.to_path_buf(),
+                        manifest_root: selection["root_id"]
+                            .as_str()
+                            .ok_or("configfile_parser_selection")?
+                            .to_owned(),
+                        manifest_path: selection["path"]
+                            .as_str()
+                            .ok_or("configfile_parser_selection")?
+                            .to_owned(),
                     })
-                } else {None};
-                self.workspace_access.validate_with_parser(root, input, permission.as_ref())
+                } else {
+                    None
+                };
+                self.workspace_access
+                    .validate_with_parser(root, input, permission.as_ref())
             }
             _ => Err("unknown workspace access operation".into()),
         }
@@ -739,18 +782,31 @@ mod tests {
     }
     #[test]
     fn configfile_parser_read_only_and_foreign_broker_refuse_before_allocation() {
-        let root = std::env::temp_dir().join(format!("absent-parser-{}",crate::random::session_id()));
+        let root =
+            std::env::temp_dir().join(format!("absent-parser-{}", crate::random::session_id()));
         let runtime = NativeRuntime::controller(&root);
         let input = json!({"op":"external_workspace_validate","gdextension_manifest":{}});
-        assert!(crate::project_ops::execute_in_runtime(&root,&input,true,&runtime)
-            .unwrap_err().contains("write permission"));
-        assert!(runtime.workspace_access(&root,&input,false).unwrap_err().contains("write permission"));
-        let permission = ConfigFileParsePermission {runtime:&runtime,root:root.clone(),
-            manifest_root:"project".into(),manifest_path:"bin/checked.gdextension".into()};
+        assert!(
+            crate::project_ops::execute_in_runtime(&root, &input, true, &runtime)
+                .unwrap_err()
+                .contains("write permission")
+        );
+        assert!(runtime
+            .workspace_access(&root, &input, false)
+            .unwrap_err()
+            .contains("write permission"));
+        let permission = ConfigFileParsePermission {
+            runtime: &runtime,
+            root: root.clone(),
+            manifest_root: "project".into(),
+            manifest_path: "bin/checked.gdextension".into(),
+        };
         let foreign = crate::workspace_access::Broker::default();
         assert!(permission.check_broker(&foreign).is_err());
         permission.check_broker(&runtime.workspace_access).unwrap();
-        assert!(permission.check_manifest("project","bin/other.gdextension").is_err());
+        assert!(permission
+            .check_manifest("project", "bin/other.gdextension")
+            .is_err());
         runtime.close();
         assert!(permission.check_broker(&runtime.workspace_access).is_err());
         assert!(!root.exists());
@@ -758,17 +814,24 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn original_managed_output_test_borrow_uses_original_issuer_and_preserves_root() {
-        let root = std::env::temp_dir().join(format!("original-managed-output-{}", crate::random::session_id()));
+        let root = std::env::temp_dir().join(format!(
+            "original-managed-output-{}",
+            crate::random::session_id()
+        ));
         std::fs::create_dir(&root).unwrap();
         let sentinel = root.join("unchanged.bin");
         std::fs::write(&sentinel, b"actual original runtime IO owner, no process").unwrap();
         let before = std::fs::read(&sentinel).unwrap();
         let runtime = NativeRuntime::controller(&root);
-        assert!(runtime.original_managed_output_for_test(&root.join("foreign")).is_err());
+        assert!(runtime
+            .original_managed_output_for_test(&root.join("foreign"))
+            .is_err());
         let (broker, controller) = runtime.original_managed_output_for_test(&root).unwrap();
         assert!(Arc::ptr_eq(broker, &runtime.workspace_access));
         controller.check_parent(broker).unwrap();
-        runtime.check_managed_native_output(&root, &controller).unwrap();
+        runtime
+            .check_managed_native_output(&root, &controller)
+            .unwrap();
         assert_eq!(controller.retained(), 0);
         runtime.close();
         assert!(!broker.managed_output_is_open());

@@ -229,6 +229,8 @@ impl<'a, 'b> ExternalRevisionIo<'a, 'b> {
     ) -> Result<(), String> {
         self.inner.delete_target(path, expected)
     }
+    // No caller or test reaches this yet; it belongs to the unconnected publication surface.
+    #[allow(dead_code)]
     pub(crate) fn delete_slot(&self, name: &str, expected: &ExternalObject) -> Result<(), String> {
         self.inner.delete_slot(name, expected)
     }
@@ -1573,7 +1575,10 @@ impl PreparedSourcePublication {
         check_originals(&self.roots, &candidate.proposal.staged, budget)?;
         check_proposed(&candidate.proposal.staged, budget)?;
         candidate.compiler_provenance.recheck(
-            &candidate.proposal.staged, &candidate.artifact, &candidate.artifact_hash, budget,
+            &candidate.proposal.staged,
+            &candidate.artifact,
+            &candidate.artifact_hash,
+            budget,
         )?;
         if hash_validated_artifact(&candidate.artifact, &candidate.artifact_guard, budget)?
             != candidate.artifact_hash
@@ -1698,14 +1703,29 @@ pub(crate) struct SourceProposal {
     limits: ProposalLimits,
     native_parent_origin: Option<crate::external_native::NativeParentOrigin>,
 }
+// The small variant exists only in test builds, so production has one variant.
+#[cfg_attr(test, allow(clippy::large_enum_variant))]
 enum CandidateCompilerProvenance {
     Real(crate::external_native::NativeCompilationProvenance),
     #[cfg(test)]
     SyntheticAuthorityOnly,
 }
 impl CandidateCompilerProvenance {
+    fn real(&self) -> Result<&crate::external_native::NativeCompilationProvenance, String> {
+        match self {
+            Self::Real(value) => Ok(value),
+            #[cfg(test)]
+            Self::SyntheticAuthorityOnly => {
+                Err("external_source_synthetic_provenance_refused".into())
+            }
+        }
+    }
     fn recheck(
-        &self, staged: &StagedSources, artifact: &Path, artifact_hash: &str, budget: &Budget<'_>,
+        &self,
+        staged: &StagedSources,
+        artifact: &Path,
+        artifact_hash: &str,
+        budget: &Budget<'_>,
     ) -> Result<(), String> {
         match self {
             Self::Real(value) => value.recheck(staged, artifact, artifact_hash, budget),
@@ -1717,7 +1737,9 @@ impl CandidateCompilerProvenance {
         match self {
             Self::Real(value) => Ok(value.digest()),
             #[cfg(test)]
-            Self::SyntheticAuthorityOnly => Err("external_source_synthetic_provenance_refused".into()),
+            Self::SyntheticAuthorityOnly => {
+                Err("external_source_synthetic_provenance_refused".into())
+            }
         }
     }
 }
@@ -1745,40 +1767,57 @@ pub(crate) struct ExternalArtifactCustody<'a> {
 }
 
 pub(crate) fn validate_configfile_operation(
-    mut workspace: crate::candidate_workspace::Workspace, plan: &StagingPlan, selection: &ManifestRef,
-    parent: &crate::external_native::ParentDeadline, controller: &crate::worker_windows::StreamController,
-    budget: &Budget<'_>, permission: &crate::native_operations::ConfigFileParsePermission<'_>,
+    mut workspace: crate::candidate_workspace::Workspace,
+    plan: &StagingPlan,
+    selection: &ManifestRef,
+    parent: &crate::external_native::ParentDeadline,
+    controller: &crate::worker_windows::StreamController,
+    budget: &Budget<'_>,
+    permission: &crate::native_operations::ConfigFileParsePermission<'_>,
 ) -> Result<serde_json::Value, String> {
-    let check = || { budget.check()?; permission.check(parent,controller) };
+    let check = || {
+        budget.check()?;
+        permission.check(parent, controller)
+    };
     let checked = budget.with_check(&check);
     check()?;
-    let staged = { let envelope = workspace.source_envelope(checked.deadline())?; plan.stage_owned(&envelope,&checked)? };
+    let staged = {
+        let envelope = workspace.source_envelope(checked.deadline())?;
+        plan.stage_owned(&envelope, &checked)?
+    };
     let rows: Vec<_> = staged.roots.iter().map(|row| {
         let slot = row.staged.strip_prefix(&staged.envelope).map_err(|_| "configfile_parser_root_escaped")?;
         Ok(serde_json::json!({"root_id":row.root_id.as_str(),"slot":slot.to_string_lossy().replace('\\',"/"),
             "permission":if row.root_id.as_str()=="project" {"project_source_read"} else {"dependency_read"},
             "sha256":row.fingerprint.sha256,"files":row.fingerprint.files,"bytes":row.fingerprint.bytes}))
     }).collect::<Result<_,String>>()?;
-    let proposal = SourceProposal::from_read_staging(staged,parent,&checked)?;
-    let validation = proposal.validate_read_with_receipt(&mut workspace,controller,parent);
-    let (candidate,mut value) = match validation {
+    let proposal = SourceProposal::from_read_staging(staged, parent, &checked)?;
+    let validation = proposal.validate_read_with_receipt(&mut workspace, controller, parent);
+    let (candidate, mut value) = match validation {
         Ok(value) => value,
         Err(error) => {
-            if workspace.lifetime.unresolved() { permission.mark_unconfirmed(); }
-            if workspace.clean().is_err() { return Err("configfile_parser_compiler_cleanup_unconfirmed".into()); }
+            if workspace.lifetime.unresolved() {
+                permission.mark_unconfirmed();
+            }
+            if workspace.clean().is_err() {
+                return Err("configfile_parser_compiler_cleanup_unconfirmed".into());
+            }
             return Err(error);
         }
     };
-    let mut custody = match candidate.into_artifact_custody(workspace,parent,controller,&checked) {
+    let mut custody = match candidate.into_artifact_custody(workspace, parent, controller, &checked)
+    {
         Ok(value) => value,
-        Err((error,candidate,mut workspace)) => {
+        Err((error, candidate, mut workspace)) => {
             drop(candidate);
-            if workspace.clean().is_err() { return Err("configfile_parser_custody_cleanup_unconfirmed".into()); }
+            if workspace.clean().is_err() {
+                return Err("configfile_parser_custody_cleanup_unconfirmed".into());
+            }
             return Err(error);
         }
     };
     custody.place_private_artifact()?;
-    custody.prepare_gdextension_binding(&selection.root_id,&selection.path)?;
+    custody.prepare_gdextension_binding(&selection.root_id, &selection.path)?;
     let comparison = custody.compare_configfile(permission)?;
     custody.finish_read_validation()?;
     check()?;
@@ -1794,13 +1833,16 @@ pub(crate) fn validate_configfile_operation(
 }
 impl ValidatedSourceCandidate {
     /// Move both original inputs. Refusal returns both without cleanup or renewal.
+    // Refusal must hand both owned inputs back to the caller, so the error stays large.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn into_artifact_custody<'a>(
         self,
         workspace: crate::candidate_workspace::Workspace,
         parent: &'a crate::external_native::ParentDeadline,
         controller: &'a crate::worker_windows::StreamController,
         budget: &Budget<'a>,
-    ) -> Result<ExternalArtifactCustody<'a>, (String, Self, crate::candidate_workspace::Workspace)> {
+    ) -> Result<ExternalArtifactCustody<'a>, (String, Self, crate::candidate_workspace::Workspace)>
+    {
         let custody = ExternalArtifactCustody {
             private_artifact: None,
             gdextension_binding: None,
@@ -1813,7 +1855,11 @@ impl ValidatedSourceCandidate {
         match custody.recheck() {
             Ok(()) => Ok(custody),
             Err(error) => {
-                let ExternalArtifactCustody { candidate, workspace, .. } = custody;
+                let ExternalArtifactCustody {
+                    candidate,
+                    workspace,
+                    ..
+                } = custody;
                 Err((error, candidate, workspace))
             }
         }
@@ -1821,13 +1867,22 @@ impl ValidatedSourceCandidate {
 }
 impl ExternalArtifactCustody<'_> {
     pub(crate) fn compare_configfile(
-        &self, permission: &crate::native_operations::ConfigFileParsePermission<'_>,
+        &self,
+        permission: &crate::native_operations::ConfigFileParsePermission<'_>,
     ) -> Result<serde_json::Value, String> {
         self.recheck_gdextension_binding()?;
-        let selected = &self.gdextension_binding.as_ref().ok_or("configfile_parser_binding_missing")?.selected;
-        let input = ConfigFileInput {selected};
+        let selected = &self
+            .gdextension_binding
+            .as_ref()
+            .ok_or("configfile_parser_binding_missing")?
+            .selected;
+        let input = ConfigFileInput { selected };
         let mut value = crate::external_native::compare_configfile(
-            &self.workspace, &input, self.parent, self.controller, permission,
+            &self.workspace,
+            &input,
+            self.parent,
+            self.controller,
+            permission,
         )?;
         self.recheck_gdextension_binding()?;
         value["manifest"] = selected.manifest.digest_value();
@@ -1838,8 +1893,16 @@ impl ExternalArtifactCustody<'_> {
     fn finish_read_validation(self) -> Result<(), String> {
         self.budget.check()?;
         self.parent.check_read_controller(self.controller)?;
-        let Self {private_artifact,gdextension_binding,candidate,mut workspace,..} = self;
-        drop(private_artifact); drop(gdextension_binding); drop(candidate);
+        let Self {
+            private_artifact,
+            gdextension_binding,
+            candidate,
+            mut workspace,
+            ..
+        } = self;
+        drop(private_artifact);
+        drop(gdextension_binding);
+        drop(candidate);
         workspace.clean()
     }
     /// Original custody status only, without issuing loading or publication rights.
@@ -1859,20 +1922,26 @@ impl ExternalArtifactCustody<'_> {
         }
         self.candidate.proposal.limits.check_not_wider(&checked)?;
         self.candidate.ownership.check_workspace_owner(
-            &self.workspace, &self.candidate.proposal.staged.envelope, &checked,
+            &self.workspace,
+            &self.candidate.proposal.staged.envelope,
+            &checked,
         )?;
         // A test-only authority marker is never a positive compiler witness.
         self.candidate.compiler_provenance.real_digest()?;
         self.candidate.compiler_provenance.recheck(
-            &self.candidate.proposal.staged, &self.candidate.artifact,
-            &self.candidate.artifact_hash, &checked,
+            &self.candidate.proposal.staged,
+            &self.candidate.artifact,
+            &self.candidate.artifact_hash,
+            &checked,
         )?;
         if stamp(&self.candidate.artifact_guard)?.bytes > checked.max_file {
             return Err("external_artifact_custody_original_file_limit".into());
         }
         check_proposed(&self.candidate.proposal.staged, &checked)?;
         if hash_validated_artifact(
-            &self.candidate.artifact, &self.candidate.artifact_guard, &checked,
+            &self.candidate.artifact,
+            &self.candidate.artifact_guard,
+            &checked,
         )? != self.candidate.artifact_hash
         {
             return Err("external_artifact_custody_held_artifact_changed".into());
@@ -1888,13 +1957,19 @@ impl ExternalArtifactCustody<'_> {
         }
         // Rechecks also hash the original. Preserve its shared cursor across the
         // entire operation, including cancellation and post-copy refusals.
-        let mut cursor = self.candidate.artifact_guard.try_clone()
+        let mut cursor = self
+            .candidate
+            .artifact_guard
+            .try_clone()
             .map_err(|_| "external_private_artifact_cursor_unavailable")?;
         let position = std::io::Seek::stream_position(&mut cursor)
             .map_err(|_| "external_private_artifact_cursor_unavailable")?;
         let result = self.place_private_artifact_inner();
         restore_private_artifact_cursor(&mut cursor, position, result, &self.budget)?;
-        self.private_artifact.as_mut().ok_or("external_private_artifact_missing")?.complete = true;
+        self.private_artifact
+            .as_mut()
+            .ok_or("external_private_artifact_missing")?
+            .complete = true;
         Ok(())
     }
 
@@ -1902,40 +1977,69 @@ impl ExternalArtifactCustody<'_> {
         self.recheck()?;
         let before = stamp(&self.candidate.artifact_guard)?;
         let used = crate::candidate_workspace::usage_with_budget(
-            &self.workspace.path, crate::candidate_workspace::WORKSPACE_BYTES,
-            self.budget.deadline().saturating_duration_since(Instant::now()),
+            &self.workspace.path,
+            crate::candidate_workspace::WORKSPACE_BYTES,
+            self.budget
+                .deadline()
+                .saturating_duration_since(Instant::now()),
         )?;
         private_artifact_admission(before.bytes, used, &self.budget)?;
         let slot = self.candidate.ownership.private_artifact_slot(
-            &self.workspace, &self.candidate.proposal.staged.envelope, &self.budget,
+            &self.workspace,
+            &self.candidate.proposal.staged.envelope,
+            &self.budget,
         )?;
         // Preregister the destination before CreateNew; never delete or retry a
         // refused/partial output by guessing its path or dropping original custody.
         self.private_artifact = Some(PrivateArtifactPlacement {
-            slot, writer: None, expected: None, complete: false,
+            slot,
+            writer: None,
+            expected: None,
+            complete: false,
         });
         {
-            let placement = self.private_artifact.as_mut().ok_or("external_private_artifact_missing")?;
+            let placement = self
+                .private_artifact
+                .as_mut()
+                .ok_or("external_private_artifact_missing")?;
             placement.writer = Some(placement.slot.create_new(
-                &self.candidate.ownership, &self.workspace,
-                &self.candidate.proposal.staged.envelope, &self.budget,
+                &self.candidate.ownership,
+                &self.workspace,
+                &self.candidate.proposal.staged.envelope,
+                &self.budget,
             )?);
-            let PrivateArtifactPlacement { slot, writer, expected, .. } = placement;
+            let PrivateArtifactPlacement {
+                slot,
+                writer,
+                expected,
+                ..
+            } = placement;
             let check = || {
                 self.budget.check()?;
                 self.parent.check_read_controller(self.controller)?;
-                slot.recheck(&self.candidate.ownership, &self.workspace,
-                    &self.candidate.proposal.staged.envelope, &self.budget)
+                slot.recheck(
+                    &self.candidate.ownership,
+                    &self.workspace,
+                    &self.candidate.proposal.staged.envelope,
+                    &self.budget,
+                )
             };
             let checked = self.budget.with_check(&check);
             *expected = Some(copy_checked_private_artifact(
-                &self.candidate.artifact, &self.candidate.artifact_guard,
-                &before, &self.candidate.artifact_hash, slot.path(),
-                writer.as_mut().ok_or("external_private_artifact_writer_missing")?, &checked,
+                &self.candidate.artifact,
+                &self.candidate.artifact_guard,
+                &before,
+                &self.candidate.artifact_hash,
+                slot.path(),
+                writer
+                    .as_mut()
+                    .ok_or("external_private_artifact_writer_missing")?,
+                &checked,
             )?);
             checked.check()?;
             crate::candidate_workspace::usage_with_budget(
-                &self.workspace.path, crate::candidate_workspace::WORKSPACE_BYTES,
+                &self.workspace.path,
+                crate::candidate_workspace::WORKSPACE_BYTES,
                 checked.deadline().saturating_duration_since(Instant::now()),
             )?;
         }
@@ -1944,20 +2048,42 @@ impl ExternalArtifactCustody<'_> {
 
     /// Check the same retained writer and original custody, never a reopened DLL.
     pub(crate) fn recheck_private_artifact(&self) -> Result<(), String> {
-        let mut cursor = self.candidate.artifact_guard.try_clone()
+        let mut cursor = self
+            .candidate
+            .artifact_guard
+            .try_clone()
             .map_err(|_| "external_private_artifact_cursor_unavailable")?;
         let position = std::io::Seek::stream_position(&mut cursor)
             .map_err(|_| "external_private_artifact_cursor_unavailable")?;
         let result = (|| {
             self.recheck()?;
-            let placement = self.private_artifact.as_ref().ok_or("external_private_artifact_missing")?;
-            if !placement.complete { return Err("external_private_artifact_incomplete".into()); }
-            placement.slot.recheck(&self.candidate.ownership, &self.workspace,
-                &self.candidate.proposal.staged.envelope, &self.budget)?;
-            let writer = placement.writer.as_ref().ok_or("external_private_artifact_writer_missing")?;
-            check_private_artifact_copy(placement.slot.path(), writer,
-                placement.expected.as_ref().ok_or("external_private_artifact_incomplete")?,
-                &self.candidate.artifact_hash, &self.budget)?;
+            let placement = self
+                .private_artifact
+                .as_ref()
+                .ok_or("external_private_artifact_missing")?;
+            if !placement.complete {
+                return Err("external_private_artifact_incomplete".into());
+            }
+            placement.slot.recheck(
+                &self.candidate.ownership,
+                &self.workspace,
+                &self.candidate.proposal.staged.envelope,
+                &self.budget,
+            )?;
+            let writer = placement
+                .writer
+                .as_ref()
+                .ok_or("external_private_artifact_writer_missing")?;
+            check_private_artifact_copy(
+                placement.slot.path(),
+                writer,
+                placement
+                    .expected
+                    .as_ref()
+                    .ok_or("external_private_artifact_incomplete")?,
+                &self.candidate.artifact_hash,
+                &self.budget,
+            )?;
             self.recheck()
         })();
         restore_private_artifact_cursor(&mut cursor, position, result, &self.budget)
@@ -1966,62 +2092,79 @@ impl ExternalArtifactCustody<'_> {
     /// Prepare only a quoted Windows-debug/x86_64 manifest-to-private-DLL plan.
     /// Selection names held source, never a caller-chosen output destination.
     pub(crate) fn prepare_gdextension_binding(
-        &mut self, root: &RootId, manifest_relative: &str,
+        &mut self,
+        root: &RootId,
+        manifest_relative: &str,
     ) -> Result<&PrivateGdExtensionBinding, String> {
         if self.gdextension_binding.is_some() {
             return Err("external_private_binding_already_prepared".into());
         }
         self.recheck_private_artifact()?;
         let binding = {
-            let check = || { self.budget.check()?; self.parent.check_read_controller(self.controller) };
-            let checked = self.budget.with_check(&check);
-            let provenance = match &self.candidate.compiler_provenance {
-                CandidateCompilerProvenance::Real(value) => value,
-                #[cfg(test)]
-                CandidateCompilerProvenance::SyntheticAuthorityOnly =>
-                    return Err("external_source_synthetic_provenance_refused".into()),
+            let check = || {
+                self.budget.check()?;
+                self.parent.check_read_controller(self.controller)
             };
+            let checked = self.budget.with_check(&check);
+            let provenance = self.candidate.compiler_provenance.real()?;
             let (inputs, host) = provenance.held_binding_inputs();
             if host != "x86_64-pc-windows-msvc" {
                 return Err("external_private_binding_host_unsupported".into());
             }
             let selected = inputs.gdextension_manifest(root, manifest_relative, &checked)?;
-            let writer = self.private_artifact.as_ref()
+            let writer = self
+                .private_artifact
+                .as_ref()
                 .and_then(|placement| placement.writer.as_ref())
                 .ok_or("external_private_artifact_writer_missing")?;
             let direct_export = self.inspect_private_named_export(&selected.entry_symbol)?;
             checked.check()?;
             PrivateGdExtensionBinding {
-                selected, provenance_digest: provenance.digest().to_owned(),
-                placed_identity: file_identity(writer)?, direct_export,
+                selected,
+                provenance_digest: provenance.digest().to_owned(),
+                placed_identity: file_identity(writer)?,
+                direct_export,
             }
         };
         self.recheck_private_artifact()?;
         self.gdextension_binding = Some(binding);
-        self.gdextension_binding.as_ref().ok_or_else(|| "external_private_binding_missing".into())
+        self.gdextension_binding
+            .as_ref()
+            .ok_or_else(|| "external_private_binding_missing".into())
     }
 
     pub(crate) fn recheck_gdextension_binding(&self) -> Result<(), String> {
         self.recheck_private_artifact()?;
-        let check = || { self.budget.check()?; self.parent.check_read_controller(self.controller) };
-        let checked = self.budget.with_check(&check);
-        let binding = self.gdextension_binding.as_ref().ok_or("external_private_binding_missing")?;
-        let provenance = match &self.candidate.compiler_provenance {
-            CandidateCompilerProvenance::Real(value) => value,
-            #[cfg(test)]
-            CandidateCompilerProvenance::SyntheticAuthorityOnly =>
-                return Err("external_source_synthetic_provenance_refused".into()),
+        let check = || {
+            self.budget.check()?;
+            self.parent.check_read_controller(self.controller)
         };
+        let checked = self.budget.with_check(&check);
+        let binding = self
+            .gdextension_binding
+            .as_ref()
+            .ok_or("external_private_binding_missing")?;
+        let provenance = self.candidate.compiler_provenance.real()?;
         let (inputs, host) = provenance.held_binding_inputs();
-        let writer = self.private_artifact.as_ref().and_then(|placement| placement.writer.as_ref())
+        let writer = self
+            .private_artifact
+            .as_ref()
+            .and_then(|placement| placement.writer.as_ref())
             .ok_or("external_private_artifact_writer_missing")?;
-        if host != "x86_64-pc-windows-msvc" || binding.provenance_digest != provenance.digest()
+        if host != "x86_64-pc-windows-msvc"
+            || binding.provenance_digest != provenance.digest()
             || binding.placed_identity != file_identity(writer)?
-        { return Err("external_private_binding_owner_changed".into()); }
+        {
+            return Err("external_private_binding_owner_changed".into());
+        }
         let selected = inputs.gdextension_manifest(
-            &binding.selected.manifest.root, &binding.selected.manifest.relative, &checked,
+            &binding.selected.manifest.root,
+            &binding.selected.manifest.relative,
+            &checked,
         )?;
-        if selected != binding.selected { return Err("external_private_binding_changed".into()); }
+        if selected != binding.selected {
+            return Err("external_private_binding_changed".into());
+        }
         if self.inspect_private_named_export(&selected.entry_symbol)? != binding.direct_export {
             return Err("external_private_binding_export_changed".into());
         }
@@ -2031,22 +2174,32 @@ impl ExternalArtifactCustody<'_> {
 
     /// Read only the same retained placed writer. Even an export refusal is
     /// followed by original custody/hash checks, not a retry or a new budget.
-    fn inspect_private_named_export(&self, name: &str) -> Result<crate::external_native::NamedPeExport, String> {
+    fn inspect_private_named_export(
+        &self,
+        name: &str,
+    ) -> Result<crate::external_native::NamedPeExport, String> {
         self.recheck_private_artifact()?;
         let result = (|| {
-            let check = || { self.budget.check()?; self.parent.check_read_controller(self.controller) };
-            let checked = self.budget.with_check(&check);
-            let provenance = match &self.candidate.compiler_provenance {
-                CandidateCompilerProvenance::Real(value) => value,
-                #[cfg(test)]
-                CandidateCompilerProvenance::SyntheticAuthorityOnly =>
-                    return Err("external_source_synthetic_provenance_refused".into()),
+            let check = || {
+                self.budget.check()?;
+                self.parent.check_read_controller(self.controller)
             };
+            let checked = self.budget.with_check(&check);
+            let provenance = self.candidate.compiler_provenance.real()?;
             let (_, host) = provenance.held_binding_inputs();
-            let writer = self.private_artifact.as_ref().and_then(|placement| placement.writer.as_ref())
+            let writer = self
+                .private_artifact
+                .as_ref()
+                .and_then(|placement| placement.writer.as_ref())
                 .ok_or("external_private_artifact_writer_missing")?;
             let mut reader = writer;
-            crate::external_native::named_direct_pe_export(&mut reader, stamp(writer)?.bytes, host, name, &checked)
+            crate::external_native::named_direct_pe_export(
+                &mut reader,
+                stamp(writer)?.bytes,
+                host,
+                name,
+                &checked,
+            )
         })();
         self.recheck_private_artifact()?;
         result
@@ -2062,9 +2215,15 @@ pub(crate) struct PrivateGdExtensionBinding {
     direct_export: crate::external_native::NamedPeExport,
 }
 impl PrivateGdExtensionBinding {
-    pub(crate) fn library_relative(&self) -> &str { &self.selected.library_relative }
-    pub(crate) fn entry_symbol(&self) -> &str { &self.selected.entry_symbol }
-    pub(crate) fn direct_export_rva(&self) -> u32 { self.direct_export.rva() }
+    pub(crate) fn library_relative(&self) -> &str {
+        &self.selected.library_relative
+    }
+    pub(crate) fn entry_symbol(&self) -> &str {
+        &self.selected.entry_symbol
+    }
+    pub(crate) fn direct_export_rva(&self) -> u32 {
+        self.direct_export.rva()
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -2078,55 +2237,86 @@ struct HeldGdExtensionManifest {
 }
 /// Borrowed only after real typed custody and the held manifest were checked.
 /// No constructor or serialized form is exposed to the execution adapter.
-pub(crate) struct ConfigFileInput<'a> { selected: &'a HeldGdExtensionManifest }
+pub(crate) struct ConfigFileInput<'a> {
+    selected: &'a HeldGdExtensionManifest,
+}
 impl ConfigFileInput<'_> {
-    pub(crate) fn parts(&self) -> (&str,&str,&str,&serde_json::Value) {
-        (self.selected.manifest.root.as_str(),&self.selected.manifest.relative,
-            &self.selected.text,&self.selected.document)
+    pub(crate) fn parts(&self) -> (&str, &str, &str, &serde_json::Value) {
+        (
+            self.selected.manifest.root.as_str(),
+            &self.selected.manifest.relative,
+            &self.selected.text,
+            &self.selected.document,
+        )
     }
 }
 
-pub(crate) const PRIVATE_GDEXTENSION_FEATURES: [&str; 6] = ["windows", "debug", "x86_64", "single", "64", "editor"];
+pub(crate) const PRIVATE_GDEXTENSION_FEATURES: [&str; 6] =
+    ["windows", "debug", "x86_64", "single", "64", "editor"];
 const PRIVATE_GDEXTENSION_BYTES: u64 = 65536;
 
 fn private_gdextension_parts(value: &str) -> Result<Vec<&str>, String> {
     let parts = relative(value, false).map_err(|_| "external_private_binding_unsafe_path")?;
     for part in &parts {
         let stem = part.split('.').next().unwrap_or("").to_ascii_uppercase();
-        if part.ends_with('.') || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-            || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT"))
+        if part.ends_with('.')
+            || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || (stem.len() == 4
+                && (stem.starts_with("COM") || stem.starts_with("LPT"))
                 && matches!(stem.as_bytes()[3], b'1'..=b'9'))
-        { return Err("external_private_binding_unsafe_path".into()); }
+        {
+            return Err("external_private_binding_unsafe_path".into());
+        }
     }
     Ok(parts)
 }
 
 fn private_gdextension_line(raw: &str) -> Result<&str, String> {
-    if raw.len() > 4096 { return Err("external_private_binding_text_bound".into()); }
+    if raw.len() > 4096 {
+        return Err("external_private_binding_text_bound".into());
+    }
     let raw = raw.trim();
-    if raw.starts_with('#') { return Ok(""); }
+    if raw.starts_with('#') {
+        return Ok("");
+    }
     let mut quoted = false;
     for (index, character) in raw.char_indices() {
-        if character == ';' && !quoted { return Ok(raw[..index].trim()); }
-        if character == '\\' { return Err("external_private_binding_escape_unsupported".into()); }
-        if character == '"' { quoted = !quoted; }
+        if character == ';' && !quoted {
+            return Ok(raw[..index].trim());
+        }
+        if character == '\\' {
+            return Err("external_private_binding_escape_unsupported".into());
+        }
+        if character == '"' {
+            quoted = !quoted;
+        }
     }
-    if quoted { return Err("external_private_binding_variant_unsupported".into()); }
+    if quoted {
+        return Err("external_private_binding_variant_unsupported".into());
+    }
     Ok(raw)
 }
 
 fn private_gdextension_quoted(value: &str) -> Result<String, String> {
-    if value.contains('\\') { return Err("external_private_binding_escape_unsupported".into()); }
-    serde_json::from_str::<String>(value).map_err(|_| "external_private_binding_variant_unsupported".into())
+    if value.contains('\\') {
+        return Err("external_private_binding_escape_unsupported".into());
+    }
+    serde_json::from_str::<String>(value)
+        .map_err(|_| "external_private_binding_variant_unsupported".into())
 }
 
 /// Strict quoted subset only. Godot ConfigFile semantics and export/ABI validity
 /// are deliberately not inferred from this library-selection plan.
 fn private_gdextension_mapping(text: &str) -> Result<(String, String), String> {
-    if text.is_empty() || text.len() as u64 > PRIVATE_GDEXTENSION_BYTES
+    if text.is_empty()
+        || text.len() as u64 > PRIVATE_GDEXTENSION_BYTES
         || text.starts_with('\u{feff}')
-        || text.chars().any(|c| c.is_control() && !matches!(c, '\r' | '\n' | '\t'))
-    { return Err("external_private_binding_text_bound".into()); }
+        || text
+            .chars()
+            .any(|c| c.is_control() && !matches!(c, '\r' | '\n' | '\t'))
+    {
+        return Err("external_private_binding_text_bound".into());
+    }
     let mut sections = BTreeSet::new();
     let mut keys = BTreeSet::new();
     let mut section = "";
@@ -2135,34 +2325,57 @@ fn private_gdextension_mapping(text: &str) -> Result<(String, String), String> {
     let mut libraries = 0usize;
     for raw in text.lines() {
         let line = private_gdextension_line(raw)?;
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         if line.starts_with('[') && line.ends_with(']') {
             section = &line[1..line.len() - 1];
-            if section == "dependencies" { return Err("external_private_binding_dependencies_unsupported".into()); }
+            if section == "dependencies" {
+                return Err("external_private_binding_dependencies_unsupported".into());
+            }
             if !matches!(section, "configuration" | "libraries") || !sections.insert(section) {
                 return Err("external_private_binding_section_unsupported_or_duplicate".into());
             }
             continue;
         }
-        let (key, value) = line.split_once('=').ok_or("external_private_binding_variant_unsupported")?;
+        let (key, value) = line
+            .split_once('=')
+            .ok_or("external_private_binding_variant_unsupported")?;
         let key = key.trim();
-        let key = if key.starts_with('"') { private_gdextension_quoted(key)? } else { key.to_owned() };
+        let key = if key.starts_with('"') {
+            private_gdextension_quoted(key)?
+        } else {
+            key.to_owned()
+        };
         let value = value.trim();
-        if key.is_empty() || key.len() > 128 || keys.len() >= 132
+        if key.is_empty()
+            || key.len() > 128
+            || keys.len() >= 132
             || !keys.insert((section.to_owned(), key.clone()))
-        { return Err("external_private_binding_duplicate_or_oversized_key".into()); }
+        {
+            return Err("external_private_binding_duplicate_or_oversized_key".into());
+        }
         match section {
             "configuration" => match key.as_str() {
                 "entry_symbol" => {
                     let entry = private_gdextension_quoted(value)?;
-                    if entry.is_empty() || entry.len() > 128
-                        || !entry.bytes().enumerate().all(|(i, b)| b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit()))
-                    { return Err("external_private_binding_entry_symbol_unsupported".into()); }
+                    if entry.is_empty()
+                        || entry.len() > 128
+                        || !entry.bytes().enumerate().all(|(i, b)| {
+                            b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit())
+                        })
+                    {
+                        return Err("external_private_binding_entry_symbol_unsupported".into());
+                    }
                     entry_symbol = Some(entry);
                 }
                 "compatibility_minimum" | "compatibility_maximum" => {
                     let version = private_gdextension_quoted(value)?;
-                    if version.len() > 32 || version.split('.').any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit())) {
+                    if version.len() > 32
+                        || version.split('.').any(|part| {
+                            part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit())
+                        })
+                    {
                         return Err("external_private_binding_variant_unsupported".into());
                     }
                 }
@@ -2171,16 +2384,27 @@ fn private_gdextension_mapping(text: &str) -> Result<(String, String), String> {
             },
             "libraries" => {
                 libraries += 1;
-                if libraries > 128 { return Err("external_private_binding_text_bound".into()); }
+                if libraries > 128 {
+                    return Err("external_private_binding_text_bound".into());
+                }
                 let flags: Vec<_> = key.split('.').collect();
                 let unique: BTreeSet<_> = flags.iter().copied().collect();
-                if unique.len() != flags.len() || flags.iter().any(|flag| flag.is_empty()
-                    || !flag.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
-                { return Err("external_private_binding_variant_unsupported".into()); }
+                if unique.len() != flags.len()
+                    || flags.iter().any(|flag| {
+                        flag.is_empty()
+                            || !flag.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    })
+                {
+                    return Err("external_private_binding_variant_unsupported".into());
+                }
                 let library = private_gdextension_quoted(value)?;
                 private_gdextension_parts(library.strip_prefix("res://").unwrap_or(&library))?;
-                if flags.iter().all(|flag| PRIVATE_GDEXTENSION_FEATURES.contains(flag)) {
-                    if selected.replace(library).is_some() { return Err("external_private_binding_ambiguous_library".into()); }
+                if flags
+                    .iter()
+                    .all(|flag| PRIVATE_GDEXTENSION_FEATURES.contains(flag))
+                    && selected.replace(library).is_some()
+                {
+                    return Err("external_private_binding_ambiguous_library".into());
                 }
             }
             _ => return Err("external_private_binding_variant_unsupported".into()),
@@ -2191,10 +2415,16 @@ fn private_gdextension_mapping(text: &str) -> Result<(String, String), String> {
     if mapped.as_deref() != Some(selected.as_str()) {
         return Err("external_private_binding_parser_selection_mismatch".into());
     }
-    if !Path::new(&selected).extension().is_some_and(|extension| extension.eq_ignore_ascii_case("dll")) {
+    if !Path::new(&selected)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+    {
         return Err("external_private_binding_library_kind_unsupported".into());
     }
-    Ok((selected, entry_symbol.ok_or("external_private_binding_entry_symbol_missing")?))
+    Ok((
+        selected,
+        entry_symbol.ok_or("external_private_binding_entry_symbol_missing")?,
+    ))
 }
 
 pub(crate) fn configfile_parser_document(text: &str) -> Result<serde_json::Value, String> {
@@ -2205,20 +2435,33 @@ pub(crate) fn configfile_parser_document(text: &str) -> Result<serde_json::Value
     let mut libraries = Vec::new();
     for raw in text.lines() {
         let line = private_gdextension_line(raw)?;
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         if line.starts_with('[') {
             sections.push(serde_json::json!({"name":&line[1..line.len()-1],"entries":[]}));
             continue;
         }
         let (key, value) = line.split_once('=').ok_or("configfile_parser_document")?;
         let key = key.trim();
-        let key = if key.starts_with('"') { private_gdextension_quoted(key)? } else { key.into() };
+        let key = if key.starts_with('"') {
+            private_gdextension_quoted(key)?
+        } else {
+            key.into()
+        };
         let value = value.trim();
         let (kind, value) = if matches!(value, "true" | "false") {
             ("bool", serde_json::Value::Bool(value == "true"))
-        } else { ("string", serde_json::Value::String(private_gdextension_quoted(value)?)) };
+        } else {
+            (
+                "string",
+                serde_json::Value::String(private_gdextension_quoted(value)?),
+            )
+        };
         let section = sections.last_mut().ok_or("configfile_parser_document")?;
-        section["entries"].as_array_mut().ok_or("configfile_parser_document")?
+        section["entries"]
+            .as_array_mut()
+            .ok_or("configfile_parser_document")?
             .push(serde_json::json!({"key":key,"type":kind,"value":value}));
         if section["name"] == "libraries" {
             let flags: Vec<_> = key.split('.').collect();
@@ -2229,15 +2472,25 @@ pub(crate) fn configfile_parser_document(text: &str) -> Result<serde_json::Value
     Ok(serde_json::json!({"sections":sections,"libraries":libraries,"dependencies":[]}))
 }
 
-fn private_gdextension_library_relative(manifest: &str, project: &str, library: &str) -> Result<String, String> {
+fn private_gdextension_library_relative(
+    manifest: &str,
+    project: &str,
+    library: &str,
+) -> Result<String, String> {
     let manifest = private_gdextension_parts(manifest)?;
     let project = private_gdextension_parts(project)?;
     let godot = &project[..project.len() - 1];
     let mut result = if library.starts_with("res://") {
         godot.to_vec()
-    } else { manifest[..manifest.len() - 1].to_vec() };
-    result.extend(private_gdextension_parts(library.strip_prefix("res://").unwrap_or(library))?);
-    if !result.starts_with(godot) { return Err("external_private_binding_unsafe_path".into()); }
+    } else {
+        manifest[..manifest.len() - 1].to_vec()
+    };
+    result.extend(private_gdextension_parts(
+        library.strip_prefix("res://").unwrap_or(library),
+    )?);
+    if !result.starts_with(godot) {
+        return Err("external_private_binding_unsafe_path".into());
+    }
     let result = result.join("/");
     private_gdextension_parts(&result)?;
     Ok(result)
@@ -2252,9 +2505,14 @@ struct PrivateArtifactPlacement {
 
 fn private_artifact_admission(bytes: u64, used: u64, budget: &Budget<'_>) -> Result<(), String> {
     budget.check()?;
-    if bytes == 0 || bytes > budget.max_file || bytes > budget.max_bytes
-        || budget.max_files == 0 || budget.max_entries == 0
-        || used.checked_add(bytes).is_none_or(|total| total > crate::candidate_workspace::WORKSPACE_BYTES)
+    if bytes == 0
+        || bytes > budget.max_file
+        || bytes > budget.max_bytes
+        || budget.max_files == 0
+        || budget.max_entries == 0
+        || used
+            .checked_add(bytes)
+            .is_none_or(|total| total > crate::candidate_workspace::WORKSPACE_BYTES)
     {
         return Err("external_private_artifact_storage_admission_refused".into());
     }
@@ -2262,18 +2520,31 @@ fn private_artifact_admission(bytes: u64, used: u64, budget: &Budget<'_>) -> Res
 }
 
 fn restore_private_artifact_cursor<T>(
-    cursor: &mut File, position: u64, result: Result<T, String>, budget: &Budget<'_>,
+    cursor: &mut File,
+    position: u64,
+    result: Result<T, String>,
+    budget: &Budget<'_>,
 ) -> Result<T, String> {
     // Restoration is cleanup, not late-work acceptance; attempt it after errors too.
-    match (result, std::io::Seek::seek(cursor, std::io::SeekFrom::Start(position))) {
-        (Ok(value), Ok(_)) => { budget.check()?; Ok(value) }
+    match (
+        result,
+        std::io::Seek::seek(cursor, std::io::SeekFrom::Start(position)),
+    ) {
+        (Ok(value), Ok(_)) => {
+            budget.check()?;
+            Ok(value)
+        }
         (Err(error), Ok(_)) => Err(error),
         (_, Err(_)) => Err("external_private_artifact_cursor_restore_failed".into()),
     }
 }
 
 fn check_private_artifact_copy(
-    path: &Path, writer: &File, expected: &Stamp, sha256: &str, budget: &Budget<'_>,
+    path: &Path,
+    writer: &File,
+    expected: &Stamp,
+    sha256: &str,
+    budget: &Budget<'_>,
 ) -> Result<(), String> {
     budget.check()?;
     if stamp(writer)? != *expected || hash_provenance_input(path, writer, budget)? != sha256 {
@@ -2283,10 +2554,17 @@ fn check_private_artifact_copy(
 }
 
 fn copy_checked_private_artifact(
-    source_path: &Path, source: &File, before: &Stamp, sha256: &str,
-    destination_path: &Path, destination: &mut File, budget: &Budget<'_>,
+    source_path: &Path,
+    source: &File,
+    before: &Stamp,
+    sha256: &str,
+    destination_path: &Path,
+    destination: &mut File,
+    budget: &Budget<'_>,
 ) -> Result<Stamp, String> {
-    let mut cursor = source.try_clone().map_err(|_| "external_private_artifact_cursor_unavailable")?;
+    let mut cursor = source
+        .try_clone()
+        .map_err(|_| "external_private_artifact_cursor_unavailable")?;
     let position = std::io::Seek::stream_position(&mut cursor)
         .map_err(|_| "external_private_artifact_cursor_unavailable")?;
     let result = (|| {
@@ -2303,31 +2581,49 @@ fn copy_checked_private_artifact(
         let mut buffer = [0u8; 65536];
         loop {
             budget.check()?;
-            let capacity = before.bytes.saturating_sub(copied).saturating_add(1)
+            let capacity = before
+                .bytes
+                .saturating_sub(copied)
+                .saturating_add(1)
                 .min(buffer.len() as u64) as usize;
-            let count = cursor.read(&mut buffer[..capacity])
+            let count = cursor
+                .read(&mut buffer[..capacity])
                 .map_err(|_| "external_private_artifact_read_failed")?;
-            if count == 0 { break; }
-            copied = copied.checked_add(count as u64).ok_or("external_private_artifact_input_changed")?;
-            if copied > before.bytes { return Err("external_private_artifact_input_changed".into()); }
+            if count == 0 {
+                break;
+            }
+            copied = copied
+                .checked_add(count as u64)
+                .ok_or("external_private_artifact_input_changed")?;
+            if copied > before.bytes {
+                return Err("external_private_artifact_input_changed".into());
+            }
             budget.check()?;
-            destination.write_all(&buffer[..count]).map_err(|_| "external_private_artifact_write_failed")?;
+            destination
+                .write_all(&buffer[..count])
+                .map_err(|_| "external_private_artifact_write_failed")?;
             digest.update(&buffer[..count]);
         }
         if copied != before.bytes || digest.hex() != sha256 || stamp(source)? != *before {
             return Err("external_private_artifact_input_changed".into());
         }
         budget.check()?;
-        destination.flush().map_err(|_| "external_private_artifact_flush_failed")?;
+        destination
+            .flush()
+            .map_err(|_| "external_private_artifact_flush_failed")?;
         budget.check()?;
-        destination.sync_all().map_err(|_| "external_private_artifact_sync_failed")?;
+        destination
+            .sync_all()
+            .map_err(|_| "external_private_artifact_sync_failed")?;
         budget.check()?;
         // Same original writer supplies readback, identity and final byte evidence.
         if hash_provenance_input(destination_path, destination, budget)? != sha256 {
             return Err("external_private_artifact_readback_changed".into());
         }
         crate::snapshot::check_opened_path(source, source_path, budget.deadline())?;
-        if stamp(source)? != *before { return Err("external_private_artifact_input_changed".into()); }
+        if stamp(source)? != *before {
+            return Err("external_private_artifact_input_changed".into());
+        }
         budget.check()?;
         stamp(destination)
     })();
@@ -2416,6 +2712,8 @@ impl SourceAdmission {
         }
         Ok(())
     }
+    // No caller or test reaches this yet; it belongs to the unconnected publication surface.
+    #[allow(dead_code)]
     pub(crate) fn directory_authority<'a>(
         &'a self,
         budget: &'a Budget<'a>,
@@ -2597,7 +2895,10 @@ impl SourcePublicationPermit {
             check_originals(&self.prepared.roots, &candidate.proposal.staged, budget)?;
             check_proposed(&candidate.proposal.staged, budget)?;
             candidate.compiler_provenance.recheck(
-                &candidate.proposal.staged, &candidate.artifact, &candidate.artifact_hash, budget,
+                &candidate.proposal.staged,
+                &candidate.artifact,
+                &candidate.artifact_hash,
+                budget,
             )?;
             let target = candidate
                 .proposal
@@ -2917,7 +3218,8 @@ fn check_proposed(staged: &StagedSources, budget: &Budget<'_>) -> Result<(), Str
 }
 impl SourceProposal {
     pub(crate) fn validate_read_with_receipt(
-        self, workspace: &mut crate::candidate_workspace::Workspace,
+        self,
+        workspace: &mut crate::candidate_workspace::Workspace,
         controller: &crate::worker_windows::StreamController,
         parent: &crate::external_native::ParentDeadline,
     ) -> Result<(ValidatedSourceCandidate, serde_json::Value), String> {
@@ -2926,33 +3228,56 @@ impl SourceProposal {
             return Err("external_source_original_native_parent_required".into());
         }
         let check = || parent.check_read_controller(controller);
-        let checked = self.limits.clipped(parent,&check)?;
-        check_proposed(&self.staged,&checked)?;
-        let validation = crate::external_native::validate_owned_with_parent(workspace,&self.staged,parent,controller)?;
+        let checked = self.limits.clipped(parent, &check)?;
+        check_proposed(&self.staged, &checked)?;
+        let validation = crate::external_native::validate_owned_with_parent(
+            workspace,
+            &self.staged,
+            parent,
+            controller,
+        )?;
         let receipt = validation.receipt().clone();
         parent.check_read_controller(controller)?;
-        let checked = self.limits.clipped(parent,&check)?;
-        Ok((self.seal_validation(workspace,validation,&checked,true)?,receipt))
+        let checked = self.limits.clipped(parent, &check)?;
+        Ok((
+            self.seal_validation(workspace, validation, &checked, true)?,
+            receipt,
+        ))
     }
     /// The authenticated read-validation operation keeps typed custody. This
     /// does not prepare a publication session or alter any original source.
     pub(crate) fn from_read_staging(
-        staged: StagedSources, parent: &crate::external_native::ParentDeadline, budget: &Budget<'_>,
+        staged: StagedSources,
+        parent: &crate::external_native::ParentDeadline,
+        budget: &Budget<'_>,
     ) -> Result<Self, String> {
         parent.check()?;
         check_proposed(&staged, budget)?;
         if staged.originals_mutated || staged.manifest_transformed {
             return Err("configfile_parser_unmodified_read_staging_required".into());
         }
-        let rows: Vec<_> = staged.roots.iter().map(|row| serde_json::json!({
-            "root":row.root_id.as_str(),"fingerprint":row.fingerprint.sha256,
-        })).collect();
-        let digest = crate::sha256_hex(&serde_json::to_vec(&rows).map_err(|_| "configfile_parser_digest")?);
-        Ok(Self { staged, digest, limits: ProposalLimits::from_budget(budget),
-            native_parent_origin: Some(parent.origin().clone()) })
+        let rows: Vec<_> = staged
+            .roots
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "root":row.root_id.as_str(),"fingerprint":row.fingerprint.sha256,
+                })
+            })
+            .collect();
+        let digest =
+            crate::sha256_hex(&serde_json::to_vec(&rows).map_err(|_| "configfile_parser_digest")?);
+        Ok(Self {
+            staged,
+            digest,
+            limits: ProposalLimits::from_budget(budget),
+            native_parent_origin: Some(parent.origin().clone()),
+        })
     }
     /// Only the retained compiler creates production validation evidence. The
     /// result is sealed after positively resolving its original worker owner.
+    // No caller or test reaches this yet; it belongs to the unconnected publication surface.
+    #[allow(dead_code)]
     pub(crate) fn validate(
         self,
         workspace: &mut crate::candidate_workspace::Workspace,
@@ -3002,9 +3327,11 @@ impl SourceProposal {
         controller: &crate::worker_windows::StreamController,
         parent: &crate::external_native::ParentDeadline,
         permit: KnownCargoFixturePermit,
-        diagnostic: &mut Option<std::mem::ManuallyDrop<
-            crate::worker_windows::binary::real_cargo_diagnostic::DiagnosticHandle,
-        >>,
+        diagnostic: &mut Option<
+            std::mem::ManuallyDrop<
+                crate::worker_windows::binary::real_cargo_diagnostic::DiagnosticHandle,
+            >,
+        >,
     ) -> Result<ValidatedSourceCandidate, String> {
         parent.check()?;
         if self.native_parent_origin.as_ref() != Some(parent.origin()) {
@@ -3015,7 +3342,12 @@ impl SourceProposal {
         let before = self.limits.clipped(parent, &check)?;
         check_proposed(&self.staged, &before)?;
         let validation = crate::external_native::validate_owned_with_parent_diagnostic_for_test(
-            workspace, &self.staged, parent, controller, permit, diagnostic,
+            workspace,
+            &self.staged,
+            parent,
+            controller,
+            permit,
+            diagnostic,
         )?;
         parent.check_read_controller(controller)?;
         let after = self.limits.clipped(parent, &check)?;
@@ -3029,7 +3361,8 @@ impl SourceProposal {
         before_publication: bool,
     ) -> Result<ValidatedSourceCandidate, String> {
         budget.check()?;
-        let (result, artifact, artifact_guard, artifact_hash, compiler_provenance) = validation.into_parts();
+        let (result, artifact, artifact_guard, artifact_hash, compiler_provenance) =
+            validation.into_parts();
         if result["native_artifact_produced"] != true || result["cargo_executed"] != true {
             return Err("external_source_native_validation_missing".into());
         }
@@ -3105,6 +3438,8 @@ pub(crate) struct PreparedSourceRepair {
     grant: PreparedGrant,
     scope: crate::transactions::ExternalRepairScope,
     reverse_cleanup: Vec<String>,
+    // No caller or test reaches this yet; it belongs to the unconnected publication surface.
+    #[allow(dead_code)]
     cleanup_observations: Vec<(String, Option<String>)>,
     revision: String,
     undo: bool,
@@ -3167,6 +3502,8 @@ impl SourceRepairAdmission {
         }
         Ok(())
     }
+    // No caller or test reaches this yet; it belongs to the unconnected publication surface.
+    #[allow(dead_code)]
     pub(crate) fn directory_authority<'a>(
         &'a self,
         budget: &'a Budget<'a>,
@@ -4632,7 +4969,9 @@ const NATIVE_CONTENT_ENCODING_LIMIT: usize = 65536;
 // Conservative framing/anchor allowance, charged before inventory allocation.
 const NATIVE_CONTENT_ENCODING_BASE: usize = 256 + 4 * (4096 + 128);
 fn native_content_charge(used: &mut usize, bytes: usize) -> Result<(), String> {
-    *used = used.checked_add(bytes).ok_or("external_provenance_input_encoding_bound")?;
+    *used = used
+        .checked_add(bytes)
+        .ok_or("external_provenance_input_encoding_bound")?;
     if *used > NATIVE_CONTENT_ENCODING_LIMIT {
         return Err("external_provenance_input_encoding_bound".into());
     }
@@ -4647,8 +4986,12 @@ fn native_content_shape(
     budget: &Budget<'_>,
 ) -> Result<(), String> {
     budget.check()?;
-    let path = path.to_str().ok_or("external_provenance_input_path_invalid")?;
-    if path.len() > 4096 { return Err("external_provenance_input_path_bound".into()); }
+    let path = path
+        .to_str()
+        .ok_or("external_provenance_input_path_invalid")?;
+    if path.len() > 4096 {
+        return Err("external_provenance_input_path_bound".into());
+    }
     native_content_charge(encoded, 512 + path.len() + root_id.as_str().len())?;
     let mut previous: Option<&str> = None;
     for row in rows {
@@ -4657,32 +5000,54 @@ fn native_content_shape(
             return Err("external_provenance_content_shape_refused".into());
         }
         // Admit the path's complete fact allowance before path parsing allocates.
-        native_content_charge(encoded, 512 + path.len() + row.path.len() + row.sha256.len())?;
+        native_content_charge(
+            encoded,
+            512 + path.len() + row.path.len() + row.sha256.len(),
+        )?;
         relative(&row.path, false)?;
         if previous.is_some_and(|before| before >= row.path.as_str())
             || (row.directory && (row.bytes != 0 || !row.sha256.is_empty()))
-            || (!row.directory && (row.sha256.len() != 64
-                || !row.sha256.bytes().all(|b| b.is_ascii_hexdigit())))
+            || (!row.directory
+                && (row.sha256.len() != 64 || !row.sha256.bytes().all(|b| b.is_ascii_hexdigit())))
         {
             return Err("external_provenance_content_shape_refused".into());
         }
         previous = Some(&row.path);
-        usage.entries = usage.entries.checked_add(1).ok_or("external_provenance_content_limit")?;
+        usage.entries = usage
+            .entries
+            .checked_add(1)
+            .ok_or("external_provenance_content_limit")?;
         if !row.directory {
-            usage.files = usage.files.checked_add(1).ok_or("external_provenance_content_limit")?;
-            usage.bytes = usage.bytes.checked_add(row.bytes).ok_or("external_provenance_content_limit")?;
-            if row.bytes > budget.max_file { return Err("external_provenance_content_limit".into()); }
+            usage.files = usage
+                .files
+                .checked_add(1)
+                .ok_or("external_provenance_content_limit")?;
+            usage.bytes = usage
+                .bytes
+                .checked_add(row.bytes)
+                .ok_or("external_provenance_content_limit")?;
+            if row.bytes > budget.max_file {
+                return Err("external_provenance_content_limit".into());
+            }
         }
-        if usage.entries > budget.max_entries || usage.files > budget.max_files
+        if usage.entries > budget.max_entries
+            || usage.files > budget.max_files
             || usage.bytes > budget.max_bytes
-        { return Err("external_provenance_content_limit".into()); }
+        {
+            return Err("external_provenance_content_limit".into());
+        }
     }
     budget.check()
 }
 fn native_provenance_guard_bound(counts: &[usize], duplicates: usize) -> Result<(), String> {
-    if counts.iter().try_fold(0usize, |sum, count| sum.checked_add(*count))
-        .and_then(|sum| sum.checked_add(duplicates)).is_none_or(|sum| sum > 8192)
-    { return Err("external_provenance_guard_bound".into()); }
+    if counts
+        .iter()
+        .try_fold(0usize, |sum, count| sum.checked_add(*count))
+        .and_then(|sum| sum.checked_add(duplicates))
+        .is_none_or(|sum| sum > 8192)
+    {
+        return Err("external_provenance_guard_bound".into());
+    }
     Ok(())
 }
 fn native_content_anchor_aliases(paths: [&Path; 4]) -> Result<usize, String> {
@@ -4701,10 +5066,19 @@ fn native_content_anchor_aliases(paths: [&Path; 4]) -> Result<usize, String> {
     }
     Ok(aliases)
 }
-fn native_content_duplicate_count(unique_files: usize, workspace: &Path, member: &Path) -> Result<usize, String> {
+fn native_content_duplicate_count(
+    unique_files: usize,
+    workspace: &Path,
+    member: &Path,
+) -> Result<usize, String> {
     // Only the permitted manifest-role pair can add a duplicate content object.
     // This count is available before allocating the temporary lockfile path.
-    unique_files.checked_add(if provenance_paths_equal(workspace, member) { 1 } else { 0 })
+    unique_files
+        .checked_add(if provenance_paths_equal(workspace, member) {
+            1
+        } else {
+            0
+        })
         .and_then(|count| count.checked_add(1)) // Original envelope duplicate.
         .ok_or_else(|| "external_provenance_guard_bound".into())
 }
@@ -4713,9 +5087,16 @@ struct NativeContentDigest {
     hash: Sha256,
 }
 impl NativeContentDigest {
-    fn new() -> Self { Self { bytes: 0, hash: Sha256::new() } }
+    fn new() -> Self {
+        Self {
+            bytes: 0,
+            hash: Sha256::new(),
+        }
+    }
     fn field(&mut self, value: &[u8]) -> Result<(), String> {
-        let bytes = 8usize.checked_add(value.len()).ok_or("external_provenance_input_encoding_bound")?;
+        let bytes = 8usize
+            .checked_add(value.len())
+            .ok_or("external_provenance_input_encoding_bound")?;
         native_content_charge(&mut self.bytes, bytes)?;
         self.hash.update(&(value.len() as u64).to_le_bytes());
         self.hash.update(value);
@@ -4741,39 +5122,59 @@ impl NativeContentDigest {
 }
 // Lexical provenance binding only. File identity and bytes still come from held guards.
 fn provenance_path_components(path: &Path) -> Option<Vec<String>> {
-    if !path.is_absolute() { return None; }
+    if !path.is_absolute() {
+        return None;
+    }
     let raw = path.to_str()?;
-    if raw.len() > 4096 || raw.chars().any(char::is_control)
-        || raw.split(['/', '\\']).any(|part| matches!(part, "." | ".."))
-    { return None; }
+    if raw.len() > 4096
+        || raw.chars().any(char::is_control)
+        || raw
+            .split(['/', '\\'])
+            .any(|part| matches!(part, "." | ".."))
+    {
+        return None;
+    }
     let mut parts = Vec::new();
     for component in path.components() {
         use std::path::{Component, Prefix};
         let value = match component {
             Component::Prefix(prefix) => match prefix.kind() {
                 Prefix::Disk(drive) => format!("disk:{}", drive.to_ascii_lowercase()),
-                Prefix::VerbatimDisk(drive) => format!("verbatim-disk:{}", drive.to_ascii_lowercase()),
+                Prefix::VerbatimDisk(drive) => {
+                    format!("verbatim-disk:{}", drive.to_ascii_lowercase())
+                }
                 _ => return None,
             },
             Component::RootDir => "<root>".to_owned(),
             Component::Normal(part) => {
                 let text = part.to_str()?;
-                if text.is_empty() || text.contains(':') || text.ends_with('.') || text.ends_with(' ') {
+                if text.is_empty()
+                    || text.contains(':')
+                    || text.ends_with('.')
+                    || text.ends_with(' ')
+                {
                     return None;
                 }
                 let mut text = text.to_owned();
-                if cfg!(windows) { text.make_ascii_lowercase(); }
+                if cfg!(windows) {
+                    text.make_ascii_lowercase();
+                }
                 text
-            },
+            }
             Component::CurDir | Component::ParentDir => return None,
         };
         parts.push(value);
-        if parts.len() > 128 { return None; }
+        if parts.len() > 128 {
+            return None;
+        }
     }
     Some(parts)
 }
 pub(crate) fn provenance_paths_equal(left: &Path, right: &Path) -> bool {
-    match (provenance_path_components(left), provenance_path_components(right)) {
+    match (
+        provenance_path_components(left),
+        provenance_path_components(right),
+    ) {
         (Some(left), Some(right)) => left == right,
         _ => false,
     }
@@ -4812,16 +5213,24 @@ struct NativeProvenanceFile {
     guard: File,
 }
 
-fn held_gdextension_text(file: &NativeProvenanceFile, budget: &Budget<'_>) -> Result<String, String> {
+fn held_gdextension_text(
+    file: &NativeProvenanceFile,
+    budget: &Budget<'_>,
+) -> Result<String, String> {
     let mut reader = &file.guard;
     let position = std::io::Seek::stream_position(&mut reader)
         .map_err(|_| "external_private_binding_cursor_unavailable")?;
     let result = (|| {
         budget.check()?;
-        if file.expected.bytes > PRIVATE_GDEXTENSION_BYTES || file.expected.bytes > budget.max_file
+        if file.expected.bytes > PRIVATE_GDEXTENSION_BYTES
+            || file.expected.bytes > budget.max_file
             || file.expected.bytes > budget.max_bytes
-        { return Err("external_private_binding_text_bound".into()); }
-        if stamp(&file.guard)? != file.expected { return Err("external_private_binding_manifest_changed".into()); }
+        {
+            return Err("external_private_binding_text_bound".into());
+        }
+        if stamp(&file.guard)? != file.expected {
+            return Err("external_private_binding_manifest_changed".into());
+        }
         crate::snapshot::check_opened_path(&file.guard, &file.path, budget.deadline())?;
         std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(0))
             .map_err(|_| "external_private_binding_seek_failed")?;
@@ -4829,25 +5238,40 @@ fn held_gdextension_text(file: &NativeProvenanceFile, budget: &Budget<'_>) -> Re
         let mut buffer = [0u8; 8192];
         loop {
             budget.check()?;
-            let capacity = (file.expected.bytes as usize).saturating_sub(bytes.len())
-                .saturating_add(1).min(buffer.len());
-            let count = reader.read(&mut buffer[..capacity]).map_err(|_| "external_private_binding_read_failed")?;
-            if count == 0 { break; }
+            let capacity = (file.expected.bytes as usize)
+                .saturating_sub(bytes.len())
+                .saturating_add(1)
+                .min(buffer.len());
+            let count = reader
+                .read(&mut buffer[..capacity])
+                .map_err(|_| "external_private_binding_read_failed")?;
+            if count == 0 {
+                break;
+            }
             if bytes.len().saturating_add(count) as u64 > file.expected.bytes {
                 return Err("external_private_binding_manifest_changed".into());
             }
             bytes.extend_from_slice(&buffer[..count]);
         }
-        if bytes.len() as u64 != file.expected.bytes || crate::sha256_hex(&bytes) != file.sha256
+        if bytes.len() as u64 != file.expected.bytes
+            || crate::sha256_hex(&bytes) != file.sha256
             || stamp(&file.guard)? != file.expected
-        { return Err("external_private_binding_manifest_changed".into()); }
+        {
+            return Err("external_private_binding_manifest_changed".into());
+        }
         crate::snapshot::check_opened_path(&file.guard, &file.path, budget.deadline())?;
         budget.check()?;
         String::from_utf8(bytes).map_err(|_| "external_private_binding_utf8_required".into())
     })();
     // Restoration is attempted after every read/refusal, without renewing work.
-    match (result, std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(position))) {
-        (Ok(text), Ok(_)) => { budget.check()?; Ok(text) }
+    match (
+        result,
+        std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(position)),
+    ) {
+        (Ok(text), Ok(_)) => {
+            budget.check()?;
+            Ok(text)
+        }
         (Err(error), Ok(_)) => Err(error),
         (_, Err(_)) => Err("external_private_binding_cursor_restore_failed".into()),
     }
@@ -4872,105 +5296,173 @@ pub(crate) struct NativeReportedOutput {
     guard: File,
 }
 fn hash_reported_local_output(
-    path: &Path, guard: &File, expected: &Stamp, maximum: u64, budget: &Budget<'_>,
+    path: &Path,
+    guard: &File,
+    expected: &Stamp,
+    maximum: u64,
+    budget: &Budget<'_>,
 ) -> Result<String, String> {
-    let mut reader=guard;
-    let position=std::io::Seek::stream_position(&mut reader)
+    let mut reader = guard;
+    let position = std::io::Seek::stream_position(&mut reader)
         .map_err(|_| "external_reported_output_cursor")?;
-    let observed=(|| -> Result<String,String> {
+    let observed = (|| -> Result<String, String> {
         budget.check()?;
-        crate::snapshot::check_opened_path(guard,path,budget.deadline)?;
-        if stamp(guard)? != *expected {return Err("external_reported_output_changed".into());}
+        crate::snapshot::check_opened_path(guard, path, budget.deadline)?;
+        if stamp(guard)? != *expected {
+            return Err("external_reported_output_changed".into());
+        }
         // Output allowance is separate from the original source-content quotas.
         // The same budget still supplies owner/cancellation/deadline checks.
         if expected.bytes > maximum.min(MAX_FILE_BYTES) {
             return Err("external_reported_output_byte_bound".into());
         }
-        std::io::Seek::seek(&mut reader,std::io::SeekFrom::Start(0))
+        std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(0))
             .map_err(|_| "external_reported_output_seek")?;
-        let mut hash=Sha256::new();let mut bytes=0u64;let mut buffer=[0u8;65536];
+        let mut hash = Sha256::new();
+        let mut bytes = 0u64;
+        let mut buffer = [0u8; 65536];
         loop {
             budget.check()?;
-            let capacity=expected.bytes.saturating_sub(bytes).saturating_add(1).min(buffer.len() as u64) as usize;
-            let n=reader.read(&mut buffer[..capacity]).map_err(|_| "external_reported_output_read")?;
-            if n==0 {break;}
-            bytes=bytes.checked_add(n as u64).ok_or("external_reported_output_byte_bound")?;
-            if bytes>expected.bytes {return Err("external_reported_output_changed".into());}
+            let capacity = expected
+                .bytes
+                .saturating_sub(bytes)
+                .saturating_add(1)
+                .min(buffer.len() as u64) as usize;
+            let n = reader
+                .read(&mut buffer[..capacity])
+                .map_err(|_| "external_reported_output_read")?;
+            if n == 0 {
+                break;
+            }
+            bytes = bytes
+                .checked_add(n as u64)
+                .ok_or("external_reported_output_byte_bound")?;
+            if bytes > expected.bytes {
+                return Err("external_reported_output_changed".into());
+            }
             hash.update(&buffer[..n]);
         }
-        if bytes!=expected.bytes || stamp(guard)? != *expected {return Err("external_reported_output_changed".into());}
-        crate::snapshot::check_opened_path(guard,path,budget.deadline)?;
-        budget.check()?;Ok(hash.hex())
+        if bytes != expected.bytes || stamp(guard)? != *expected {
+            return Err("external_reported_output_changed".into());
+        }
+        crate::snapshot::check_opened_path(guard, path, budget.deadline)?;
+        budget.check()?;
+        Ok(hash.hex())
     })();
-    let restored=std::io::Seek::seek(&mut reader,std::io::SeekFrom::Start(position))
+    let restored = std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(position))
         .map_err(|_| "external_reported_output_cursor_restore")?;
-    if restored!=position {return Err("external_reported_output_cursor_restore".into());}
+    if restored != position {
+        return Err("external_reported_output_cursor_restore".into());
+    }
     observed
 }
 impl NativeReportedOutputRoot {
     /// Classification only. All path/identity failures propagate, never select another root.
-    pub(crate) fn contains_reported_path(&self,reported:&str,budget:&Budget<'_>)->Result<bool,String> {
+    pub(crate) fn contains_reported_path(
+        &self,
+        reported: &str,
+        budget: &Budget<'_>,
+    ) -> Result<bool, String> {
         self.recheck(budget)?;
-        let reported=checked_reported_path(reported)?;
-        let checked=crate::snapshot::open_checked_file(&reported,budget.deadline)?;
-        let canonical=crate::project::clean_path(reported.canonicalize().map_err(|_|"external_reported_output_path")?);
-        crate::snapshot::check_opened_path(&checked,&canonical,budget.deadline)?;
-        let _=stamp(&checked)?;
+        let reported = checked_reported_path(reported)?;
+        let checked = crate::snapshot::open_checked_file(&reported, budget.deadline)?;
+        let canonical = crate::project::clean_path(
+            reported
+                .canonicalize()
+                .map_err(|_| "external_reported_output_path")?,
+        );
+        crate::snapshot::check_opened_path(&checked, &canonical, budget.deadline)?;
+        let _ = stamp(&checked)?;
         self.recheck(budget)?;
         Ok(canonical.starts_with(&self.canonical))
     }
-    pub(crate) fn recheck(&self,budget:&Budget<'_>)->Result<(),String> {
+    pub(crate) fn recheck(&self, budget: &Budget<'_>) -> Result<(), String> {
         budget.check()?;
-        crate::snapshot::check_opened_path(&self.guard,&self.target,budget.deadline)?;
-        crate::snapshot::check_opened_path(&self.guard,&self.canonical,budget.deadline)?;
-        if file_identity(&self.guard)? != self.identity {return Err("external_reported_output_root_changed".into());}
+        crate::snapshot::check_opened_path(&self.guard, &self.target, budget.deadline)?;
+        crate::snapshot::check_opened_path(&self.guard, &self.canonical, budget.deadline)?;
+        if file_identity(&self.guard)? != self.identity {
+            return Err("external_reported_output_root_changed".into());
+        }
         budget.check()
     }
     pub(crate) fn hold(
-        &self,lease:&CompilationLease,reported:&str,maximum:u64,budget:&Budget<'_>,
-    )->Result<NativeReportedOutput,String> {
+        &self,
+        lease: &CompilationLease,
+        reported: &str,
+        maximum: u64,
+        budget: &Budget<'_>,
+    ) -> Result<NativeReportedOutput, String> {
         self.recheck(budget)?;
-        let (path,checked)=lease.checked_artifact_file(&self.target,reported,budget)?;
-        let expected=stamp(&checked)?;
+        let (path, checked) = lease.checked_artifact_file(&self.target, reported, budget)?;
+        let expected = stamp(&checked)?;
         // Match the checked original, then deny write/delete sharing before hashing.
-        let guard=open_compile_source(&path,budget)?;
-        if stamp(&guard)?!=expected {return Err("external_reported_output_changed".into());}
-        let relative=path.strip_prefix(&self.canonical).map_err(|_|"external_reported_output_outside_target")?
-            .to_str().ok_or("external_reported_output_path")?.replace('\\',"/");
-        if relative.is_empty() || relative.len()>4096 || relative.chars().any(char::is_control) {
+        let guard = open_compile_source(&path, budget)?;
+        if stamp(&guard)? != expected {
+            return Err("external_reported_output_changed".into());
+        }
+        let relative = path
+            .strip_prefix(&self.canonical)
+            .map_err(|_| "external_reported_output_outside_target")?
+            .to_str()
+            .ok_or("external_reported_output_path")?
+            .replace('\\', "/");
+        if relative.is_empty() || relative.len() > 4096 || relative.chars().any(char::is_control) {
             return Err("external_reported_output_path".into());
         }
-        let sha256=hash_reported_local_output(&path,&guard,&expected,maximum,budget)?;
+        let sha256 = hash_reported_local_output(&path, &guard, &expected, maximum, budget)?;
         self.recheck(budget)?;
-        Ok(NativeReportedOutput {path,relative,root_identity:self.identity.clone(),expected,sha256,guard})
+        Ok(NativeReportedOutput {
+            path,
+            relative,
+            root_identity: self.identity.clone(),
+            expected,
+            sha256,
+            guard,
+        })
     }
 }
 impl NativeReportedOutput {
-    pub(crate) fn bytes(&self)->u64 {self.expected.bytes}
-    pub(crate) fn relative(&self)->&str {&self.relative}
-    pub(crate) fn identity_key(&self)->String {identity_digest(&self.expected.identity)}
-    pub(crate) fn digest_value(&self)->serde_json::Value {
+    pub(crate) fn bytes(&self) -> u64 {
+        self.expected.bytes
+    }
+    pub(crate) fn relative(&self) -> &str {
+        &self.relative
+    }
+    pub(crate) fn identity_key(&self) -> String {
+        identity_digest(&self.expected.identity)
+    }
+    pub(crate) fn digest_value(&self) -> serde_json::Value {
         serde_json::json!({"relative":self.relative,"bytes":self.expected.bytes,"sha256":self.sha256,
             "identity_sha256":self.identity_key(),"root_identity_sha256":identity_digest(&self.root_identity)})
     }
-    pub(crate) fn matches_artifact(&self,path:&Path,hash:&str)->Result<bool,String> {
-        Ok(provenance_paths_equal(&local_build_path(&self.path)?,&local_build_path(path)?) && self.sha256==hash)
+    pub(crate) fn matches_artifact(&self, path: &Path, hash: &str) -> Result<bool, String> {
+        Ok(
+            provenance_paths_equal(&local_build_path(&self.path)?, &local_build_path(path)?)
+                && self.sha256 == hash,
+        )
     }
     pub(crate) fn recheck(
-        &self,root:&NativeReportedOutputRoot,maximum:u64,budget:&Budget<'_>,
-    )->Result<(),String> {
+        &self,
+        root: &NativeReportedOutputRoot,
+        maximum: u64,
+        budget: &Budget<'_>,
+    ) -> Result<(), String> {
         root.recheck(budget)?;
-        if self.root_identity!=root.identity || !provenance_paths_equal(&self.path,&root.canonical.join(&self.relative)) {
+        if self.root_identity != root.identity
+            || !provenance_paths_equal(&self.path, &root.canonical.join(&self.relative))
+        {
             return Err("external_reported_output_root_changed".into());
         }
-        if hash_reported_local_output(&self.path,&self.guard,&self.expected,maximum,budget)? != self.sha256 {
+        if hash_reported_local_output(&self.path, &self.guard, &self.expected, maximum, budget)?
+            != self.sha256
+        {
             return Err("external_reported_output_changed".into());
         }
         root.recheck(budget)
     }
-    #[cfg(all(windows,test))]
-    pub(crate) fn observation_for_test(&self)->serde_json::Value {
-        use std::os::windows::{fs::OpenOptionsExt,io::AsRawHandle};
+    #[cfg(all(windows, test))]
+    pub(crate) fn observation_for_test(&self) -> serde_json::Value {
+        use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
         serde_json::json!({"output":self.digest_value(),"original_handle":self.guard.as_raw_handle() as usize,
             "write_access_refused":OpenOptions::new().write(true).open(&self.path).is_err(),
             "delete_access_refused":OpenOptions::new().access_mode(0x0001_0000).share_mode(7)
@@ -5017,7 +5509,10 @@ impl NativeSourceIdentity {
         &self.digest
     }
     fn gdextension_manifest(
-        &self, root_id: &RootId, manifest_relative: &str, budget: &Budget<'_>,
+        &self,
+        root_id: &RootId,
+        manifest_relative: &str,
+        budget: &Budget<'_>,
     ) -> Result<HeldGdExtensionManifest, String> {
         budget.check()?;
         let manifest_parts = private_gdextension_parts(manifest_relative)?;
@@ -5025,42 +5520,83 @@ impl NativeSourceIdentity {
             return Err("external_private_binding_manifest_kind".into());
         }
         let mut roots = self.content.iter().filter(|root| &root.root_id == root_id);
-        let root = roots.next().ok_or("external_private_binding_root_not_held")?;
-        if roots.next().is_some() { return Err("external_private_binding_root_ambiguous".into()); }
-        let mut entries = root.entries.iter().filter(|row| !row.directory && row.path == manifest_relative);
-        let row = entries.next().ok_or("external_private_binding_manifest_not_held")?;
-        if entries.next().is_some() { return Err("external_private_binding_manifest_ambiguous".into()); }
-        if row.bytes > PRIVATE_GDEXTENSION_BYTES || row.bytes > budget.max_file || row.bytes > budget.max_bytes {
+        let root = roots
+            .next()
+            .ok_or("external_private_binding_root_not_held")?;
+        if roots.next().is_some() {
+            return Err("external_private_binding_root_ambiguous".into());
+        }
+        let mut entries = root
+            .entries
+            .iter()
+            .filter(|row| !row.directory && row.path == manifest_relative);
+        let row = entries
+            .next()
+            .ok_or("external_private_binding_manifest_not_held")?;
+        if entries.next().is_some() {
+            return Err("external_private_binding_manifest_ambiguous".into());
+        }
+        if row.bytes > PRIVATE_GDEXTENSION_BYTES
+            || row.bytes > budget.max_file
+            || row.bytes > budget.max_bytes
+        {
             return Err("external_private_binding_text_bound".into());
         }
         let path = root.path.join(manifest_relative);
         let manifest = self.local_input(&path, budget)?;
-        let mut held = self.files.iter().filter(|file| provenance_paths_equal(&file.path, &path));
-        let file = held.next().ok_or("external_private_binding_manifest_not_held")?;
-        if held.next().is_some() || file.role != "staged_content" || manifest.root != *root_id
-            || file.expected.identity != manifest.identity || file.sha256 != manifest.sha256
-        { return Err("external_private_binding_manifest_ambiguous".into()); }
+        let mut held = self
+            .files
+            .iter()
+            .filter(|file| provenance_paths_equal(&file.path, &path));
+        let file = held
+            .next()
+            .ok_or("external_private_binding_manifest_not_held")?;
+        if held.next().is_some()
+            || file.role != "staged_content"
+            || manifest.root != *root_id
+            || file.expected.identity != manifest.identity
+            || file.sha256 != manifest.sha256
+        {
+            return Err("external_private_binding_manifest_ambiguous".into());
+        }
         let text = held_gdextension_text(file, budget)?;
         let mut project_relative = None;
         for entry in &root.entries {
             budget.check()?;
-            if entry.directory || entry.path.rsplit('/').next() != Some("project.godot") { continue; }
+            if entry.directory || entry.path.rsplit('/').next() != Some("project.godot") {
+                continue;
+            }
             let parts = private_gdextension_parts(&entry.path)?;
             if manifest_parts.starts_with(&parts[..parts.len() - 1])
                 && project_relative.replace(entry.path.as_str()).is_some()
-            { return Err("external_private_binding_godot_root_ambiguous".into()); }
+            {
+                return Err("external_private_binding_godot_root_ambiguous".into());
+            }
         }
-        let project_relative = project_relative.ok_or("external_private_binding_godot_root_not_held")?;
+        let project_relative =
+            project_relative.ok_or("external_private_binding_godot_root_not_held")?;
         let project = self.local_input(&root.path.join(project_relative), budget)?;
-        if project.root != *root_id { return Err("external_private_binding_root_ambiguous".into()); }
+        if project.root != *root_id {
+            return Err("external_private_binding_root_ambiguous".into());
+        }
         let (library, entry_symbol) = private_gdextension_mapping(&text)?;
-        let library_relative = private_gdextension_library_relative(manifest_relative, project_relative, &library)?;
+        let library_relative =
+            private_gdextension_library_relative(manifest_relative, project_relative, &library)?;
         budget.check()?;
         let document = configfile_parser_document(&text)?;
-        Ok(HeldGdExtensionManifest { manifest, project, library_relative, entry_symbol, text, document })
+        Ok(HeldGdExtensionManifest {
+            manifest,
+            project,
+            library_relative,
+            entry_symbol,
+            text,
+            document,
+        })
     }
     pub(crate) fn local_input(
-        &self, reported: &Path, budget: &Budget<'_>,
+        &self,
+        reported: &Path,
+        budget: &Budget<'_>,
     ) -> Result<NativeLocalInput, String> {
         budget.check()?;
         let reported = local_build_path(reported)?;
@@ -5068,7 +5604,12 @@ impl NativeSourceIdentity {
         for root in &self.content {
             for row in &root.entries {
                 budget.check()?;
-                if row.directory || !provenance_paths_equal(&local_build_path(&root.path.join(&row.path))?, &reported) {
+                if row.directory
+                    || !provenance_paths_equal(
+                        &local_build_path(&root.path.join(&row.path))?,
+                        &reported,
+                    )
+                {
                     continue;
                 }
                 if matched.is_some() {
@@ -5076,21 +5617,31 @@ impl NativeSourceIdentity {
                 }
                 let mut held = None;
                 for file in &self.files {
-                    if !provenance_paths_equal(&local_build_path(&file.path)?, &reported) { continue; }
+                    if !provenance_paths_equal(&local_build_path(&file.path)?, &reported) {
+                        continue;
+                    }
                     budget.check()?;
                     crate::snapshot::check_opened_path(&file.guard, &reported, budget.deadline)?;
-                    if stamp(&file.guard)? != file.expected || file.sha256 != row.sha256
+                    if stamp(&file.guard)? != file.expected
+                        || file.sha256 != row.sha256
                         || hash_provenance_input(&file.path, &file.guard, budget)? != row.sha256
-                    { return Err("external_local_build_input_changed".into()); }
-                    if held.as_ref().is_some_and(|identity| identity != &file.expected.identity) {
+                    {
+                        return Err("external_local_build_input_changed".into());
+                    }
+                    if held
+                        .as_ref()
+                        .is_some_and(|identity| identity != &file.expected.identity)
+                    {
                         return Err("external_local_build_input_ambiguous".into());
                     }
                     held = Some(file.expected.identity.clone());
                 }
                 let identity = held.ok_or("external_local_build_input_not_held")?;
                 matched = Some(NativeLocalInput {
-                    root: root.root_id.clone(), relative: row.path.clone(),
-                    sha256: row.sha256.clone(), root_fingerprint: root.fingerprint.sha256.clone(),
+                    root: root.root_id.clone(),
+                    relative: row.path.clone(),
+                    sha256: row.sha256.clone(),
+                    root_fingerprint: root.fingerprint.sha256.clone(),
                     identity,
                 });
             }
@@ -5098,13 +5649,20 @@ impl NativeSourceIdentity {
         matched.ok_or_else(|| "external_local_build_input_not_held".into())
     }
     pub(crate) fn recheck_local_input(
-        &self, input: &NativeLocalInput, budget: &Budget<'_>,
+        &self,
+        input: &NativeLocalInput,
+        budget: &Budget<'_>,
     ) -> Result<(), String> {
-        let mut roots = self.content.iter().filter(|root| root.root_id == input.root);
+        let mut roots = self
+            .content
+            .iter()
+            .filter(|root| root.root_id == input.root);
         let root = roots.next().ok_or("external_local_build_root_changed")?;
         if roots.next().is_some()
             || self.local_input(&root.path.join(&input.relative), budget)? != *input
-        { return Err("external_local_build_input_changed".into()); }
+        {
+            return Err("external_local_build_input_changed".into());
+        }
         budget.check()
     }
     pub(crate) fn recheck(
@@ -5116,7 +5674,8 @@ impl NativeSourceIdentity {
     ) -> Result<(), String> {
         budget.check()?;
         if !provenance_paths_equal(&self.envelope, &staged.envelope)
-            || self.envelope_identity != staged.envelope_identity || self.files.len() < 4
+            || self.envelope_identity != staged.envelope_identity
+            || self.files.len() < 4
         {
             return Err("external_provenance_envelope_changed".into());
         }
@@ -5124,18 +5683,25 @@ impl NativeSourceIdentity {
         if file_identity(&self.envelope_guard)? != self.envelope_identity {
             return Err("external_provenance_envelope_changed".into());
         }
-        let lock = staged.cargo_manifest.parent()
-            .ok_or("external_provenance_workspace_missing")?.join("Cargo.lock");
+        let lock = staged
+            .cargo_manifest
+            .parent()
+            .ok_or("external_provenance_workspace_missing")?
+            .join("Cargo.lock");
         let expected = [
             ("workspace_manifest", staged.cargo_manifest.as_path()),
-            ("selected_manifest", member), ("selected_source", source), ("lock", lock.as_path()),
+            ("selected_manifest", member),
+            ("selected_source", source),
+            ("lock", lock.as_path()),
         ];
         for (file, (role, path)) in self.files.iter().take(4).zip(expected) {
             budget.check()?;
-            if file.role != role || !provenance_paths_equal(&file.path, path)
+            if file.role != role
+                || !provenance_paths_equal(&file.path, path)
                 || provenance_relative_path(&self.envelope, &file.path).is_err()
                 || provenance_relative_path(&self.envelope, path).is_err()
-                || file.expected.bytes > budget.max_file || stamp(&file.guard)? != file.expected
+                || file.expected.bytes > budget.max_file
+                || stamp(&file.guard)? != file.expected
             {
                 return Err("external_provenance_held_input_changed".into());
             }
@@ -5147,20 +5713,39 @@ impl NativeSourceIdentity {
         check_proposed(staged, budget)?;
         budget.check()
     }
-    fn content_digest(&self, staged: &StagedSources, budget: &Budget<'_>) -> Result<String, String> {
+    fn content_digest(
+        &self,
+        staged: &StagedSources,
+        budget: &Budget<'_>,
+    ) -> Result<String, String> {
         budget.check()?;
-        if self.content.len() != staged.roots.len() || self.content.is_empty()
-            || self.content.len() > MAX_ROOTS || self.files.len() < 4
-        { return Err("external_provenance_content_binding_changed".into()); }
+        if self.content.len() != staged.roots.len()
+            || self.content.is_empty()
+            || self.content.len() > MAX_ROOTS
+            || self.files.len() < 4
+        {
+            return Err("external_provenance_content_binding_changed".into());
+        }
         let aliases = native_content_anchor_aliases([
-            self.files[0].path.as_path(), self.files[1].path.as_path(),
-            self.files[2].path.as_path(), self.files[3].path.as_path(),
+            self.files[0].path.as_path(),
+            self.files[1].path.as_path(),
+            self.files[2].path.as_path(),
+            self.files[3].path.as_path(),
         ])?;
         let mut charged = NATIVE_CONTENT_ENCODING_BASE;
         let mut usage = Usage::default();
         for root in &self.content {
-            native_content_shape(&root.path, &root.root_id, &root.entries, &mut charged, &mut usage, budget)?;
-            if root.entries.len() != root.identities.len() || fingerprint_entries(&root.entries) != root.fingerprint {
+            native_content_shape(
+                &root.path,
+                &root.root_id,
+                &root.entries,
+                &mut charged,
+                &mut usage,
+                budget,
+            )?;
+            if root.entries.len() != root.identities.len()
+                || fingerprint_entries(&root.entries) != root.fingerprint
+            {
                 return Err("external_provenance_content_binding_changed".into());
             }
         }
@@ -5178,14 +5763,28 @@ impl NativeSourceIdentity {
         let mut previous = None;
         for root in roots {
             budget.check()?;
-            if previous == Some(&root.root_id) { return Err("external_provenance_content_binding_changed".into()); }
+            if previous == Some(&root.root_id) {
+                return Err("external_provenance_content_binding_changed".into());
+            }
             previous = Some(&root.root_id);
-            let mut matching = staged.roots.iter().filter(|candidate| candidate.root_id == root.root_id);
-            let candidate = matching.next().ok_or("external_provenance_content_binding_changed")?;
-            if matching.next().is_some() || !provenance_paths_equal(&root.path, &candidate.staged)
+            let mut matching = staged
+                .roots
+                .iter()
+                .filter(|candidate| candidate.root_id == root.root_id);
+            let candidate = matching
+                .next()
+                .ok_or("external_provenance_content_binding_changed")?;
+            if matching.next().is_some()
+                || !provenance_paths_equal(&root.path, &candidate.staged)
                 || root.identity != candidate.staged_identity
-                || &root.fingerprint != candidate.proposed_fingerprint.as_ref().unwrap_or(&candidate.fingerprint)
-            { return Err("external_provenance_content_binding_changed".into()); }
+                || &root.fingerprint
+                    != candidate
+                        .proposed_fingerprint
+                        .as_ref()
+                        .unwrap_or(&candidate.fingerprint)
+            {
+                return Err("external_provenance_content_binding_changed".into());
+            }
             digest.field(root.root_id.as_str().as_bytes())?;
             digest.field(provenance_relative_path(&self.envelope, &root.path)?.as_bytes())?;
             digest.identity(&root.identity)?;
@@ -5202,10 +5801,18 @@ impl NativeSourceIdentity {
                 digest.field(&row.bytes.to_le_bytes())?;
                 digest.field(row.sha256.as_bytes())?;
                 if row.directory {
-                    let mut matching = staged.directory_guards.0.iter()
+                    let mut matching = staged
+                        .directory_guards
+                        .0
+                        .iter()
                         .filter(|(held_path, _, _)| provenance_paths_equal(held_path, &path));
-                    let (_, expected, guard) = matching.next().ok_or("external_provenance_content_directory_not_held")?;
-                    if matching.next().is_some() || expected != identity || file_identity(guard)? != *identity {
+                    let (_, expected, guard) = matching
+                        .next()
+                        .ok_or("external_provenance_content_directory_not_held")?;
+                    if matching.next().is_some()
+                        || expected != identity
+                        || file_identity(guard)? != *identity
+                    {
                         return Err("external_provenance_content_directory_changed".into());
                     }
                     crate::snapshot::check_opened_path(guard, &path, budget.deadline)?;
@@ -5218,17 +5825,26 @@ impl NativeSourceIdentity {
                                 if first != 0 || index != 1 || aliases != 1 {
                                     return Err("external_provenance_input_ambiguous".into());
                                 }
-                            } else { first_match = Some(index); }
+                            } else {
+                                first_match = Some(index);
+                            }
                             // Validate every matching role object against this one
                             // inventory row; neither alias substitutes for the other.
-                            if (index >= 4 && file.role != "staged_content") || file.expected.identity != *identity
-                                || file.expected.bytes != row.bytes || file.sha256 != row.sha256
+                            if (index >= 4 && file.role != "staged_content")
+                                || file.expected.identity != *identity
+                                || file.expected.bytes != row.bytes
+                                || file.sha256 != row.sha256
                                 || stamp(&file.guard)? != file.expected
-                                || hash_provenance_input(&file.path, &file.guard, budget)? != row.sha256
-                            { return Err("external_provenance_held_input_changed".into()); }
+                                || hash_provenance_input(&file.path, &file.guard, budget)?
+                                    != row.sha256
+                            {
+                                return Err("external_provenance_held_input_changed".into());
+                            }
                         }
                     }
-                    if first_match.is_none() { return Err("external_provenance_input_not_held".into()); }
+                    if first_match.is_none() {
+                        return Err("external_provenance_input_not_held".into());
+                    }
                 }
             }
         }
@@ -5257,10 +5873,15 @@ impl NativeSourceIdentity {
         let mut corruption = None;
         for path in paths {
             budget.check()?;
-            let index = self.files.iter().position(|file| provenance_paths_equal(&file.path, path))
+            let index = self
+                .files
+                .iter()
+                .position(|file| provenance_paths_equal(&file.path, path))
                 .ok_or("staged_content_test_input_missing")?;
             let file = &self.files[index];
-            if file_identity(&file.guard)? != file.expected.identity || file.role != "staged_content" {
+            if file_identity(&file.guard)? != file.expected.identity
+                || file.role != "staged_content"
+            {
                 return Err("staged_content_test_original_input_missing".into());
             }
             observations.push(serde_json::json!({
@@ -5272,16 +5893,22 @@ impl NativeSourceIdentity {
                 self.files[index].sha256.push('0');
                 let observed = self.recheck(staged, member, source, budget);
                 self.files[index].sha256.pop();
-                let error = observed.err().ok_or("staged_content_test_corruption_accepted")?;
-                if error != "external_provenance_held_input_changed" { return Err(error); }
+                let error = observed
+                    .err()
+                    .ok_or("staged_content_test_corruption_accepted")?;
+                if error != "external_provenance_held_input_changed" {
+                    return Err(error);
+                }
                 self.recheck(staged, member, source, budget)?;
                 corruption = Some(error);
             }
         }
-        Ok(serde_json::json!({"inputs":observations,"restored_corruption":corruption,
+        Ok(
+            serde_json::json!({"inputs":observations,"restored_corruption":corruption,
             "staged_files":self.files.len(),"staged_roots":self.content.len(),
             "scope":"all staged local-source content custody",
-            "dependency_content_closure_verified":false,"exact_build_units_verified":false}))
+            "dependency_content_closure_verified":false,"exact_build_units_verified":false}),
+        )
     }
 }
 fn open_compile_source(path: &Path, budget: &Budget<'_>) -> Result<File, String> {
@@ -5385,8 +6012,14 @@ impl StagedSources {
             {
                 return Err("external_compile_staged_fingerprint_changed".into());
             }
-            native_content_shape(&root.staged, &root.root_id, &rows,
-                &mut content_encoded, &mut content_usage, budget)?;
+            native_content_shape(
+                &root.staged,
+                &root.root_id,
+                &rows,
+                &mut content_encoded,
+                &mut content_usage,
+                budget,
+            )?;
             let mut identities = Vec::with_capacity(rows.len());
             let guard = crate::snapshot::open_checked_directory(&root.staged, budget.deadline)?;
             if file_identity(&guard)? != root.staged_identity {
@@ -5421,9 +6054,12 @@ impl StagedSources {
                 }
             }
             staged_content.push(StagedContentInventory {
-                root_id: root.root_id.clone(), path: root.staged.clone(),
-                identity: root.staged_identity.clone(), fingerprint: copied,
-                entries: rows, identities,
+                root_id: root.root_id.clone(),
+                path: root.staged.clone(),
+                identity: root.staged_identity.clone(),
+                fingerprint: copied,
+                entries: rows,
+                identities,
             });
         }
         let lease = CompilationLease {
@@ -5451,18 +6087,33 @@ impl CompilationLease {
         budget: &Budget<'_>,
     ) -> Result<NativeSourceIdentity, String> {
         self.verify(budget)?;
-        let counts = [self.original_guards.len(), self.staged_guards.len(),
-            self.staged_file_guards.len(), self.compiler_directories.len(),
-            self.compiler_output_directories.len(), self.compiler_files.len(),
-            self.compiler_links.len(), self.staged.directory_guards.0.len()];
+        let counts = [
+            self.original_guards.len(),
+            self.staged_guards.len(),
+            self.staged_file_guards.len(),
+            self.compiler_directories.len(),
+            self.compiler_output_directories.len(),
+            self.compiler_files.len(),
+            self.compiler_links.len(),
+            self.staged.directory_guards.0.len(),
+        ];
         let duplicates = native_content_duplicate_count(
-            self.staged_file_guards.len(), &self.staged.cargo_manifest, member,
+            self.staged_file_guards.len(),
+            &self.staged.cargo_manifest,
+            member,
         )?;
         native_provenance_guard_bound(&counts, duplicates)?;
         let mut charged = NATIVE_CONTENT_ENCODING_BASE;
         let mut usage = Usage::default();
         for root in &self.staged_content {
-            native_content_shape(&root.path, &root.root_id, &root.entries, &mut charged, &mut usage, budget)?;
+            native_content_shape(
+                &root.path,
+                &root.root_id,
+                &root.entries,
+                &mut charged,
+                &mut usage,
+                budget,
+            )?;
         }
         if self.staged_content.len() != self.staged.roots.len() {
             return Err("external_provenance_content_binding_changed".into());
@@ -5481,27 +6132,37 @@ impl CompilationLease {
         if !provenance_paths_equal(member, &self.staged.member_manifest) {
             return Err("external_provenance_selected_manifest_changed".into());
         }
-        let lock = self.staged.cargo_manifest.parent()
-            .ok_or("external_provenance_workspace_missing")?.join("Cargo.lock");
+        let lock = self
+            .staged
+            .cargo_manifest
+            .parent()
+            .ok_or("external_provenance_workspace_missing")?
+            .join("Cargo.lock");
         let requested = [
             ("workspace_manifest", self.staged.cargo_manifest.as_path()),
-            ("selected_manifest", member), ("selected_source", source), ("lock", lock.as_path()),
+            ("selected_manifest", member),
+            ("selected_source", source),
+            ("lock", lock.as_path()),
         ];
         native_content_anchor_aliases(requested.map(|(_, path)| path))?;
         let mut envelope_match = None;
         for row in &self.staged_guards {
             budget.check()?;
             if provenance_paths_equal(&row.0, &self.staged.envelope) {
-                if envelope_match.is_some() { return Err("external_provenance_envelope_ambiguous".into()); }
+                if envelope_match.is_some() {
+                    return Err("external_provenance_envelope_ambiguous".into());
+                }
                 envelope_match = Some(row);
             }
         }
-        let (_, identity, envelope) = envelope_match.ok_or("external_provenance_envelope_not_held")?;
+        let (_, identity, envelope) =
+            envelope_match.ok_or("external_provenance_envelope_not_held")?;
         crate::snapshot::check_opened_path(envelope, &self.staged.envelope, budget.deadline)?;
         if *identity != self.staged.envelope_identity || file_identity(envelope)? != *identity {
             return Err("external_provenance_envelope_changed".into());
         }
-        let envelope_guard = envelope.try_clone()
+        let envelope_guard = envelope
+            .try_clone()
             .map_err(|_| "external_provenance_handle_duplication_failed")?;
         let mut files = Vec::new();
         for (role, requested) in requested {
@@ -5511,7 +6172,9 @@ impl CompilationLease {
             for row in &self.staged_file_guards {
                 budget.check()?;
                 if provenance_paths_equal(&row.0, requested) {
-                    if matched.is_some() { return Err("external_provenance_input_ambiguous".into()); }
+                    if matched.is_some() {
+                        return Err("external_provenance_input_ambiguous".into());
+                    }
                     matched = Some(row);
                 }
             }
@@ -5525,10 +6188,15 @@ impl CompilationLease {
                 return Err("external_provenance_input_path_bound".into());
             }
             let sha256 = hash_provenance_input(path, held, budget)?;
-            let guard = held.try_clone()
+            let guard = held
+                .try_clone()
                 .map_err(|_| "external_provenance_handle_duplication_failed")?;
             files.push(NativeProvenanceFile {
-                role, path: path.clone(), expected: expected.clone(), sha256, guard,
+                role,
+                path: path.clone(),
+                expected: expected.clone(),
+                sha256,
+                guard,
             });
         }
         // Named anchors are first; other objects follow inventory rows, independent
@@ -5536,14 +6204,24 @@ impl CompilationLease {
         for root in &self.staged_content {
             for row in &root.entries {
                 budget.check()?;
-                if row.directory { continue; }
+                if row.directory {
+                    continue;
+                }
                 let path = root.path.join(&row.path);
-                if files.iter().take(4).any(|file| provenance_paths_equal(&file.path, &path)) { continue; }
+                if files
+                    .iter()
+                    .take(4)
+                    .any(|file| provenance_paths_equal(&file.path, &path))
+                {
+                    continue;
+                }
                 let mut matched = None;
                 for held in &self.staged_file_guards {
                     budget.check()?;
                     if provenance_paths_equal(&held.0, &path) {
-                        if matched.is_some() { return Err("external_provenance_input_ambiguous".into()); }
+                        if matched.is_some() {
+                            return Err("external_provenance_input_ambiguous".into());
+                        }
                         matched = Some(held);
                     }
                 }
@@ -5553,15 +6231,25 @@ impl CompilationLease {
                     return Err("external_provenance_input_changed".into());
                 }
                 let sha256 = hash_provenance_input(path, held, budget)?;
-                let guard = held.try_clone().map_err(|_| "external_provenance_handle_duplication_failed")?;
+                let guard = held
+                    .try_clone()
+                    .map_err(|_| "external_provenance_handle_duplication_failed")?;
                 files.push(NativeProvenanceFile {
-                    role: "staged_content", path: path.clone(), expected: expected.clone(), sha256, guard,
+                    role: "staged_content",
+                    path: path.clone(),
+                    expected: expected.clone(),
+                    sha256,
+                    guard,
                 });
             }
         }
         let mut result = NativeSourceIdentity {
-            envelope: self.staged.envelope.clone(), envelope_identity: identity.clone(),
-            envelope_guard, files, content: self.staged_content.clone(), digest: String::new(),
+            envelope: self.staged.envelope.clone(),
+            envelope_identity: identity.clone(),
+            envelope_guard,
+            files,
+            content: self.staged_content.clone(),
+            digest: String::new(),
         };
         result.digest = result.content_digest(&self.staged, budget)?;
         result.recheck(&self.staged, member, source, budget)?;
@@ -5665,16 +6353,33 @@ impl CompilationLease {
     /// The output root is host-selected and held before Cargo runs. The new
     /// artifact is opened through the same checked ancestor policy and stays held.
     pub(crate) fn reported_output_root(
-        &self,target:&Path,budget:&Budget<'_>,
-    )->Result<NativeReportedOutputRoot,String> {
-        self.verify_compiler_output_directory(target,&target.to_string_lossy(),budget)?;
-        let (_,identity,held)=self.compiler_output_directories.iter().find(|(path,_,_)|path==target)
+        &self,
+        target: &Path,
+        budget: &Budget<'_>,
+    ) -> Result<NativeReportedOutputRoot, String> {
+        self.verify_compiler_output_directory(target, &target.to_string_lossy(), budget)?;
+        let (_, identity, held) = self
+            .compiler_output_directories
+            .iter()
+            .find(|(path, _, _)| path == target)
             .ok_or("external_compile_output_directory_unheld")?;
-        let canonical=crate::project::clean_path(target.canonicalize().map_err(|_|"external_reported_output_root_changed")?);
-        crate::snapshot::check_opened_path(held,&canonical,budget.deadline)?;
-        let guard=held.try_clone().map_err(|_|"external_reported_output_handle_duplication")?;
-        let root=NativeReportedOutputRoot {target:target.to_path_buf(),canonical,identity:identity.clone(),guard};
-        root.recheck(budget)?;Ok(root)
+        let canonical = crate::project::clean_path(
+            target
+                .canonicalize()
+                .map_err(|_| "external_reported_output_root_changed")?,
+        );
+        crate::snapshot::check_opened_path(held, &canonical, budget.deadline)?;
+        let guard = held
+            .try_clone()
+            .map_err(|_| "external_reported_output_handle_duplication")?;
+        let root = NativeReportedOutputRoot {
+            target: target.to_path_buf(),
+            canonical,
+            identity: identity.clone(),
+            guard,
+        };
+        root.recheck(budget)?;
+        Ok(root)
     }
     pub(crate) fn checked_artifact_file(
         &self,
@@ -6032,63 +6737,146 @@ mod tests {
     const PRIVATE_BINDING_MANIFEST: &str = "[configuration]\nentry_symbol=\"value\"\ncompatibility_minimum=\"4.1\"\nreloadable=false\n[libraries]\nwindows.debug.x86_64=\"res://bin/external_logic.dll\"\nwindows.release.x86_64=\"res://bin/release.dll\"\n";
     #[test]
     fn configfile_parser_strict_document_barrier_rejects_variants_dependencies_and_ambiguity() {
-        let document=configfile_parser_document(PRIVATE_BINDING_MANIFEST).unwrap();
-        assert_eq!(document["dependencies"],serde_json::json!([]));
-        assert_eq!(document["sections"][0]["name"],"configuration");
-        for text in [PRIVATE_BINDING_MANIFEST.replace("entry_symbol=\"value\"","entry_symbol=Object(\"Resource\")"),
+        let document = configfile_parser_document(PRIVATE_BINDING_MANIFEST).unwrap();
+        assert_eq!(document["dependencies"], serde_json::json!([]));
+        assert_eq!(document["sections"][0]["name"], "configuration");
+        for text in [
+            PRIVATE_BINDING_MANIFEST.replace(
+                "entry_symbol=\"value\"",
+                "entry_symbol=Object(\"Resource\")",
+            ),
             format!("{PRIVATE_BINDING_MANIFEST}\n[dependencies]\nwindows=[]\n"),
             format!("{PRIVATE_BINDING_MANIFEST}\nwindows=\"res://bin/ambiguous.dll\"\n"),
-            PRIVATE_BINDING_MANIFEST.replace("res://bin/external_logic.dll","res://../escape.dll")]
-        {assert!(configfile_parser_document(&text).is_err());}
+            PRIVATE_BINDING_MANIFEST.replace("res://bin/external_logic.dll", "res://../escape.dll"),
+        ] {
+            assert!(configfile_parser_document(&text).is_err());
+        }
     }
     fn seed_private_gdextension_fixture(fixture: &Fixture) {
         std::fs::create_dir_all(fixture.app.join("bin")).unwrap();
-        std::fs::write(fixture.app.join("bin/checked.gdextension"), PRIVATE_BINDING_MANIFEST).unwrap();
+        std::fs::write(
+            fixture.app.join("bin/checked.gdextension"),
+            PRIVATE_BINDING_MANIFEST,
+        )
+        .unwrap();
     }
     #[test]
     fn private_gdextension_mapping_selects_explicit_debug_without_borrowing_other_profiles() {
         let (library, entry) = private_gdextension_mapping(PRIVATE_BINDING_MANIFEST).unwrap();
         assert_eq!(library, "res://bin/external_logic.dll");
         assert_eq!(entry, "value");
-        let quoted = PRIVATE_BINDING_MANIFEST.replace("windows.debug.x86_64=", "\"windows.debug.x86_64\"=")
+        let quoted = PRIVATE_BINDING_MANIFEST
+            .replace("windows.debug.x86_64=", "\"windows.debug.x86_64\"=")
             .replace("\n", "\r\n");
-        assert_eq!(private_gdextension_mapping(&quoted).unwrap(), (library.clone(), entry.clone()));
-        let comments = format!("# ignored \\ comment\n{}; trailing \\ comment\n", PRIVATE_BINDING_MANIFEST);
-        assert_eq!(private_gdextension_mapping(&comments).unwrap(), (library, entry));
-        let release_only = PRIVATE_BINDING_MANIFEST.replace("windows.debug.x86_64=\"res://bin/external_logic.dll\"\n", "");
-        assert_eq!(private_gdextension_mapping(&release_only).unwrap_err(), "external_private_binding_library_missing");
-        let other_arch = PRIVATE_BINDING_MANIFEST.replace("windows.debug.x86_64", "windows.debug.arm64");
-        assert_eq!(private_gdextension_mapping(&other_arch).unwrap_err(), "external_private_binding_library_missing");
+        assert_eq!(
+            private_gdextension_mapping(&quoted).unwrap(),
+            (library.clone(), entry.clone())
+        );
+        let comments = format!(
+            "# ignored \\ comment\n{}; trailing \\ comment\n",
+            PRIVATE_BINDING_MANIFEST
+        );
+        assert_eq!(
+            private_gdextension_mapping(&comments).unwrap(),
+            (library, entry)
+        );
+        let release_only = PRIVATE_BINDING_MANIFEST.replace(
+            "windows.debug.x86_64=\"res://bin/external_logic.dll\"\n",
+            "",
+        );
+        assert_eq!(
+            private_gdextension_mapping(&release_only).unwrap_err(),
+            "external_private_binding_library_missing"
+        );
+        let other_arch =
+            PRIVATE_BINDING_MANIFEST.replace("windows.debug.x86_64", "windows.debug.arm64");
+        assert_eq!(
+            private_gdextension_mapping(&other_arch).unwrap_err(),
+            "external_private_binding_library_missing"
+        );
     }
     #[test]
     fn private_gdextension_mapping_refuses_dependencies_variants_escapes_and_ambiguous_choices() {
         for manifest in [
             format!("{PRIVATE_BINDING_MANIFEST}[dependencies]\n"),
-            PRIVATE_BINDING_MANIFEST.replace("\"res://bin/external_logic.dll\"", "preload(\"res://bin/external_logic.dll\")"),
-            PRIVATE_BINDING_MANIFEST.replace("res://bin/external_logic.dll", "res:\\u002f\\u002fbin/external_logic.dll"),
+            PRIVATE_BINDING_MANIFEST.replace(
+                "\"res://bin/external_logic.dll\"",
+                "preload(\"res://bin/external_logic.dll\")",
+            ),
+            PRIVATE_BINDING_MANIFEST.replace(
+                "res://bin/external_logic.dll",
+                "res:\\u002f\\u002fbin/external_logic.dll",
+            ),
             format!("{PRIVATE_BINDING_MANIFEST}windows=\"res://bin/fallback.dll\"\n"),
             format!("{PRIVATE_BINDING_MANIFEST}windows.debug.x86_64=\"res://bin/duplicate.dll\"\n"),
             format!("{PRIVATE_BINDING_MANIFEST}[libraries]\nwindows=\"res://bin/other.dll\"\n"),
             PRIVATE_BINDING_MANIFEST.replace("res://bin/external_logic.dll", "res://../escape.dll"),
             PRIVATE_BINDING_MANIFEST.replace("res://bin/external_logic.dll", "A:/foreign.dll"),
-            PRIVATE_BINDING_MANIFEST.replace("res://bin/external_logic.dll", "res://bin/external_logic.so"),
+            PRIVATE_BINDING_MANIFEST.replace(
+                "res://bin/external_logic.dll",
+                "res://bin/external_logic.so",
+            ),
             PRIVATE_BINDING_MANIFEST.replace("entry_symbol=\"value\"", "entry_symbol=&\"value\""),
             PRIVATE_BINDING_MANIFEST.replace("reloadable=false", "reloadable=Vector2(1,2)"),
         ] {
-            assert!(private_gdextension_mapping(&manifest).is_err(), "unsupported subset was admitted");
+            assert!(
+                private_gdextension_mapping(&manifest).is_err(),
+                "unsupported subset was admitted"
+            );
         }
-        assert!(private_gdextension_mapping(&format!("\u{feff}{PRIVATE_BINDING_MANIFEST}")).is_err());
+        assert!(
+            private_gdextension_mapping(&format!("\u{feff}{PRIVATE_BINDING_MANIFEST}")).is_err()
+        );
         assert!(private_gdextension_mapping(&format!("{PRIVATE_BINDING_MANIFEST}\0")).is_err());
-        assert!(private_gdextension_mapping(&"x".repeat(PRIVATE_GDEXTENSION_BYTES as usize + 1)).is_err());
+        assert!(
+            private_gdextension_mapping(&"x".repeat(PRIVATE_GDEXTENSION_BYTES as usize + 1))
+                .is_err()
+        );
     }
     #[test]
     fn private_gdextension_paths_bind_one_godot_root_and_refuse_unsafe_destinations() {
-        assert_eq!(private_gdextension_library_relative("godot/addons/game/checked.gdextension", "godot/project.godot", "res://bin/game.dll").unwrap(), "godot/bin/game.dll");
-        assert_eq!(private_gdextension_library_relative("godot/addons/game/checked.gdextension", "godot/project.godot", "game.dll").unwrap(), "godot/addons/game/game.dll");
-        for path in ["../escape.dll", "/absolute.dll", "C:/absolute.dll", "res://../escape.dll", "res://bin/NUL.dll", "res://bin/COM1.dll", "res://bin/trailing./game.dll", "res://bin/percent%2e.dll", "res://bin\\escape.dll"] {
-            assert!(private_gdextension_library_relative("godot/bin/checked.gdextension", "godot/project.godot", path).is_err());
+        assert_eq!(
+            private_gdextension_library_relative(
+                "godot/addons/game/checked.gdextension",
+                "godot/project.godot",
+                "res://bin/game.dll"
+            )
+            .unwrap(),
+            "godot/bin/game.dll"
+        );
+        assert_eq!(
+            private_gdextension_library_relative(
+                "godot/addons/game/checked.gdextension",
+                "godot/project.godot",
+                "game.dll"
+            )
+            .unwrap(),
+            "godot/addons/game/game.dll"
+        );
+        for path in [
+            "../escape.dll",
+            "/absolute.dll",
+            "C:/absolute.dll",
+            "res://../escape.dll",
+            "res://bin/NUL.dll",
+            "res://bin/COM1.dll",
+            "res://bin/trailing./game.dll",
+            "res://bin/percent%2e.dll",
+            "res://bin\\escape.dll",
+        ] {
+            assert!(private_gdextension_library_relative(
+                "godot/bin/checked.gdextension",
+                "godot/project.godot",
+                path
+            )
+            .is_err());
         }
-        assert!(private_gdextension_library_relative("other/checked.gdextension", "godot/project.godot", "other.dll").is_err());
+        assert!(private_gdextension_library_relative(
+            "other/checked.gdextension",
+            "godot/project.godot",
+            "other.dll"
+        )
+        .is_err());
     }
     #[cfg(windows)]
     #[test]
@@ -6097,16 +6885,26 @@ mod tests {
         seed_private_gdextension_fixture(&fixture);
         let b = budget();
         let before = fixture_oracle(&fixture, &b).unwrap();
-        let mut workspace = crate::candidate_workspace::Workspace::for_test_project(&fixture.app).unwrap();
+        let mut workspace =
+            crate::candidate_workspace::Workspace::for_test_project(&fixture.app).unwrap();
         let envelope = workspace.source_envelope(b.deadline()).unwrap();
-        let staged = fixture.plan(Mode::DependencyRead, &b).stage_owned(&envelope, &b).unwrap();
+        let staged = fixture
+            .plan(Mode::DependencyRead, &b)
+            .stage_owned(&envelope, &b)
+            .unwrap();
         drop(envelope);
         let source = staged.member_manifest.parent().unwrap().join("src/lib.rs");
         let lease = std::sync::Arc::new(staged.compilation_lease(&b).unwrap());
         workspace.retain_compilation(lease.clone()).unwrap();
-        let witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
+        let witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
         let manifest_path = staged.envelope.join("app/bin/checked.gdextension");
-        let held = witness.files.iter().find(|file| provenance_paths_equal(&file.path, &manifest_path)).unwrap();
+        let held = witness
+            .files
+            .iter()
+            .find(|file| provenance_paths_equal(&file.path, &manifest_path))
+            .unwrap();
         std::io::Seek::seek(&mut &held.guard, std::io::SeekFrom::Start(9)).unwrap();
         let weak = std::sync::Arc::downgrade(&lease);
         drop(lease);
@@ -6114,19 +6912,40 @@ mod tests {
         assert!(weak.upgrade().is_none());
         assert!(workspace.source_envelope(b.deadline()).is_err());
         // Held-input selection only: no real compiler provenance is synthesized.
-        let selected = witness.gdextension_manifest(&RootId::new("project").unwrap(), "bin/checked.gdextension", &b).unwrap();
+        let selected = witness
+            .gdextension_manifest(
+                &RootId::new("project").unwrap(),
+                "bin/checked.gdextension",
+                &b,
+            )
+            .unwrap();
         assert_eq!(selected.library_relative, "bin/external_logic.dll");
         assert_eq!(selected.entry_symbol, "value");
-        assert_eq!(selected.manifest.sha256, crate::sha256_hex(PRIVATE_BINDING_MANIFEST.as_bytes()));
+        assert_eq!(
+            selected.manifest.sha256,
+            crate::sha256_hex(PRIVATE_BINDING_MANIFEST.as_bytes())
+        );
         assert_eq!(selected.project.relative, "project.godot");
         assert_eq!(std::io::Seek::stream_position(&mut &held.guard).unwrap(), 9);
         assert!(OpenOptions::new().write(true).open(&manifest_path).is_err());
         let other = Fixture::new();
         seed_private_gdextension_fixture(&other);
         let (other_staged, other_lease, other_source) = provenance_fixture_stage(&other, &b);
-        let foreign = other_lease.native_source_identity(&other_staged.member_manifest, &other_source, &b).unwrap();
+        let foreign = other_lease
+            .native_source_identity(&other_staged.member_manifest, &other_source, &b)
+            .unwrap();
         assert!(foreign.recheck_local_input(&selected.manifest, &b).is_err());
-        assert_eq!(witness.gdextension_manifest(&RootId::new("project").unwrap(), "bin/checked.gdextension", &b).unwrap().manifest, selected.manifest);
+        assert_eq!(
+            witness
+                .gdextension_manifest(
+                    &RootId::new("project").unwrap(),
+                    "bin/checked.gdextension",
+                    &b
+                )
+                .unwrap()
+                .manifest,
+            selected.manifest
+        );
         drop(foreign);
         drop(other_lease);
         drop(other_staged);
@@ -6144,35 +6963,69 @@ mod tests {
         seed_private_gdextension_fixture(&fixture);
         let b = budget();
         let (staged, lease, source) = provenance_fixture_stage(&fixture, &b);
-        let mut witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
+        let mut witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
         let root = RootId::new("project").unwrap();
-        assert!(witness.gdextension_manifest(&RootId::new("ungranted").unwrap(), "bin/checked.gdextension", &b).is_err());
-        assert!(witness.gdextension_manifest(&root, "../outside.gdextension", &b).is_err());
-        assert!(witness.gdextension_manifest(&root, "bin/missing.gdextension", &b).is_err());
+        assert!(witness
+            .gdextension_manifest(
+                &RootId::new("ungranted").unwrap(),
+                "bin/checked.gdextension",
+                &b
+            )
+            .is_err());
+        assert!(witness
+            .gdextension_manifest(&root, "../outside.gdextension", &b)
+            .is_err());
+        assert!(witness
+            .gdextension_manifest(&root, "bin/missing.gdextension", &b)
+            .is_err());
         let path = staged.envelope.join("app/bin/checked.gdextension");
-        let index = witness.files.iter().position(|file| provenance_paths_equal(&file.path, &path)).unwrap();
+        let index = witness
+            .files
+            .iter()
+            .position(|file| provenance_paths_equal(&file.path, &path))
+            .unwrap();
         witness.files[index].sha256.push('0');
-        assert!(witness.gdextension_manifest(&root, "bin/checked.gdextension", &b).is_err());
+        assert!(witness
+            .gdextension_manifest(&root, "bin/checked.gdextension", &b)
+            .is_err());
         witness.files[index].sha256.pop();
         witness.files[index].expected.identity.volume ^= 1;
-        assert!(witness.gdextension_manifest(&root, "bin/checked.gdextension", &b).is_err());
+        assert!(witness
+            .gdextension_manifest(&root, "bin/checked.gdextension", &b)
+            .is_err());
         witness.files[index].expected.identity.volume ^= 1;
         let duplicate = NativeProvenanceFile {
-            role: witness.files[index].role, path: witness.files[index].path.clone(),
-            expected: witness.files[index].expected.clone(), sha256: witness.files[index].sha256.clone(),
+            role: witness.files[index].role,
+            path: witness.files[index].path.clone(),
+            expected: witness.files[index].expected.clone(),
+            sha256: witness.files[index].sha256.clone(),
             guard: witness.files[index].guard.try_clone().unwrap(),
         };
         witness.files.push(duplicate);
-        assert!(witness.gdextension_manifest(&root, "bin/checked.gdextension", &b).is_err());
+        assert!(witness
+            .gdextension_manifest(&root, "bin/checked.gdextension", &b)
+            .is_err());
         witness.files.pop();
-        witness.gdextension_manifest(&root, "bin/checked.gdextension", &b).unwrap();
+        witness
+            .gdextension_manifest(&root, "bin/checked.gdextension", &b)
+            .unwrap();
         let ambiguous = Fixture::new();
         seed_private_gdextension_fixture(&ambiguous);
-        std::fs::write(ambiguous.app.join("bin/project.godot"), "config_version=5\n").unwrap();
+        std::fs::write(
+            ambiguous.app.join("bin/project.godot"),
+            "config_version=5\n",
+        )
+        .unwrap();
         let (nested_staged, nested_lease, nested_source) = provenance_fixture_stage(&ambiguous, &b);
-        let nested = nested_lease.native_source_identity(&nested_staged.member_manifest, &nested_source, &b).unwrap();
-        assert!(matches!(nested.gdextension_manifest(&root, "bin/checked.gdextension", &b),
-            Err(error) if error == "external_private_binding_godot_root_ambiguous"));
+        let nested = nested_lease
+            .native_source_identity(&nested_staged.member_manifest, &nested_source, &b)
+            .unwrap();
+        assert!(
+            matches!(nested.gdextension_manifest(&root, "bin/checked.gdextension", &b),
+            Err(error) if error == "external_private_binding_godot_root_ambiguous")
+        );
     }
     #[cfg(windows)]
     #[test]
@@ -6180,12 +7033,18 @@ mod tests {
         let fixture = Fixture::new();
         let b = budget();
         let path = fixture.base.join("held.gdextension");
-        let text = format!("{PRIVATE_BINDING_MANIFEST}{}", "; bounded comment\n".repeat(1024));
+        let text = format!(
+            "{PRIVATE_BINDING_MANIFEST}{}",
+            "; bounded comment\n".repeat(1024)
+        );
         std::fs::write(&path, &text).unwrap();
         let guard = open_compile_source(&path, &b).unwrap();
         let mut held = NativeProvenanceFile {
-            role: "staged_content", path, expected: stamp(&guard).unwrap(),
-            sha256: crate::sha256_hex(text.as_bytes()), guard,
+            role: "staged_content",
+            path,
+            expected: stamp(&guard).unwrap(),
+            sha256: crate::sha256_hex(text.as_bytes()),
+            guard,
         };
         std::io::Seek::seek(&mut &held.guard, std::io::SeekFrom::Start(7)).unwrap();
         assert_eq!(held_gdextension_text(&held, &b).unwrap(), text);
@@ -6193,35 +7052,58 @@ mod tests {
         let cancel = || {
             if std::io::Seek::stream_position(&mut &held.guard).unwrap() >= 8192 {
                 Err("private_binding_test_cancelled".into())
-            } else { Ok(()) }
+            } else {
+                Ok(())
+            }
         };
         let cancelled = b.with_check(&cancel);
-        assert_eq!(held_gdextension_text(&held, &cancelled).unwrap_err(), "private_binding_test_cancelled");
+        assert_eq!(
+            held_gdextension_text(&held, &cancelled).unwrap_err(),
+            "private_binding_test_cancelled"
+        );
         assert_eq!(std::io::Seek::stream_position(&mut &held.guard).unwrap(), 7);
         let mut expired = b.with_check(b.check_cancelled);
         expired.deadline = Instant::now();
-        assert_eq!(held_gdextension_text(&held, &expired).unwrap_err(), "external_staging_deadline");
+        assert_eq!(
+            held_gdextension_text(&held, &expired).unwrap_err(),
+            "external_staging_deadline"
+        );
         assert_eq!(std::io::Seek::stream_position(&mut &held.guard).unwrap(), 7);
         held.expected.bytes = PRIVATE_GDEXTENSION_BYTES + 1;
-        assert_eq!(held_gdextension_text(&held, &b).unwrap_err(), "external_private_binding_text_bound");
+        assert_eq!(
+            held_gdextension_text(&held, &b).unwrap_err(),
+            "external_private_binding_text_bound"
+        );
         assert_eq!(std::io::Seek::stream_position(&mut &held.guard).unwrap(), 7);
         let invalid_path = fixture.base.join("invalid.gdextension");
         std::fs::write(&invalid_path, [0xff, 0xfe, 0xfd]).unwrap();
         let guard = open_compile_source(&invalid_path, &b).unwrap();
         let invalid = NativeProvenanceFile {
-            role: "staged_content", path: invalid_path, expected: stamp(&guard).unwrap(),
-            sha256: crate::sha256_hex(&[0xff, 0xfe, 0xfd]), guard,
+            role: "staged_content",
+            path: invalid_path,
+            expected: stamp(&guard).unwrap(),
+            sha256: crate::sha256_hex(&[0xff, 0xfe, 0xfd]),
+            guard,
         };
         std::io::Seek::seek(&mut &invalid.guard, std::io::SeekFrom::Start(1)).unwrap();
-        assert_eq!(held_gdextension_text(&invalid, &b).unwrap_err(), "external_private_binding_utf8_required");
-        assert_eq!(std::io::Seek::stream_position(&mut &invalid.guard).unwrap(), 1);
+        assert_eq!(
+            held_gdextension_text(&invalid, &b).unwrap_err(),
+            "external_private_binding_utf8_required"
+        );
+        assert_eq!(
+            std::io::Seek::stream_position(&mut &invalid.guard).unwrap(),
+            1
+        );
     }
     #[cfg(windows)]
     fn provenance_fixture_stage(
-        fixture: &Fixture, b: &Budget<'_>,
+        fixture: &Fixture,
+        b: &Budget<'_>,
     ) -> (StagedSources, std::sync::Arc<CompilationLease>, PathBuf) {
-        let staged = fixture.plan(Mode::DependencyRead, b)
-            .stage(&fixture.base.join("provenance-stage"), b).unwrap();
+        let staged = fixture
+            .plan(Mode::DependencyRead, b)
+            .stage(&fixture.base.join("provenance-stage"), b)
+            .unwrap();
         let source = staged.member_manifest.parent().unwrap().join("src/lib.rs");
         let lease = std::sync::Arc::new(staged.compilation_lease(b).unwrap());
         (staged, lease, source)
@@ -6238,19 +7120,35 @@ mod tests {
         let guard = open_compile_source(&path, &b).unwrap();
         let mut reader = &guard;
         std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(3)).unwrap();
-        assert_eq!(hash_provenance_input(&path, &guard, &b).unwrap(), crate::sha256_hex(contents));
+        assert_eq!(
+            hash_provenance_input(&path, &guard, &b).unwrap(),
+            crate::sha256_hex(contents)
+        );
         assert_eq!(std::io::Seek::stream_position(&mut reader).unwrap(), 3);
         let calls = std::cell::Cell::new(0usize);
         let cancel_during_hash = || {
             calls.set(calls.get() + 1);
-            if calls.get() == 4 { Err("fixture_provenance_cancelled".into()) } else { Ok(()) }
+            if calls.get() == 4 {
+                Err("fixture_provenance_cancelled".into())
+            } else {
+                Ok(())
+            }
         };
         let cancelled = b.with_check(&cancel_during_hash);
-        assert_eq!(hash_provenance_input(&path, &guard, &cancelled).err().unwrap(), "fixture_provenance_cancelled");
+        assert_eq!(
+            hash_provenance_input(&path, &guard, &cancelled)
+                .err()
+                .unwrap(),
+            "fixture_provenance_cancelled"
+        );
         assert_eq!(calls.get(), 4);
         assert_eq!(std::io::Seek::stream_position(&mut reader).unwrap(), 3);
-        assert_eq!(hash_provenance_input(&fixture.base.join("foreign-cursor-path"), &guard, &b).err().unwrap(),
-            "opened file resolved away from its declared path" );
+        assert_eq!(
+            hash_provenance_input(&fixture.base.join("foreign-cursor-path"), &guard, &b)
+                .err()
+                .unwrap(),
+            "opened file resolved away from its declared path"
+        );
         assert_eq!(std::io::Seek::stream_position(&mut reader).unwrap(), 3);
         assert_eq!(std::fs::read(&path).unwrap(), contents);
         assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
@@ -6262,8 +7160,11 @@ mod tests {
         let b = budget();
         let before = fixture_oracle(&fixture, &b).unwrap();
         let (staged, lease, source) = provenance_fixture_stage(&fixture, &b);
-        let (_, _, held) = lease.staged_file_guards.iter()
-            .find(|(path, _, _)| path == &source).unwrap();
+        let (_, _, held) = lease
+            .staged_file_guards
+            .iter()
+            .find(|(path, _, _)| path == &source)
+            .unwrap();
         let mut reader = held;
         std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(3)).unwrap();
         let triggered = std::cell::Cell::new(false);
@@ -6272,20 +7173,36 @@ mod tests {
             if std::io::Seek::stream_position(&mut reader).unwrap() != 3 {
                 triggered.set(true);
                 Err("fixture_provenance_capture_cancelled".into())
-            } else { Ok(()) }
+            } else {
+                Ok(())
+            }
         };
         let cancelled = b.with_check(&stop_on_shared_cursor_movement);
-        assert_eq!(lease.native_source_identity(&staged.member_manifest, &source, &cancelled).err().unwrap(),
-            "fixture_provenance_capture_cancelled");
+        assert_eq!(
+            lease
+                .native_source_identity(&staged.member_manifest, &source, &cancelled)
+                .err()
+                .unwrap(),
+            "fixture_provenance_capture_cancelled"
+        );
         assert!(triggered.get());
         assert_eq!(std::io::Seek::stream_position(&mut reader).unwrap(), 3);
         assert_eq!(std::sync::Arc::strong_count(&lease), 1);
         let source_bytes = std::fs::read(&source).unwrap();
-        drop(cancelled);
         drop(lease);
         // Cancellation after two manifest duplicates must drop every partial witness.
-        drop(std::fs::OpenOptions::new().write(true).open(&staged.cargo_manifest).unwrap());
-        drop(std::fs::OpenOptions::new().write(true).open(&source).unwrap());
+        drop(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&staged.cargo_manifest)
+                .unwrap(),
+        );
+        drop(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&source)
+                .unwrap(),
+        );
         assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
         assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
     }
@@ -6296,82 +7213,160 @@ mod tests {
         let b = budget();
         let before = fixture_oracle(&fixture, &b).unwrap();
         let (staged, mut lease, source) = provenance_fixture_stage(&fixture, &b);
-        let member_slash = PathBuf::from(staged.member_manifest.to_str().unwrap().replace('\\', "/"));
-        let member_backslash = PathBuf::from(staged.member_manifest.to_str().unwrap().replace('/', "\\"));
+        let member_slash =
+            PathBuf::from(staged.member_manifest.to_str().unwrap().replace('\\', "/"));
+        let member_backslash =
+            PathBuf::from(staged.member_manifest.to_str().unwrap().replace('/', "\\"));
         let source_slash = PathBuf::from(source.to_str().unwrap().replace('\\', "/"));
         let source_backslash = PathBuf::from(source.to_str().unwrap().replace('/', "\\"));
         assert_ne!(source_slash.to_str(), source_backslash.to_str());
         assert!(provenance_paths_equal(&member_slash, &member_backslash));
         assert!(provenance_paths_equal(&source_slash, &source_backslash));
-        let equivalent = lease.native_source_identity(&member_slash, &source_backslash, &b).unwrap();
-        equivalent.recheck(&staged, &PathBuf::from(member_backslash.to_str().unwrap().to_ascii_uppercase()), &PathBuf::from(source_slash.to_str().unwrap().to_ascii_uppercase()), &b).unwrap();
+        let equivalent = lease
+            .native_source_identity(&member_slash, &source_backslash, &b)
+            .unwrap();
+        equivalent
+            .recheck(
+                &staged,
+                &PathBuf::from(member_backslash.to_str().unwrap().to_ascii_uppercase()),
+                &PathBuf::from(source_slash.to_str().unwrap().to_ascii_uppercase()),
+                &b,
+            )
+            .unwrap();
         drop(equivalent);
         let outside = fixture.base.join("outside-source.rs");
         assert!(!provenance_paths_equal(&source, &outside));
-        assert_eq!(lease.native_source_identity(&staged.member_manifest, &outside, &b).err().unwrap(),
-            "external_provenance_input_outside_envelope");
+        assert_eq!(
+            lease
+                .native_source_identity(&staged.member_manifest, &outside, &b)
+                .err()
+                .unwrap(),
+            "external_provenance_input_outside_envelope"
+        );
         let parent_dir = source.parent().unwrap().join("..").join("src/lib.rs");
         assert!(!provenance_paths_equal(&source, &parent_dir));
-        assert_eq!(lease.native_source_identity(&staged.member_manifest, &parent_dir, &b).err().unwrap(),
-            "external_provenance_input_path_invalid");
+        assert_eq!(
+            lease
+                .native_source_identity(&staged.member_manifest, &parent_dir, &b)
+                .err()
+                .unwrap(),
+            "external_provenance_input_path_invalid"
+        );
         let changed_prefix = PathBuf::from(format!(r"\\?\{}", source_backslash.display()));
         assert!(!provenance_paths_equal(&source, &changed_prefix));
-        assert_eq!(lease.native_source_identity(&staged.member_manifest, &changed_prefix, &b).err().unwrap(),
-            "external_provenance_input_outside_envelope");
+        assert_eq!(
+            lease
+                .native_source_identity(&staged.member_manifest, &changed_prefix, &b)
+                .err()
+                .unwrap(),
+            "external_provenance_input_outside_envelope"
+        );
         let different_input = source.parent().unwrap().join("different-file.rs");
         assert!(!provenance_paths_equal(&source, &different_input));
-        assert_eq!(lease.native_source_identity(&staged.member_manifest, &different_input, &b).err().unwrap(),
-            "external_provenance_input_not_held");
-        let mut witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
-        witness.recheck(&staged, &staged.member_manifest, &source, &b).unwrap();
+        assert_eq!(
+            lease
+                .native_source_identity(&staged.member_manifest, &different_input, &b)
+                .err()
+                .unwrap(),
+            "external_provenance_input_not_held"
+        );
+        let mut witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
+        witness
+            .recheck(&staged, &staged.member_manifest, &source, &b)
+            .unwrap();
         let role = witness.files[3].role;
         witness.files[3].role = "selected_source";
         let observed = witness.recheck(&staged, &staged.member_manifest, &source, &b);
         witness.files[3].role = role;
-        assert_eq!(observed.err().unwrap(), "external_provenance_held_input_changed");
-        let path = std::mem::replace(&mut witness.files[3].path, fixture.base.join("foreign-lock"));
+        assert_eq!(
+            observed.err().unwrap(),
+            "external_provenance_held_input_changed"
+        );
+        let path = std::mem::replace(
+            &mut witness.files[3].path,
+            fixture.base.join("foreign-lock"),
+        );
         let observed = witness.recheck(&staged, &staged.member_manifest, &source, &b);
         witness.files[3].path = path;
-        assert_eq!(observed.err().unwrap(), "external_provenance_held_input_changed");
+        assert_eq!(
+            observed.err().unwrap(),
+            "external_provenance_held_input_changed"
+        );
         witness.files[3].expected.identity.volume ^= 1;
         let observed = witness.recheck(&staged, &staged.member_manifest, &source, &b);
         witness.files[3].expected.identity.volume ^= 1;
-        assert_eq!(observed.err().unwrap(), "external_provenance_held_input_changed");
+        assert_eq!(
+            observed.err().unwrap(),
+            "external_provenance_held_input_changed"
+        );
         witness.files[3].sha256.push('0');
         let observed = witness.recheck(&staged, &staged.member_manifest, &source, &b);
         witness.files[3].sha256.pop();
-        assert_eq!(observed.err().unwrap(), "external_provenance_held_input_changed");
+        assert_eq!(
+            observed.err().unwrap(),
+            "external_provenance_held_input_changed"
+        );
         let foreign = fixture.base.join("foreign-held-input");
         std::fs::write(&foreign, b"foreign ordinary input must remain untouched\n").unwrap();
-        let held = std::mem::replace(&mut witness.files[3].guard, open_compile_source(&foreign, &b).unwrap());
+        let held = std::mem::replace(
+            &mut witness.files[3].guard,
+            open_compile_source(&foreign, &b).unwrap(),
+        );
         let observed = witness.recheck(&staged, &staged.member_manifest, &source, &b);
         witness.files[3].guard = held;
-        assert_eq!(observed.err().unwrap(), "external_provenance_held_input_changed");
-        witness.recheck(&staged, &staged.member_manifest, &source, &b).unwrap();
+        assert_eq!(
+            observed.err().unwrap(),
+            "external_provenance_held_input_changed"
+        );
+        witness
+            .recheck(&staged, &staged.member_manifest, &source, &b)
+            .unwrap();
         drop(witness);
         {
             let lease = std::sync::Arc::get_mut(&mut lease).unwrap();
-            let index = lease.staged_file_guards.iter().position(|(path, _, _)| path == &source).unwrap();
+            let index = lease
+                .staged_file_guards
+                .iter()
+                .position(|(path, _, _)| path == &source)
+                .unwrap();
             let row = &lease.staged_file_guards[index];
             let alias = PathBuf::from(row.0.to_str().unwrap().replace('\\', "/"));
             let duplicate = (alias, row.1.clone(), row.2.try_clone().unwrap());
             lease.staged_file_guards.push(duplicate);
             let observed = lease.native_source_identity(&member_backslash, &source_slash, &b);
             lease.staged_file_guards.pop();
-            assert_eq!(observed.err().unwrap(), "external_provenance_input_ambiguous");
+            assert_eq!(
+                observed.err().unwrap(),
+                "external_provenance_input_ambiguous"
+            );
         }
         let lock = staged.cargo_manifest.parent().unwrap().join("Cargo.lock");
         for missing in [&lock, &source] {
             let lease = std::sync::Arc::get_mut(&mut lease).unwrap();
-            let index = lease.staged_file_guards.iter().position(|(path, _, _)| path == missing).unwrap();
+            let index = lease
+                .staged_file_guards
+                .iter()
+                .position(|(path, _, _)| path == missing)
+                .unwrap();
             let held = lease.staged_file_guards.remove(index);
             let observed = lease.native_source_identity(&staged.member_manifest, &source, &b);
             lease.staged_file_guards.insert(index, held);
-            assert_eq!(observed.err().unwrap(), "external_provenance_input_not_held");
+            assert_eq!(
+                observed.err().unwrap(),
+                "external_provenance_input_not_held"
+            );
         }
-        lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap()
-            .recheck(&staged, &staged.member_manifest, &source, &b).unwrap();
-        assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign ordinary input must remain untouched\n");
+        lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap()
+            .recheck(&staged, &staged.member_manifest, &source, &b)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&foreign).unwrap(),
+            b"foreign ordinary input must remain untouched\n"
+        );
         assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
     }
     #[cfg(windows)]
@@ -6380,26 +7375,43 @@ mod tests {
         let fixture = Fixture::new();
         let b = budget();
         let before = fixture_oracle(&fixture, &b).unwrap();
-        let mut workspace = crate::candidate_workspace::Workspace::for_test_project(&fixture.app).unwrap();
+        let mut workspace =
+            crate::candidate_workspace::Workspace::for_test_project(&fixture.app).unwrap();
         let envelope = workspace.source_envelope(b.deadline()).unwrap();
-        let staged = fixture.plan(Mode::DependencyRead, &b).stage_owned(&envelope, &b).unwrap();
+        let staged = fixture
+            .plan(Mode::DependencyRead, &b)
+            .stage_owned(&envelope, &b)
+            .unwrap();
         drop(envelope);
         let source = staged.member_manifest.parent().unwrap().join("src/lib.rs");
         let contents = std::fs::read(&source).unwrap();
         let lease = std::sync::Arc::new(staged.compilation_lease(&b).unwrap());
         workspace.retain_compilation(lease.clone()).unwrap();
-        let witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
+        let witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
         assert_eq!(std::sync::Arc::strong_count(&lease), 2);
-        assert_eq!(workspace.retire_compilation_for_publication(&b).err().unwrap(),
-            "external_compile_retirement_unresolved_or_aliased");
+        assert_eq!(
+            workspace
+                .retire_compilation_for_publication(&b)
+                .err()
+                .unwrap(),
+            "external_compile_retirement_unresolved_or_aliased"
+        );
         let weak = std::sync::Arc::downgrade(&lease);
         drop(lease);
         let ownership = workspace.retire_compilation_for_publication(&b).unwrap();
         assert!(weak.upgrade().is_none());
         assert!(!workspace.lifetime.unresolved());
-        witness.recheck(&staged, &staged.member_manifest, &source, &b).unwrap();
-        let input_paths = [staged.cargo_manifest.clone(), staged.member_manifest.clone(),
-            source.clone(), staged.cargo_manifest.parent().unwrap().join("Cargo.lock")];
+        witness
+            .recheck(&staged, &staged.member_manifest, &source, &b)
+            .unwrap();
+        let input_paths = [
+            staged.cargo_manifest.clone(),
+            staged.member_manifest.clone(),
+            source.clone(),
+            staged.cargo_manifest.parent().unwrap().join("Cargo.lock"),
+        ];
         for path in &input_paths {
             assert!(std::fs::OpenOptions::new().write(true).open(path).is_err());
         }
@@ -6422,15 +7434,31 @@ mod tests {
         let b = budget();
         let before = fixture_oracle(&fixture, &b).unwrap();
         let broker = std::sync::Arc::new(crate::workspace_access::Broker::default());
-        let (prepared, candidate, mut workspace) = private_native_binding_fixture(&fixture, &broker, &b);
-        assert_eq!(candidate.compiler_provenance.real_digest().err().unwrap(),
-            "external_source_synthetic_provenance_refused");
-        let ValidatedSourceCandidate { proposal, artifact, artifact_guard, artifact_hash, .. } = candidate;
-        let unproven = crate::external_native::OwnedNativeValidation::unproven_for_test(
-            artifact, artifact_guard, artifact_hash,
+        let (prepared, candidate, mut workspace) =
+            private_native_binding_fixture(&fixture, &broker, &b);
+        assert_eq!(
+            candidate.compiler_provenance.real_digest().err().unwrap(),
+            "external_source_synthetic_provenance_refused"
         );
-        assert_eq!(proposal.seal_validation(&mut workspace, unproven, &b, true).err().unwrap(),
-            "external_source_real_compiler_provenance_missing");
+        let ValidatedSourceCandidate {
+            proposal,
+            artifact,
+            artifact_guard,
+            artifact_hash,
+            ..
+        } = candidate;
+        let unproven = crate::external_native::OwnedNativeValidation::unproven_for_test(
+            artifact,
+            artifact_guard,
+            artifact_hash,
+        );
+        assert_eq!(
+            proposal
+                .seal_validation(&mut workspace, unproven, &b, true)
+                .err()
+                .unwrap(),
+            "external_source_real_compiler_provenance_missing"
+        );
         drop(prepared);
         workspace.clean().unwrap();
         assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
@@ -6441,32 +7469,71 @@ mod tests {
         std::fs::create_dir_all(fixture.vendor.join("support/src")).unwrap();
         std::fs::write(fixture.vendor.join("Cargo.toml"),
             "[package]\nname=\"value-lib\"\nversion=\"0.1.0\"\nedition=\"2021\"\nbuild=false\n[dependencies.support-lib]\npath=\"support\"\n").unwrap();
-        std::fs::write(fixture.vendor.join("src/lib.rs"),
-            "mod nested;\npub fn value() -> i32 { support_lib::value() + nested::offset() }\n").unwrap();
-        std::fs::write(fixture.vendor.join("src/nested.rs"),
-            "pub fn offset() -> i32 { include_bytes!(\"offset.dat\")[0] as i32 }\n").unwrap();
+        std::fs::write(
+            fixture.vendor.join("src/lib.rs"),
+            "mod nested;\npub fn value() -> i32 { support_lib::value() + nested::offset() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            fixture.vendor.join("src/nested.rs"),
+            "pub fn offset() -> i32 { include_bytes!(\"offset.dat\")[0] as i32 }\n",
+        )
+        .unwrap();
         std::fs::write(fixture.vendor.join("src/offset.dat"), [0u8]).unwrap();
-        std::fs::write(fixture.vendor.join("support/Cargo.toml"),
-            "[package]\nname=\"support-lib\"\nversion=\"0.1.0\"\nedition=\"2021\"\nbuild=false\n").unwrap();
-        std::fs::write(fixture.vendor.join("support/src/lib.rs"),
-            "pub fn value() -> i32 { 17 }\n").unwrap();
+        std::fs::write(
+            fixture.vendor.join("support/Cargo.toml"),
+            "[package]\nname=\"support-lib\"\nversion=\"0.1.0\"\nedition=\"2021\"\nbuild=false\n",
+        )
+        .unwrap();
+        std::fs::write(
+            fixture.vendor.join("support/src/lib.rs"),
+            "pub fn value() -> i32 { 17 }\n",
+        )
+        .unwrap();
         std::fs::write(fixture.engine.join("Cargo.lock"),
             "version = 4\n\n[[package]]\nname = \"native-game\"\nversion = \"0.1.0\"\ndependencies = [\"value-lib\"]\n\n[[package]]\nname = \"support-lib\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"value-lib\"\nversion = \"0.1.0\"\ndependencies = [\"support-lib\"]\n").unwrap();
     }
     #[cfg(windows)]
     fn staged_content_dependency_paths(staged: &StagedSources) -> Vec<PathBuf> {
-        ["Cargo.toml", "src/lib.rs", "src/nested.rs", "src/offset.dat",
-            "support/Cargo.toml", "support/src/lib.rs"].into_iter()
-            .map(|path| staged.envelope.join("vendor/value-lib").join(path)).collect()
+        [
+            "Cargo.toml",
+            "src/lib.rs",
+            "src/nested.rs",
+            "src/offset.dat",
+            "support/Cargo.toml",
+            "support/src/lib.rs",
+        ]
+        .into_iter()
+        .map(|path| staged.envelope.join("vendor/value-lib").join(path))
+        .collect()
     }
     #[cfg(windows)]
     fn local_build_fixture(
         staged: &StagedSources,
-    ) -> (serde_json::Value, Vec<serde_json::Value>, crate::external_native::SelectedMember) {
+    ) -> (
+        serde_json::Value,
+        Vec<serde_json::Value>,
+        crate::external_native::SelectedMember,
+    ) {
         let paths = [
-            ("native", "external_logic", staged.member_manifest.clone(), "cdylib"),
-            ("value", "value_lib", staged.envelope.join("vendor/value-lib/Cargo.toml"), "lib"),
-            ("support", "support_lib", staged.envelope.join("vendor/value-lib/support/Cargo.toml"), "lib"),
+            (
+                "native",
+                "external_logic",
+                staged.member_manifest.clone(),
+                "cdylib",
+            ),
+            (
+                "value",
+                "value_lib",
+                staged.envelope.join("vendor/value-lib/Cargo.toml"),
+                "lib",
+            ),
+            (
+                "support",
+                "support_lib",
+                staged.envelope.join("vendor/value-lib/support/Cargo.toml"),
+                "lib",
+            ),
         ];
         let mut packages = Vec::new();
         let mut artifacts = Vec::new();
@@ -6475,17 +7542,25 @@ mod tests {
                 "src_path":manifest.parent().unwrap().join("src/lib.rs")});
             packages.push(serde_json::json!({"id":id,"source":null,
                 "manifest_path":manifest,"targets":[target.clone()]}));
-            artifacts.push(serde_json::json!({"reason":"compiler-artifact","package_id":id,
+            artifacts.push(
+                serde_json::json!({"reason":"compiler-artifact","package_id":id,
                 "manifest_path":manifest,"target":target,"features":[],
                 "profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,
-                    "overflow_checks":true,"test":false}}));
+                    "overflow_checks":true,"test":false}}),
+            );
         }
         let selected = crate::external_native::SelectedMember {
-            package: "native-game".into(), package_id: "native".into(),
-            target: "external_logic".into(), manifest: staged.member_manifest.clone(),
+            package: "native-game".into(),
+            package_id: "native".into(),
+            target: "external_logic".into(),
+            manifest: staged.member_manifest.clone(),
             source: staged.member_manifest.parent().unwrap().join("src/lib.rs"),
         };
-        (serde_json::json!({"packages":packages}), artifacts, selected)
+        (
+            serde_json::json!({"packages":packages}),
+            artifacts,
+            selected,
+        )
     }
     #[cfg(windows)]
     fn local_build_lines(rows: &[serde_json::Value]) -> String {
@@ -6494,156 +7569,360 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn reported_local_output_holds_same_file_cursor_and_drop_boundary() {
-        let fixture=Fixture::new();let b=budget();
-        let (staged,lease,_,build,_,rows,_)=reported_local_output_fixture(&fixture,&b);
-        let before=fixture_oracle(&fixture,&b).unwrap();
-        let path=PathBuf::from(rows[1]["filenames"][0].as_str().unwrap());
-        let root=lease.reported_output_root(&build,&b).unwrap();
-        let mut held:Option<NativeReportedOutput>=None;
+        let fixture = Fixture::new();
+        let b = budget();
+        let (staged, lease, _, build, _, rows, _) = reported_local_output_fixture(&fixture, &b);
+        let before = fixture_oracle(&fixture, &b).unwrap();
+        let path = PathBuf::from(rows[1]["filenames"][0].as_str().unwrap());
+        let root = lease.reported_output_root(&build, &b).unwrap();
+        let mut held: Option<NativeReportedOutput> = None;
         for style in 0..4 {
-            let output=root.hold(&lease,&windows_spelling(&path,style),1024,&b).unwrap();
-            assert_eq!(output.bytes(),std::fs::metadata(&path).unwrap().len());
-            assert_eq!(output.relative(),"libvalue.rlib");
-            if let Some(prior)=&held {assert_eq!(output.digest_value(),prior.digest_value());}
-            held=Some(output);
+            let output = root
+                .hold(&lease, &windows_spelling(&path, style), 1024, &b)
+                .unwrap();
+            assert_eq!(output.bytes(), std::fs::metadata(&path).unwrap().len());
+            assert_eq!(output.relative(), "libvalue.rlib");
+            if let Some(prior) = &held {
+                assert_eq!(output.digest_value(), prior.digest_value());
+            }
+            held = Some(output);
         }
-        let output=held.unwrap();let identity=output.identity_key();
-        std::io::Seek::seek(&mut &output.guard,std::io::SeekFrom::Start(3)).unwrap();
-        let moved=Box::new((root,output));drop(lease);
-        moved.1.recheck(&moved.0,1024,&b).unwrap();
-        assert_eq!(std::io::Seek::stream_position(&mut &moved.1.guard).unwrap(),3);
-        assert_eq!(moved.1.identity_key(),identity);
-        let observation=moved.1.observation_for_test();
-        assert_eq!(observation["write_access_refused"],true);assert_eq!(observation["delete_access_refused"],true);
-        assert_eq!(fixture_oracle(&fixture,&b).unwrap(),before);
-        drop(moved);assert!(OpenOptions::new().write(true).open(&path).is_ok());drop(staged);
+        let output = held.unwrap();
+        let identity = output.identity_key();
+        std::io::Seek::seek(&mut &output.guard, std::io::SeekFrom::Start(3)).unwrap();
+        let moved = Box::new((root, output));
+        drop(lease);
+        moved.1.recheck(&moved.0, 1024, &b).unwrap();
+        assert_eq!(
+            std::io::Seek::stream_position(&mut &moved.1.guard).unwrap(),
+            3
+        );
+        assert_eq!(moved.1.identity_key(), identity);
+        let observation = moved.1.observation_for_test();
+        assert_eq!(observation["write_access_refused"], true);
+        assert_eq!(observation["delete_access_refused"], true);
+        assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
+        drop(moved);
+        assert!(OpenOptions::new().write(true).open(&path).is_ok());
+        drop(staged);
     }
     #[cfg(windows)]
     fn reported_local_output_fixture(
-        fixture:&Fixture,b:&Budget<'_>,
-    )->(StagedSources,CompilationLease,PathBuf,PathBuf,serde_json::Value,Vec<serde_json::Value>,crate::external_native::SelectedMember) {
+        fixture: &Fixture,
+        b: &Budget<'_>,
+    ) -> (
+        StagedSources,
+        CompilationLease,
+        PathBuf,
+        PathBuf,
+        serde_json::Value,
+        Vec<serde_json::Value>,
+        crate::external_native::SelectedMember,
+    ) {
         seed_staged_content_fixture(fixture);
-        let staged=fixture.plan(Mode::DependencyRead,b).stage(&fixture.base.join("reported-output-stage"),b).unwrap();
-        let compiler_root=fixture.base.join("compiler-state");let target=compiler_root.join("target");
-        let build=compiler_root.join("build");let profile=compiler_root.join("profile");
-        for path in [&target,&build,&profile] {std::fs::create_dir_all(path).unwrap();}
-        let (metadata,mut rows,selected)=local_build_fixture(&staged);
-        for (index,row) in rows.iter_mut().enumerate() {
-            let path=match index {0=>target.join("selected.dll"),1=>build.join("libvalue.rlib"),_=>build.join("libsupport.rmeta")};
-            std::fs::write(&path,format!("ordinary reported-output witness {index}\n")).unwrap();
-            row["filenames"]=serde_json::json!([path]);
+        let staged = fixture
+            .plan(Mode::DependencyRead, b)
+            .stage(&fixture.base.join("reported-output-stage"), b)
+            .unwrap();
+        let compiler_root = fixture.base.join("compiler-state");
+        let target = compiler_root.join("target");
+        let build = compiler_root.join("build");
+        let profile = compiler_root.join("profile");
+        for path in [&target, &build, &profile] {
+            std::fs::create_dir_all(path).unwrap();
         }
-        let lease=staged.compilation_lease(b).unwrap().hold_compiler_state(&compiler_root,
-            std::slice::from_ref(&compiler_root),&[target.clone(),build.clone(),profile],&[],&[],b).unwrap();
-        (staged,lease,target,build,metadata,rows,selected)
+        let (metadata, mut rows, selected) = local_build_fixture(&staged);
+        for (index, row) in rows.iter_mut().enumerate() {
+            let path = match index {
+                0 => target.join("selected.dll"),
+                1 => build.join("libvalue.rlib"),
+                _ => build.join("libsupport.rmeta"),
+            };
+            std::fs::write(&path, format!("ordinary reported-output witness {index}\n")).unwrap();
+            row["filenames"] = serde_json::json!([path]);
+        }
+        let lease = staged
+            .compilation_lease(b)
+            .unwrap()
+            .hold_compiler_state(
+                &compiler_root,
+                std::slice::from_ref(&compiler_root),
+                &[target.clone(), build.clone(), profile],
+                &[],
+                &[],
+                b,
+            )
+            .unwrap();
+        (staged, lease, target, build, metadata, rows, selected)
     }
     #[cfg(windows)]
     #[test]
     fn reported_local_output_binds_distinct_observations_and_selected_artifact() {
-        let fixture=Fixture::new();let mut b=budget();
-        let (staged,lease,target,build,mut metadata,mut rows,selected)=reported_local_output_fixture(&fixture,&b);
-        let before=fixture_oracle(&fixture,&b).unwrap();
+        let fixture = Fixture::new();
+        let mut b = budget();
+        let (staged, lease, target, build, mut metadata, mut rows, selected) =
+            reported_local_output_fixture(&fixture, &b);
+        let before = fixture_oracle(&fixture, &b).unwrap();
         // Small SOURCE quotas must not become compiler-output allowances.
-        b.max_file=8192;b.max_bytes=16384;
-        let source_limits=(b.max_file,b.max_bytes,b.deadline());
-        let dependency=PathBuf::from(rows[1]["filenames"][0].as_str().unwrap());
-        std::fs::write(&dependency,vec![b'x';16385]).unwrap();
-        assert_eq!(read_file(&dependency,b.max_file,&b,None,None).err().as_deref(),Some("source_file_byte_limit"));
+        b.max_file = 8192;
+        b.max_bytes = 16384;
+        let source_limits = (b.max_file, b.max_bytes, b.deadline());
+        let dependency = PathBuf::from(rows[1]["filenames"][0].as_str().unwrap());
+        std::fs::write(&dependency, vec![b'x'; 16385]).unwrap();
+        assert_eq!(
+            read_file(&dependency, b.max_file, &b, None, None)
+                .err()
+                .as_deref(),
+            Some("source_file_byte_limit")
+        );
         metadata["packages"].as_array_mut().unwrap().push(serde_json::json!({"id":"inactive","source":null,
             "manifest_path":staged.member_manifest,"targets":[],"features":{"workspace_union":[]}}));
-        let mut distinct=rows[1].clone();distinct["profile"]["opt_level"]=serde_json::json!("2");
-        let path=build.join("libvalue-optimized.rlib");std::fs::write(&path,b"distinct observed profile\n").unwrap();
-        distinct["filenames"]=serde_json::json!([path]);rows.push(distinct);
-        let inputs=lease.native_source_identity(&staged.member_manifest,&selected.source,&b).unwrap();
-        let stdout=local_build_lines(&rows);
-        let builds=crate::external_native::observed_local_builds(&stdout,&metadata,&selected,&inputs,&b).unwrap();
-        assert_eq!(builds.len(),4);
-        let held=crate::external_native::hold_reported_local_outputs(&stdout,&builds,&inputs,&lease,&target,&build,&b).unwrap();
-        let artifact=PathBuf::from(rows[0]["filenames"][0].as_str().unwrap());let hash=crate::sha256_file(&artifact).unwrap();
-        held.recheck(&builds,&selected,&artifact,&hash,&b).unwrap();
-        assert!(held.recheck(&builds,&selected,&artifact,&"0".repeat(64),&b).is_err());
-        let observation=held.observations_for_test();assert_eq!(observation["records"].as_array().unwrap().len(),4);
-        let mut roles=BTreeSet::new();
+        let mut distinct = rows[1].clone();
+        distinct["profile"]["opt_level"] = serde_json::json!("2");
+        let path = build.join("libvalue-optimized.rlib");
+        std::fs::write(&path, b"distinct observed profile\n").unwrap();
+        distinct["filenames"] = serde_json::json!([path]);
+        rows.push(distinct);
+        let inputs = lease
+            .native_source_identity(&staged.member_manifest, &selected.source, &b)
+            .unwrap();
+        let stdout = local_build_lines(&rows);
+        let builds = crate::external_native::observed_local_builds(
+            &stdout, &metadata, &selected, &inputs, &b,
+        )
+        .unwrap();
+        assert_eq!(builds.len(), 4);
+        let held = crate::external_native::hold_reported_local_outputs(
+            &stdout, &builds, &inputs, &lease, &target, &build, &b,
+        )
+        .unwrap();
+        let artifact = PathBuf::from(rows[0]["filenames"][0].as_str().unwrap());
+        let hash = crate::sha256_file(&artifact).unwrap();
+        held.recheck(&builds, &selected, &artifact, &hash, &b)
+            .unwrap();
+        assert!(held
+            .recheck(&builds, &selected, &artifact, &"0".repeat(64), &b)
+            .is_err());
+        let observation = held.observations_for_test();
+        assert_eq!(observation["records"].as_array().unwrap().len(), 4);
+        let mut roles = BTreeSet::new();
         for record in observation["records"].as_array().unwrap() {
-            for output in record["outputs"].as_array().unwrap() {roles.insert(output["root_role"].as_str().unwrap());}
+            for output in record["outputs"].as_array().unwrap() {
+                roles.insert(output["root_role"].as_str().unwrap());
+            }
         }
-        assert_eq!(roles,BTreeSet::from(["build","target"]));
-        let moved=Box::new(held);moved.recheck(&builds,&selected,&artifact,&hash,&b).unwrap();
-        assert_eq!(moved.observations_for_test(),observation);
-        assert_eq!((b.max_file,b.max_bytes,b.deadline()),source_limits);
-        let root=lease.reported_output_root(&build,&b).unwrap();
-        let output=root.hold(&lease,&dependency.to_string_lossy(),32768,&b).unwrap();
-        std::io::Seek::seek(&mut &output.guard,std::io::SeekFrom::Start(3)).unwrap();
-        assert_eq!(hash_reported_local_output(&dependency,&output.guard,&output.expected,16384,&b).err().as_deref(),Some("external_reported_output_byte_bound"));
-        assert_eq!(std::io::Seek::stream_position(&mut &output.guard).unwrap(),3);
-        output.recheck(&root,32768,&b).unwrap();
-        let mut missing=rows.clone();missing.pop();
-        assert!(crate::external_native::hold_reported_local_outputs(&local_build_lines(&missing),&builds,&inputs,&lease,&target,&build,&b).is_err());
-        let mut duplicate=rows.clone();duplicate.push(rows[1].clone());
-        assert!(crate::external_native::hold_reported_local_outputs(&local_build_lines(&duplicate),&builds,&inputs,&lease,&target,&build,&b).is_err());
-        let mut wrong=rows.clone();wrong[1]["profile"]["opt_level"]=serde_json::json!("9");
-        assert!(crate::external_native::hold_reported_local_outputs(&local_build_lines(&wrong),&builds,&inputs,&lease,&target,&build,&b).is_err());
-        let mut foreign=rows.clone();foreign[1]["manifest_path"]=serde_json::json!(fixture.base.join("ungranted/keep"));
-        assert!(crate::external_native::hold_reported_local_outputs(&local_build_lines(&foreign),&builds,&inputs,&lease,&target,&build,&b).is_err());
-        assert_eq!(fixture_oracle(&fixture,&b).unwrap(),before);
+        assert_eq!(roles, BTreeSet::from(["build", "target"]));
+        let moved = Box::new(held);
+        moved
+            .recheck(&builds, &selected, &artifact, &hash, &b)
+            .unwrap();
+        assert_eq!(moved.observations_for_test(), observation);
+        assert_eq!((b.max_file, b.max_bytes, b.deadline()), source_limits);
+        let root = lease.reported_output_root(&build, &b).unwrap();
+        let output = root
+            .hold(&lease, &dependency.to_string_lossy(), 32768, &b)
+            .unwrap();
+        std::io::Seek::seek(&mut &output.guard, std::io::SeekFrom::Start(3)).unwrap();
+        assert_eq!(
+            hash_reported_local_output(&dependency, &output.guard, &output.expected, 16384, &b)
+                .err()
+                .as_deref(),
+            Some("external_reported_output_byte_bound")
+        );
+        assert_eq!(
+            std::io::Seek::stream_position(&mut &output.guard).unwrap(),
+            3
+        );
+        output.recheck(&root, 32768, &b).unwrap();
+        let mut missing = rows.clone();
+        missing.pop();
+        assert!(crate::external_native::hold_reported_local_outputs(
+            &local_build_lines(&missing),
+            &builds,
+            &inputs,
+            &lease,
+            &target,
+            &build,
+            &b
+        )
+        .is_err());
+        let mut duplicate = rows.clone();
+        duplicate.push(rows[1].clone());
+        assert!(crate::external_native::hold_reported_local_outputs(
+            &local_build_lines(&duplicate),
+            &builds,
+            &inputs,
+            &lease,
+            &target,
+            &build,
+            &b
+        )
+        .is_err());
+        let mut wrong = rows.clone();
+        wrong[1]["profile"]["opt_level"] = serde_json::json!("9");
+        assert!(crate::external_native::hold_reported_local_outputs(
+            &local_build_lines(&wrong),
+            &builds,
+            &inputs,
+            &lease,
+            &target,
+            &build,
+            &b
+        )
+        .is_err());
+        let mut foreign = rows.clone();
+        foreign[1]["manifest_path"] = serde_json::json!(fixture.base.join("ungranted/keep"));
+        assert!(crate::external_native::hold_reported_local_outputs(
+            &local_build_lines(&foreign),
+            &builds,
+            &inputs,
+            &lease,
+            &target,
+            &build,
+            &b
+        )
+        .is_err());
+        assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
     }
     #[cfg(windows)]
     #[test]
     fn reported_local_output_refuses_foreign_aliases_and_filename_bounds() {
-        let fixture=Fixture::new();let b=budget();
-        let (staged,lease,target,build,metadata,rows,selected)=reported_local_output_fixture(&fixture,&b);
-        let before=fixture_oracle(&fixture,&b).unwrap();
-        let inputs=lease.native_source_identity(&staged.member_manifest,&selected.source,&b).unwrap();
-        let builds=crate::external_native::observed_local_builds(&local_build_lines(&rows),&metadata,&selected,&inputs,&b).unwrap();
-        let path=PathBuf::from(rows[1]["filenames"][0].as_str().unwrap());
-        let root=lease.reported_output_root(&build,&b).unwrap();
-        assert!(root.hold(&lease,&path.to_string_lossy(),0,&b).is_err());
-        assert!(lease.reported_output_root(&target,&b).unwrap().hold(&lease,&path.to_string_lossy(),1024,&b).is_err());
-        assert!(root.hold(&lease,&fixture.base.join("ungranted/keep").to_string_lossy(),1024,&b).is_err());
-        assert!(lease.reported_output_root(&fixture.base,&b).is_err());
-        let unknown=fixture.base.join("compiler-state/profile/unknown.rlib");std::fs::write(&unknown,b"held but not an admitted output root").unwrap();
-        for names in [serde_json::json!([]),serde_json::json!([fixture.base.join("ungranted/keep")]),serde_json::json!([unknown]),
-            serde_json::json!([path.clone(),windows_spelling(&path,1)]),
-            serde_json::json!((0..9).map(|_|path.clone()).collect::<Vec<_>>()),serde_json::json!([true])] {
-            let mut wrong=rows.clone();wrong[1]["filenames"]=names;
-            assert!(crate::external_native::hold_reported_local_outputs(&local_build_lines(&wrong),&builds,&inputs,&lease,&target,&build,&b).is_err());
+        let fixture = Fixture::new();
+        let b = budget();
+        let (staged, lease, target, build, metadata, rows, selected) =
+            reported_local_output_fixture(&fixture, &b);
+        let before = fixture_oracle(&fixture, &b).unwrap();
+        let inputs = lease
+            .native_source_identity(&staged.member_manifest, &selected.source, &b)
+            .unwrap();
+        let builds = crate::external_native::observed_local_builds(
+            &local_build_lines(&rows),
+            &metadata,
+            &selected,
+            &inputs,
+            &b,
+        )
+        .unwrap();
+        let path = PathBuf::from(rows[1]["filenames"][0].as_str().unwrap());
+        let root = lease.reported_output_root(&build, &b).unwrap();
+        assert!(root.hold(&lease, &path.to_string_lossy(), 0, &b).is_err());
+        assert!(lease
+            .reported_output_root(&target, &b)
+            .unwrap()
+            .hold(&lease, &path.to_string_lossy(), 1024, &b)
+            .is_err());
+        assert!(root
+            .hold(
+                &lease,
+                &fixture.base.join("ungranted/keep").to_string_lossy(),
+                1024,
+                &b
+            )
+            .is_err());
+        assert!(lease.reported_output_root(&fixture.base, &b).is_err());
+        let unknown = fixture.base.join("compiler-state/profile/unknown.rlib");
+        std::fs::write(&unknown, b"held but not an admitted output root").unwrap();
+        for names in [
+            serde_json::json!([]),
+            serde_json::json!([fixture.base.join("ungranted/keep")]),
+            serde_json::json!([unknown]),
+            serde_json::json!([path.clone(), windows_spelling(&path, 1)]),
+            serde_json::json!((0..9).map(|_| path.clone()).collect::<Vec<_>>()),
+            serde_json::json!([true]),
+        ] {
+            let mut wrong = rows.clone();
+            wrong[1]["filenames"] = names;
+            assert!(crate::external_native::hold_reported_local_outputs(
+                &local_build_lines(&wrong),
+                &builds,
+                &inputs,
+                &lease,
+                &target,
+                &build,
+                &b
+            )
+            .is_err());
         }
-        let other_dll=build.join("misplaced-selected.dll");std::fs::write(&other_dll,b"not an admissible selected DLL").unwrap();
-        let mut misplaced=rows.clone();misplaced[0]["filenames"]=serde_json::json!([other_dll]);
-        let stdout=local_build_lines(&misplaced);
-        let held=crate::external_native::hold_reported_local_outputs(&stdout,&builds,&inputs,&lease,&target,&build,&b).unwrap();
-        let hash=crate::sha256_file(&other_dll).unwrap();
-        assert_eq!(held.recheck(&builds,&selected,&other_dll,&hash,&b).err().as_deref(),Some("external_reported_output_selected_artifact"));
-        let parent=crate::external_native::ParentDeadline::at(b.deadline()).unwrap();
-        let finished=stdout+"{\"reason\":\"build-finished\",\"success\":true}\n";
-        assert_eq!(crate::external_native::exact_artifact(&finished,&selected,&target,&lease,&parent).err().as_deref(),Some("external_artifact_file_outside_target"));
-        assert_eq!(fixture_oracle(&fixture,&b).unwrap(),before);
+        let other_dll = build.join("misplaced-selected.dll");
+        std::fs::write(&other_dll, b"not an admissible selected DLL").unwrap();
+        let mut misplaced = rows.clone();
+        misplaced[0]["filenames"] = serde_json::json!([other_dll]);
+        let stdout = local_build_lines(&misplaced);
+        let held = crate::external_native::hold_reported_local_outputs(
+            &stdout, &builds, &inputs, &lease, &target, &build, &b,
+        )
+        .unwrap();
+        let hash = crate::sha256_file(&other_dll).unwrap();
+        assert_eq!(
+            held.recheck(&builds, &selected, &other_dll, &hash, &b)
+                .err()
+                .as_deref(),
+            Some("external_reported_output_selected_artifact")
+        );
+        let parent = crate::external_native::ParentDeadline::at(b.deadline()).unwrap();
+        let finished = stdout + "{\"reason\":\"build-finished\",\"success\":true}\n";
+        assert_eq!(
+            crate::external_native::exact_artifact(&finished, &selected, &target, &lease, &parent)
+                .err()
+                .as_deref(),
+            Some("external_artifact_file_outside_target")
+        );
+        assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
     }
     #[cfg(windows)]
     #[test]
     fn reported_local_output_rechecks_metadata_cancel_expiry_and_restores_cursor() {
-        let fixture=Fixture::new();let b=budget();
-        let (staged,lease,_,build,_,rows,_)=reported_local_output_fixture(&fixture,&b);
-        let path=PathBuf::from(rows[1]["filenames"][0].as_str().unwrap());
-        let root=lease.reported_output_root(&build,&b).unwrap();let mut output=root.hold(&lease,&path.to_string_lossy(),1024,&b).unwrap();
-        std::io::Seek::seek(&mut &output.guard,std::io::SeekFrom::Start(3)).unwrap();
-        assert!(hash_reported_local_output(&path,&output.guard,&output.expected,0,&b).is_err());
-        assert_eq!(std::io::Seek::stream_position(&mut &output.guard).unwrap(),3);
-        let original=output.sha256.clone();output.sha256="0".repeat(64);
-        assert!(output.recheck(&root,1024,&b).is_err());output.sha256=original;
-        let identity=output.root_identity.clone();output.root_identity.volume^=1;
-        assert!(output.recheck(&root,1024,&b).is_err());output.root_identity=identity;
-        let other=File::open(fixture.base.join("ungranted/keep")).unwrap();
-        let original=std::mem::replace(&mut output.guard,other);
-        assert!(output.recheck(&root,1024,&b).is_err());output.guard=original;
-        let cancelled=AtomicBool::new(false);
-        let check=|| if cancelled.load(Ordering::Acquire){Err("reported_output_cancelled".into())}else{Ok(())};
-        let cb=Budget::new(Duration::from_secs(30),&check).unwrap();cancelled.store(true,Ordering::Release);
-        assert!(hash_reported_local_output(&path,&output.guard,&output.expected,1024,&cb).is_err());
-        let mut expired=budget();expired.deadline=Instant::now()-Duration::from_millis(1);
-        assert!(hash_reported_local_output(&path,&output.guard,&output.expected,1024,&expired).is_err());
-        assert_eq!(std::io::Seek::stream_position(&mut &output.guard).unwrap(),3);
-        output.recheck(&root,1024,&b).unwrap();drop(staged);
+        let fixture = Fixture::new();
+        let b = budget();
+        let (staged, lease, _, build, _, rows, _) = reported_local_output_fixture(&fixture, &b);
+        let path = PathBuf::from(rows[1]["filenames"][0].as_str().unwrap());
+        let root = lease.reported_output_root(&build, &b).unwrap();
+        let mut output = root
+            .hold(&lease, &path.to_string_lossy(), 1024, &b)
+            .unwrap();
+        std::io::Seek::seek(&mut &output.guard, std::io::SeekFrom::Start(3)).unwrap();
+        assert!(hash_reported_local_output(&path, &output.guard, &output.expected, 0, &b).is_err());
+        assert_eq!(
+            std::io::Seek::stream_position(&mut &output.guard).unwrap(),
+            3
+        );
+        let original = output.sha256.clone();
+        output.sha256 = "0".repeat(64);
+        assert!(output.recheck(&root, 1024, &b).is_err());
+        output.sha256 = original;
+        let identity = output.root_identity.clone();
+        output.root_identity.volume ^= 1;
+        assert!(output.recheck(&root, 1024, &b).is_err());
+        output.root_identity = identity;
+        let other = File::open(fixture.base.join("ungranted/keep")).unwrap();
+        let original = std::mem::replace(&mut output.guard, other);
+        assert!(output.recheck(&root, 1024, &b).is_err());
+        output.guard = original;
+        let cancelled = AtomicBool::new(false);
+        let check = || {
+            if cancelled.load(Ordering::Acquire) {
+                Err("reported_output_cancelled".into())
+            } else {
+                Ok(())
+            }
+        };
+        let cb = Budget::new(Duration::from_secs(30), &check).unwrap();
+        cancelled.store(true, Ordering::Release);
+        assert!(
+            hash_reported_local_output(&path, &output.guard, &output.expected, 1024, &cb).is_err()
+        );
+        let mut expired = budget();
+        expired.deadline = Instant::now() - Duration::from_millis(1);
+        assert!(
+            hash_reported_local_output(&path, &output.guard, &output.expected, 1024, &expired)
+                .is_err()
+        );
+        assert_eq!(
+            std::io::Seek::stream_position(&mut &output.guard).unwrap(),
+            3
+        );
+        output.recheck(&root, 1024, &b).unwrap();
+        drop(staged);
     }
     #[cfg(windows)]
     #[test]
@@ -6653,18 +7932,25 @@ mod tests {
         let b = budget();
         let before = fixture_oracle(&fixture, &b).unwrap();
         let (staged, lease, source) = provenance_fixture_stage(&fixture, &b);
-        let witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
+        let witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
         let (mut metadata, mut rows, selected) = local_build_fixture(&staged);
         // Unbuilt/inactive metadata and workspace feature unions are not actual units.
-        metadata["packages"].as_array_mut().unwrap().push(serde_json::json!({
-            "id":"inactive","source":null,"manifest_path":staged.member_manifest,
-            "targets":[],"features":{"unused":[]}
-        }));
+        metadata["packages"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "id":"inactive","source":null,"manifest_path":staged.member_manifest,
+                "targets":[],"features":{"unused":[]}
+            }));
         rows[1]["features"] = serde_json::json!(["observed_only"]);
         rows[1]["profile"]["opt_level"] = serde_json::json!("2");
         let mut other_target = rows[1].clone();
         other_target["target"]["name"] = serde_json::json!("other_value_lib");
-        metadata["packages"][1]["targets"].as_array_mut().unwrap()
+        metadata["packages"][1]["targets"]
+            .as_array_mut()
+            .unwrap()
             .push(other_target["target"].clone());
         rows.push(other_target);
         let mut other_profile = rows[1].clone();
@@ -6673,16 +7959,27 @@ mod tests {
         let mut reader = &witness.files[0].guard;
         std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(3)).unwrap();
         let builds = crate::external_native::observed_local_builds(
-            &local_build_lines(&rows), &metadata, &selected, &witness, &b,
-        ).unwrap();
+            &local_build_lines(&rows),
+            &metadata,
+            &selected,
+            &witness,
+            &b,
+        )
+        .unwrap();
         assert_eq!(builds.len(), 5);
         let values: Vec<_> = builds.iter().map(|build| build.digest_value()).collect();
-        assert!(values.iter().any(|v| v["source"]["relative"] == "support/src/lib.rs"));
-        assert!(values.iter().any(|v| v["features"] == serde_json::json!(["observed_only"])
-            && v["profile"]["opt_level"] == "2"));
+        assert!(values
+            .iter()
+            .any(|v| v["source"]["relative"] == "support/src/lib.rs"));
+        assert!(values
+            .iter()
+            .any(|v| v["features"] == serde_json::json!(["observed_only"])
+                && v["profile"]["opt_level"] == "2"));
         assert!(!values.iter().any(|v| v.to_string().contains("file:///")));
         assert_eq!(std::io::Seek::stream_position(&mut reader).unwrap(), 3);
-        witness.recheck(&staged, &staged.member_manifest, &source, &b).unwrap();
+        witness
+            .recheck(&staged, &staged.member_manifest, &source, &b)
+            .unwrap();
         assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
     }
     #[cfg(windows)]
@@ -6692,33 +7989,72 @@ mod tests {
         seed_staged_content_fixture(&fixture);
         let b = budget();
         let (staged, lease, source) = provenance_fixture_stage(&fixture, &b);
-        let witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
+        let witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
         let (metadata, rows, selected) = local_build_fixture(&staged);
         let run = |rows: &[serde_json::Value], metadata: &serde_json::Value| {
             crate::external_native::observed_local_builds(
-                &local_build_lines(rows), metadata, &selected, &witness, &b,
-            ).err().unwrap()
+                &local_build_lines(rows),
+                metadata,
+                &selected,
+                &witness,
+                &b,
+            )
+            .err()
+            .unwrap()
         };
-        let mut duplicate = rows.clone(); duplicate.push(rows[1].clone());
-        assert_eq!(run(&duplicate, &metadata), "external_local_build_duplicate_unit");
-        let mut changed = rows.clone(); changed[1]["target"]["src_path"] = rows[2]["target"]["src_path"].clone();
-        assert_eq!(run(&changed, &metadata), "external_local_build_content_binding_changed");
-        let mut changed = rows.clone(); changed[1]["manifest_path"] = serde_json::json!(fixture.base.join("unheld"));
-        assert_eq!(run(&changed, &metadata), "external_local_build_input_not_held");
-        let mut changed = metadata.clone(); changed["packages"][1]["source"] = serde_json::json!("registry+redacted");
-        assert_eq!(run(&rows, &changed), "external_local_build_package_unsupported_or_duplicate");
-        let mut changed = rows.clone(); changed[1]["target"]["kind"] = serde_json::json!(["proc-macro"]);
-        assert_eq!(run(&changed, &metadata), "external_local_build_target_missing");
+        let mut duplicate = rows.clone();
+        duplicate.push(rows[1].clone());
+        assert_eq!(
+            run(&duplicate, &metadata),
+            "external_local_build_duplicate_unit"
+        );
+        let mut changed = rows.clone();
+        changed[1]["target"]["src_path"] = rows[2]["target"]["src_path"].clone();
+        assert_eq!(
+            run(&changed, &metadata),
+            "external_local_build_content_binding_changed"
+        );
+        let mut changed = rows.clone();
+        changed[1]["manifest_path"] = serde_json::json!(fixture.base.join("unheld"));
+        assert_eq!(
+            run(&changed, &metadata),
+            "external_local_build_input_not_held"
+        );
+        let mut changed = metadata.clone();
+        changed["packages"][1]["source"] = serde_json::json!("registry+redacted");
+        assert_eq!(
+            run(&rows, &changed),
+            "external_local_build_package_unsupported_or_duplicate"
+        );
+        let mut changed = rows.clone();
+        changed[1]["target"]["kind"] = serde_json::json!(["proc-macro"]);
+        assert_eq!(
+            run(&changed, &metadata),
+            "external_local_build_target_missing"
+        );
         let mut declared = metadata.clone();
         declared["packages"][1]["targets"][0]["kind"] = serde_json::json!(["proc-macro"]);
-        assert_eq!(run(&changed, &declared), "external_local_build_target_unsupported");
-        let mut changed = rows.clone(); changed[1]["profile"]["test"] = serde_json::json!(true);
+        assert_eq!(
+            run(&changed, &declared),
+            "external_local_build_target_unsupported"
+        );
+        let mut changed = rows.clone();
+        changed[1]["profile"]["test"] = serde_json::json!(true);
         assert_eq!(run(&changed, &metadata), "external_local_build_profile");
-        assert_eq!(run(&rows[1..], &metadata), "external_local_build_selected_unobserved");
+        assert_eq!(
+            run(&rows[1..], &metadata),
+            "external_local_build_selected_unobserved"
+        );
         let mut oversized = rows.clone();
         oversized[1]["features"] = serde_json::json!((0..256)
-            .map(|i| format!("{i:03}{}", "x".repeat(125))).collect::<Vec<_>>());
-        assert_eq!(run(&oversized, &metadata), "external_local_build_encoding_bound");
+            .map(|i| format!("{i:03}{}", "x".repeat(125)))
+            .collect::<Vec<_>>());
+        assert_eq!(
+            run(&oversized, &metadata),
+            "external_local_build_encoding_bound"
+        );
     }
     #[cfg(windows)]
     #[test]
@@ -6727,22 +8063,45 @@ mod tests {
         seed_staged_content_fixture(&fixture);
         let b = budget();
         let (staged, lease, source) = provenance_fixture_stage(&fixture, &b);
-        let witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
+        let witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
         let path = staged.envelope.join("vendor/value-lib/src/lib.rs");
         let mut input = witness.local_input(&path, &b).unwrap();
         witness.recheck_local_input(&input, &b).unwrap();
         input.sha256 = "0".repeat(64);
-        assert_eq!(witness.recheck_local_input(&input, &b).err().unwrap(),
-            "external_local_build_input_changed");
-        let guard = witness.files.iter().find(|file| provenance_paths_equal(&file.path, &path)).unwrap();
+        assert_eq!(
+            witness.recheck_local_input(&input, &b).err().unwrap(),
+            "external_local_build_input_changed"
+        );
+        let guard = witness
+            .files
+            .iter()
+            .find(|file| provenance_paths_equal(&file.path, &path))
+            .unwrap();
         let mut reader = &guard.guard;
         std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(5)).unwrap();
         let ticks = std::cell::Cell::new(0);
-        let cancelled = || { ticks.set(ticks.get() + 1); if ticks.get() >= 4 { Err("local_join_cancel".into()) } else { Ok(()) } };
-        assert_eq!(witness.local_input(&path, &b.with_check(&cancelled)).err().unwrap(),
-            "local_join_cancel");
+        let cancelled = || {
+            ticks.set(ticks.get() + 1);
+            if ticks.get() >= 4 {
+                Err("local_join_cancel".into())
+            } else {
+                Ok(())
+            }
+        };
+        assert_eq!(
+            witness
+                .local_input(&path, &b.with_check(&cancelled))
+                .err()
+                .unwrap(),
+            "local_join_cancel"
+        );
         assert_eq!(std::io::Seek::stream_position(&mut reader).unwrap(), 5);
-        let expired = Budget { deadline: Instant::now() - std::time::Duration::from_millis(1), ..b };
+        let expired = Budget {
+            deadline: Instant::now() - std::time::Duration::from_millis(1),
+            ..b
+        };
         assert!(witness.local_input(&path, &expired).is_err());
         assert_eq!(std::io::Seek::stream_position(&mut reader).unwrap(), 5);
     }
@@ -6753,37 +8112,70 @@ mod tests {
         seed_staged_content_fixture(&fixture);
         let b = budget();
         let (staged, lease, source) = provenance_fixture_stage(&fixture, &b);
-        let witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
+        let witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
         let (metadata, rows, selected) = local_build_fixture(&staged);
         let original = crate::external_native::observed_local_builds(
-            &local_build_lines(&rows), &metadata, &selected, &witness, &b,
-        ).unwrap().iter().map(|build| build.digest_value()).collect::<Vec<_>>();
+            &local_build_lines(&rows),
+            &metadata,
+            &selected,
+            &witness,
+            &b,
+        )
+        .unwrap()
+        .iter()
+        .map(|build| build.digest_value())
+        .collect::<Vec<_>>();
         for metadata_style in 0..4 {
             let mut metadata = metadata.clone();
             for package in metadata["packages"].as_array_mut().unwrap() {
                 package["manifest_path"] = serde_json::json!(windows_spelling(
-                    Path::new(package["manifest_path"].as_str().unwrap()), metadata_style));
+                    Path::new(package["manifest_path"].as_str().unwrap()),
+                    metadata_style
+                ));
                 for target in package["targets"].as_array_mut().unwrap() {
                     target["src_path"] = serde_json::json!(windows_spelling(
-                        Path::new(target["src_path"].as_str().unwrap()), metadata_style));
+                        Path::new(target["src_path"].as_str().unwrap()),
+                        metadata_style
+                    ));
                 }
             }
             for artifact_style in 0..4 {
                 let mut rows = rows.clone();
                 for row in &mut rows {
                     row["manifest_path"] = serde_json::json!(windows_spelling(
-                        Path::new(row["manifest_path"].as_str().unwrap()), artifact_style));
+                        Path::new(row["manifest_path"].as_str().unwrap()),
+                        artifact_style
+                    ));
                     row["target"]["src_path"] = serde_json::json!(windows_spelling(
-                        Path::new(row["target"]["src_path"].as_str().unwrap()), artifact_style));
+                        Path::new(row["target"]["src_path"].as_str().unwrap()),
+                        artifact_style
+                    ));
                 }
                 let actual = crate::external_native::observed_local_builds(
-                    &local_build_lines(&rows), &metadata, &selected, &witness, &b,
-                ).unwrap().iter().map(|build| build.digest_value()).collect::<Vec<_>>();
-                assert_eq!(actual, original, "metadata={metadata_style}, artifact={artifact_style}");
+                    &local_build_lines(&rows),
+                    &metadata,
+                    &selected,
+                    &witness,
+                    &b,
+                )
+                .unwrap()
+                .iter()
+                .map(|build| build.digest_value())
+                .collect::<Vec<_>>();
+                assert_eq!(
+                    actual, original,
+                    "metadata={metadata_style}, artifact={artifact_style}"
+                );
             }
         }
-        assert!(witness.local_input(&staged.envelope.join("unheld/src/lib.rs"), &b).is_err());
-        witness.recheck(&staged, &staged.member_manifest, &source, &b).unwrap();
+        assert!(witness
+            .local_input(&staged.envelope.join("unheld/src/lib.rs"), &b)
+            .is_err());
+        witness
+            .recheck(&staged, &staged.member_manifest, &source, &b)
+            .unwrap();
     }
     #[cfg(windows)]
     #[test]
@@ -6793,11 +8185,20 @@ mod tests {
         let b = budget();
         let before = fixture_oracle(&fixture, &b).unwrap();
         let (staged, mut lease, source) = provenance_fixture_stage(&fixture, &b);
-        let mut witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
+        let mut witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
         let paths = staged_content_dependency_paths(&staged);
-        let observation = witness.staged_content_custody_for_test(
-            &staged, &staged.member_manifest, &source, &paths, &b, false,
-        ).unwrap();
+        let observation = witness
+            .staged_content_custody_for_test(
+                &staged,
+                &staged.member_manifest,
+                &source,
+                &paths,
+                &b,
+                false,
+            )
+            .unwrap();
         assert_eq!(observation["inputs"].as_array().unwrap().len(), paths.len());
         assert_eq!(witness.files.len(), lease.staged_file_guards.len());
         let digest = witness.digest().to_owned();
@@ -6805,19 +8206,31 @@ mod tests {
         let writable = std::sync::Arc::get_mut(&mut lease).unwrap();
         writable.staged_file_guards.reverse();
         writable.staged_content.reverse();
-        let reordered = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
+        let reordered = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
         assert_eq!(reordered.digest(), digest);
         drop(reordered);
         let writable = std::sync::Arc::get_mut(&mut lease).unwrap();
         let last = writable.staged_file_guards.pop().unwrap();
-        assert_eq!(writable.native_source_identity(&staged.member_manifest, &source, &b).err().unwrap(),
-            "external_provenance_input_not_held");
+        assert_eq!(
+            writable
+                .native_source_identity(&staged.member_manifest, &source, &b)
+                .err()
+                .unwrap(),
+            "external_provenance_input_not_held"
+        );
         writable.staged_file_guards.push(last);
         let held = &writable.staged_file_guards[0];
         let duplicate = (held.0.clone(), held.1.clone(), held.2.try_clone().unwrap());
         writable.staged_file_guards.push(duplicate);
-        assert_eq!(writable.native_source_identity(&staged.member_manifest, &source, &b).err().unwrap(),
-            "external_provenance_input_ambiguous");
+        assert_eq!(
+            writable
+                .native_source_identity(&staged.member_manifest, &source, &b)
+                .err()
+                .unwrap(),
+            "external_provenance_input_ambiguous"
+        );
         writable.staged_file_guards.pop();
         assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
     }
@@ -6829,34 +8242,72 @@ mod tests {
         let b = budget();
         let before = fixture_oracle(&fixture, &b).unwrap();
         let (staged, lease, source) = provenance_fixture_stage(&fixture, &b);
-        let mut witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
+        let mut witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
         let paths = staged_content_dependency_paths(&staged);
-        witness.staged_content_custody_for_test(&staged, &staged.member_manifest, &source, &paths, &b, true).unwrap();
-        let index = witness.files.iter().position(|file| file.path == paths[2]).unwrap();
+        witness
+            .staged_content_custody_for_test(
+                &staged,
+                &staged.member_manifest,
+                &source,
+                &paths,
+                &b,
+                true,
+            )
+            .unwrap();
+        let index = witness
+            .files
+            .iter()
+            .position(|file| file.path == paths[2])
+            .unwrap();
         witness.files[index].expected.identity.volume ^= 1;
         let observed = witness.recheck(&staged, &staged.member_manifest, &source, &b);
         witness.files[index].expected.identity.volume ^= 1;
-        assert_eq!(observed.err().unwrap(), "external_provenance_held_input_changed");
-        let saved = std::mem::replace(&mut witness.files[index].path, fixture.base.join("foreign-input"));
+        assert_eq!(
+            observed.err().unwrap(),
+            "external_provenance_held_input_changed"
+        );
+        let saved = std::mem::replace(
+            &mut witness.files[index].path,
+            fixture.base.join("foreign-input"),
+        );
         let observed = witness.recheck(&staged, &staged.member_manifest, &source, &b);
         witness.files[index].path = saved;
-        assert_eq!(observed.err().unwrap(), "external_provenance_input_not_held");
+        assert_eq!(
+            observed.err().unwrap(),
+            "external_provenance_input_not_held"
+        );
         let foreign = fixture.base.join("foreign-dependency.rs");
         std::fs::write(&foreign, std::fs::read(&paths[2]).unwrap()).unwrap();
-        let saved = std::mem::replace(&mut witness.files[index].guard, open_compile_source(&foreign, &b).unwrap());
+        let saved = std::mem::replace(
+            &mut witness.files[index].guard,
+            open_compile_source(&foreign, &b).unwrap(),
+        );
         let observed = witness.recheck(&staged, &staged.member_manifest, &source, &b);
         witness.files[index].guard = saved;
-        assert_eq!(observed.err().unwrap(), "external_provenance_held_input_changed");
+        assert_eq!(
+            observed.err().unwrap(),
+            "external_provenance_held_input_changed"
+        );
         witness.content[0].fingerprint.sha256.push('0');
         let observed = witness.recheck(&staged, &staged.member_manifest, &source, &b);
         witness.content[0].fingerprint.sha256.pop();
-        assert_eq!(observed.err().unwrap(), "external_provenance_content_binding_changed");
+        assert_eq!(
+            observed.err().unwrap(),
+            "external_provenance_content_binding_changed"
+        );
         let added = staged.envelope.join("vendor/value-lib/src/new-child.rs");
         std::fs::write(&added, b"new staged child must not gain content custody\n").unwrap();
         let observed = witness.recheck(&staged, &staged.member_manifest, &source, &b);
         std::fs::remove_file(&added).unwrap();
-        assert_eq!(observed.err().unwrap(), "external_source_proposed_fingerprint_changed");
-        witness.recheck(&staged, &staged.member_manifest, &source, &b).unwrap();
+        assert_eq!(
+            observed.err().unwrap(),
+            "external_source_proposed_fingerprint_changed"
+        );
+        witness
+            .recheck(&staged, &staged.member_manifest, &source, &b)
+            .unwrap();
         assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
     }
     #[cfg(windows)]
@@ -6867,34 +8318,68 @@ mod tests {
         seed_staged_content_fixture(&fixture);
         let b = budget();
         let before = fixture_oracle(&fixture, &b).unwrap();
-        let mut workspace = crate::candidate_workspace::Workspace::for_test_project(&fixture.app).unwrap();
+        let mut workspace =
+            crate::candidate_workspace::Workspace::for_test_project(&fixture.app).unwrap();
         let staged = {
             let envelope = workspace.source_envelope(b.deadline()).unwrap();
-            fixture.plan(Mode::DependencyRead, &b).stage_owned(&envelope, &b).unwrap()
+            fixture
+                .plan(Mode::DependencyRead, &b)
+                .stage_owned(&envelope, &b)
+                .unwrap()
         };
         let source = staged.member_manifest.parent().unwrap().join("src/lib.rs");
         let lease = std::sync::Arc::new(staged.compilation_lease(&b).unwrap());
         workspace.retain_compilation(lease.clone()).unwrap();
-        let mut witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
+        let mut witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
         let paths = staged_content_dependency_paths(&staged);
-        let held = witness.staged_content_custody_for_test(&staged, &staged.member_manifest, &source, &paths, &b, false).unwrap();
+        let held = witness
+            .staged_content_custody_for_test(
+                &staged,
+                &staged.member_manifest,
+                &source,
+                &paths,
+                &b,
+                false,
+            )
+            .unwrap();
         let weak = std::sync::Arc::downgrade(&lease);
         assert_eq!(std::sync::Arc::strong_count(&lease), 2);
         drop(lease);
         let ownership = workspace.retire_compilation_for_publication(&b).unwrap();
         assert!(weak.upgrade().is_none());
-        let after = witness.staged_content_custody_for_test(&staged, &staged.member_manifest, &source, &paths, &b, false).unwrap();
+        let after = witness
+            .staged_content_custody_for_test(
+                &staged,
+                &staged.member_manifest,
+                &source,
+                &paths,
+                &b,
+                false,
+            )
+            .unwrap();
         assert_eq!(held, after);
         for path in &paths {
             assert!(OpenOptions::new().write(true).open(path).is_err());
-            assert!(OpenOptions::new().access_mode(0x0001_0000).share_mode(7)
-                .custom_flags(0x0020_0000).open(path).is_err());
+            assert!(OpenOptions::new()
+                .access_mode(0x0001_0000)
+                .share_mode(7)
+                .custom_flags(0x0020_0000)
+                .open(path)
+                .is_err());
         }
         drop(witness);
         for path in &paths {
             drop(OpenOptions::new().write(true).open(path).unwrap());
-            drop(OpenOptions::new().access_mode(0x0001_0000).share_mode(7)
-                .custom_flags(0x0020_0000).open(path).unwrap());
+            drop(
+                OpenOptions::new()
+                    .access_mode(0x0001_0000)
+                    .share_mode(7)
+                    .custom_flags(0x0020_0000)
+                    .open(path)
+                    .unwrap(),
+            );
         }
         drop(ownership);
         drop(staged);
@@ -6912,7 +8397,11 @@ mod tests {
         let before = fixture_oracle(&fixture, &b).unwrap();
         let (staged, lease, source) = provenance_fixture_stage(&fixture, &b);
         let paths = staged_content_dependency_paths(&staged);
-        let (_, _, held) = lease.staged_file_guards.iter().find(|(path, _, _)| path == &paths[3]).unwrap();
+        let (_, _, held) = lease
+            .staged_file_guards
+            .iter()
+            .find(|(path, _, _)| path == &paths[3])
+            .unwrap();
         let mut reader = held;
         std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(1)).unwrap();
         let triggered = std::cell::Cell::new(false);
@@ -6921,27 +8410,56 @@ mod tests {
             if std::io::Seek::stream_position(&mut reader).unwrap() != 1 {
                 triggered.set(true);
                 Err("staged_content_dependency_cancelled".into())
-            } else { Ok(()) }
+            } else {
+                Ok(())
+            }
         };
         let cancelled = b.with_check(&stop);
-        assert_eq!(lease.native_source_identity(&staged.member_manifest, &source, &cancelled).err().unwrap(),
-            "staged_content_dependency_cancelled");
+        assert_eq!(
+            lease
+                .native_source_identity(&staged.member_manifest, &source, &cancelled)
+                .err()
+                .unwrap(),
+            "staged_content_dependency_cancelled"
+        );
         assert!(triggered.get());
         assert_eq!(std::io::Seek::stream_position(&mut reader).unwrap(), 1);
-        drop(cancelled);
-        let mut witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
+        let mut witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
         assert_eq!(std::sync::Arc::strong_count(&lease), 1);
         let mut expired = b.with_check(b.check_cancelled);
         expired.deadline = Instant::now() - Duration::from_millis(1);
-        assert_eq!(lease.native_source_identity(&staged.member_manifest, &source, &expired).err().unwrap(),
-            "external_staging_deadline");
-        assert_eq!(witness.recheck(&staged, &staged.member_manifest, &source, &expired).err().unwrap(),
-            "external_staging_deadline");
-        let observed = witness.staged_content_custody_for_test(&staged, &staged.member_manifest, &source, &paths, &b, false).unwrap();
+        assert_eq!(
+            lease
+                .native_source_identity(&staged.member_manifest, &source, &expired)
+                .err()
+                .unwrap(),
+            "external_staging_deadline"
+        );
+        assert_eq!(
+            witness
+                .recheck(&staged, &staged.member_manifest, &source, &expired)
+                .err()
+                .unwrap(),
+            "external_staging_deadline"
+        );
+        let observed = witness
+            .staged_content_custody_for_test(
+                &staged,
+                &staged.member_manifest,
+                &source,
+                &paths,
+                &b,
+                false,
+            )
+            .unwrap();
         assert_eq!(observed["inputs"].as_array().unwrap().len(), paths.len());
         drop(witness);
         drop(lease);
-        for path in &paths { drop(OpenOptions::new().write(true).open(path).unwrap()); }
+        for path in &paths {
+            drop(OpenOptions::new().write(true).open(path).unwrap());
+        }
         assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
     }
     #[cfg(windows)]
@@ -6954,24 +8472,48 @@ mod tests {
         let mut used = NATIVE_CONTENT_ENCODING_LIMIT - 1;
         native_content_charge(&mut used, 1).unwrap();
         assert_eq!(used, NATIVE_CONTENT_ENCODING_LIMIT);
-        assert_eq!(native_content_charge(&mut used, 1).err().unwrap(), "external_provenance_input_encoding_bound");
+        assert_eq!(
+            native_content_charge(&mut used, 1).err().unwrap(),
+            "external_provenance_input_encoding_bound"
+        );
         native_provenance_guard_bound(&[8180], 12).unwrap();
-        assert_eq!(native_provenance_guard_bound(&[8181], 12).err().unwrap(), "external_provenance_guard_bound");
+        assert_eq!(
+            native_provenance_guard_bound(&[8181], 12).err().unwrap(),
+            "external_provenance_guard_bound"
+        );
         assert!(native_provenance_guard_bound(&[usize::MAX], 1).is_err());
         let mut charged = NATIVE_CONTENT_ENCODING_BASE;
         let mut usage = Usage::default();
         for root in &lease.staged_content {
-            native_content_shape(&root.path, &root.root_id, &root.entries, &mut charged, &mut usage, &b).unwrap();
+            native_content_shape(
+                &root.path,
+                &root.root_id,
+                &root.entries,
+                &mut charged,
+                &mut usage,
+                &b,
+            )
+            .unwrap();
         }
-        let largest = lease.staged_content.iter().flat_map(|root| &root.entries)
-            .filter(|row| !row.directory).map(|row| row.bytes).max().unwrap();
+        let largest = lease
+            .staged_content
+            .iter()
+            .flat_map(|root| &root.entries)
+            .filter(|row| !row.directory)
+            .map(|row| row.bytes)
+            .max()
+            .unwrap();
         let mut exact = b.with_check(b.check_cancelled);
         exact.max_files = usage.files;
         exact.max_entries = usage.entries;
         exact.max_bytes = usage.bytes;
         exact.max_file = largest;
-        let witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
-        witness.recheck(&staged, &staged.member_manifest, &source, &exact).unwrap();
+        let witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
+        witness
+            .recheck(&staged, &staged.member_manifest, &source, &exact)
+            .unwrap();
         for which in ["files", "entries", "bytes", "file"] {
             let mut smaller = exact.with_check(exact.check_cancelled);
             match which {
@@ -6980,7 +8522,9 @@ mod tests {
                 "bytes" => smaller.max_bytes -= 1,
                 _ => smaller.max_file -= 1,
             }
-            assert!(witness.recheck(&staged, &staged.member_manifest, &source, &smaller).is_err());
+            assert!(witness
+                .recheck(&staged, &staged.member_manifest, &source, &smaller)
+                .is_err());
         }
         assert_eq!(exact.deadline(), b.deadline());
     }
@@ -6992,90 +8536,178 @@ mod tests {
         seed_staged_content_fixture(&fixture);
         let b = budget();
         let before = fixture_oracle(&fixture, &b).unwrap();
-        let mut staged = fixture.plan(Mode::DependencyRead, &b)
-            .stage(&fixture.base.join("standalone-alias-stage"), &b).unwrap();
+        let mut staged = fixture
+            .plan(Mode::DependencyRead, &b)
+            .stage(&fixture.base.join("standalone-alias-stage"), &b)
+            .unwrap();
         // Only this private fixture copy becomes a standalone package. Production
         // resolution remains virtual-workspace-only and originals stay untouched.
-        let standalone = Fixture::native_manifest("../vendor/value-lib")
-            .replacen("[lib]\n", "[lib]\npath=\"native/src/lib.rs\"\n", 1);
+        let standalone = Fixture::native_manifest("../vendor/value-lib").replacen(
+            "[lib]\n",
+            "[lib]\npath=\"native/src/lib.rs\"\n",
+            1,
+        );
         std::fs::write(&staged.cargo_manifest, standalone).unwrap();
         std::fs::remove_file(&staged.member_manifest).unwrap();
         staged.member_manifest = staged.cargo_manifest.clone();
-        let root = staged.roots.iter_mut().find(|root| root.root_id.as_str() == "engine").unwrap();
+        let root = staged
+            .roots
+            .iter_mut()
+            .find(|root| root.root_id.as_str() == "engine")
+            .unwrap();
         root.proposed_fingerprint = Some(scan(&root.staged, &b, &mut Usage::default()).unwrap().1);
-        let source = staged.member_manifest.parent().unwrap().join("native/src/lib.rs");
+        let source = staged
+            .member_manifest
+            .parent()
+            .unwrap()
+            .join("native/src/lib.rs");
         let mut lease = std::sync::Arc::new(staged.compilation_lease(&b).unwrap());
         let unique_files = lease.staged_file_guards.len();
-        assert_eq!(lease.staged_file_guards.iter()
-            .filter(|(path, _, _)| path == &staged.cargo_manifest).count(), 1);
-        let mut witness = lease.native_source_identity(&staged.member_manifest, &source, &b).unwrap();
-        assert_eq!(witness.files.iter().take(4).map(|file| file.role).collect::<Vec<_>>(),
-            ["workspace_manifest", "selected_manifest", "selected_source", "lock"]);
+        assert_eq!(
+            lease
+                .staged_file_guards
+                .iter()
+                .filter(|(path, _, _)| path == &staged.cargo_manifest)
+                .count(),
+            1
+        );
+        let mut witness = lease
+            .native_source_identity(&staged.member_manifest, &source, &b)
+            .unwrap();
+        assert_eq!(
+            witness
+                .files
+                .iter()
+                .take(4)
+                .map(|file| file.role)
+                .collect::<Vec<_>>(),
+            [
+                "workspace_manifest",
+                "selected_manifest",
+                "selected_source",
+                "lock"
+            ]
+        );
         assert_eq!(witness.files.len(), unique_files + 1);
-        assert_eq!(witness.files[0].expected.identity, witness.files[1].expected.identity);
+        assert_eq!(
+            witness.files[0].expected.identity,
+            witness.files[1].expected.identity
+        );
         assert_eq!(witness.files[0].sha256, witness.files[1].sha256);
-        assert_ne!(std::os::windows::io::AsRawHandle::as_raw_handle(&witness.files[0].guard),
-            std::os::windows::io::AsRawHandle::as_raw_handle(&witness.files[1].guard));
+        assert_ne!(
+            std::os::windows::io::AsRawHandle::as_raw_handle(&witness.files[0].guard),
+            std::os::windows::io::AsRawHandle::as_raw_handle(&witness.files[1].guard)
+        );
         let mut exact = b.with_check(b.check_cancelled);
         exact.max_files = unique_files;
-        witness.recheck(&staged, &staged.member_manifest, &source, &exact).unwrap();
+        witness
+            .recheck(&staged, &staged.member_manifest, &source, &exact)
+            .unwrap();
         let mut below = exact.with_check(exact.check_cancelled);
         below.max_files -= 1;
-        assert!(witness.recheck(&staged, &staged.member_manifest, &source, &below).is_err());
+        assert!(witness
+            .recheck(&staged, &staged.member_manifest, &source, &below)
+            .is_err());
         let lock = staged.cargo_manifest.parent().unwrap().join("Cargo.lock");
-        let anchors = [staged.cargo_manifest.as_path(), staged.member_manifest.as_path(), source.as_path(), lock.as_path()];
-        let duplicated_objects = native_content_duplicate_count(unique_files, anchors[0], anchors[1]).unwrap();
+        let anchors = [
+            staged.cargo_manifest.as_path(),
+            staged.member_manifest.as_path(),
+            source.as_path(),
+            lock.as_path(),
+        ];
+        let duplicated_objects =
+            native_content_duplicate_count(unique_files, anchors[0], anchors[1]).unwrap();
         assert_eq!(duplicated_objects, witness.files.len() + 1);
         assert_eq!(duplicated_objects, unique_files + 2);
         native_provenance_guard_bound(&[8192 - duplicated_objects], duplicated_objects).unwrap();
-        assert_eq!(native_provenance_guard_bound(&[8193 - duplicated_objects], duplicated_objects).err().unwrap(),
-            "external_provenance_guard_bound");
+        assert_eq!(
+            native_provenance_guard_bound(&[8193 - duplicated_objects], duplicated_objects)
+                .err()
+                .unwrap(),
+            "external_provenance_guard_bound"
+        );
         assert!(native_content_duplicate_count(usize::MAX, anchors[0], anchors[1]).is_err());
-        assert_eq!(native_content_anchor_aliases([anchors[0], anchors[1], anchors[2], anchors[2]]).err().unwrap(),
-            "external_provenance_input_ambiguous");
+        assert_eq!(
+            native_content_anchor_aliases([anchors[0], anchors[1], anchors[2], anchors[2]])
+                .err()
+                .unwrap(),
+            "external_provenance_input_ambiguous"
+        );
         for index in 0..2 {
             let role = witness.files[index].role;
             witness.files[index].role = "staged_content";
             let observed = witness.recheck(&staged, &staged.member_manifest, &source, &exact);
             witness.files[index].role = role;
-            assert_eq!(observed.err().unwrap(), "external_provenance_held_input_changed");
+            assert_eq!(
+                observed.err().unwrap(),
+                "external_provenance_held_input_changed"
+            );
             witness.files[index].sha256.push('0');
             let observed = witness.recheck(&staged, &staged.member_manifest, &source, &exact);
             witness.files[index].sha256.pop();
-            assert_eq!(observed.err().unwrap(), "external_provenance_held_input_changed");
+            assert_eq!(
+                observed.err().unwrap(),
+                "external_provenance_held_input_changed"
+            );
             witness.files[index].expected.identity.volume ^= 1;
             let observed = witness.recheck(&staged, &staged.member_manifest, &source, &exact);
             witness.files[index].expected.identity.volume ^= 1;
-            assert_eq!(observed.err().unwrap(), "external_provenance_held_input_changed");
+            assert_eq!(
+                observed.err().unwrap(),
+                "external_provenance_held_input_changed"
+            );
         }
         let foreign = fixture.base.join("foreign-alias-Cargo.toml");
         std::fs::write(&foreign, std::fs::read(&staged.cargo_manifest).unwrap()).unwrap();
-        let original = std::mem::replace(&mut witness.files[1].guard, open_compile_source(&foreign, &b).unwrap());
+        let original = std::mem::replace(
+            &mut witness.files[1].guard,
+            open_compile_source(&foreign, &b).unwrap(),
+        );
         let expected = witness.files[1].expected.clone();
         let foreign_expected = stamp(&witness.files[1].guard).unwrap();
         witness.files[1].expected = foreign_expected;
         let observed = witness.recheck(&staged, &staged.member_manifest, &source, &exact);
         witness.files[1].guard = original;
         witness.files[1].expected = expected;
-        assert_eq!(observed.err().unwrap(), "external_provenance_held_input_changed");
+        assert_eq!(
+            observed.err().unwrap(),
+            "external_provenance_held_input_changed"
+        );
         let file = &witness.files[0];
         let arbitrary_duplicate = NativeProvenanceFile {
-            role: "staged_content", path: file.path.clone(), expected: file.expected.clone(),
-            sha256: file.sha256.clone(), guard: file.guard.try_clone().unwrap(),
+            role: "staged_content",
+            path: file.path.clone(),
+            expected: file.expected.clone(),
+            sha256: file.sha256.clone(),
+            guard: file.guard.try_clone().unwrap(),
         };
         witness.files.push(arbitrary_duplicate);
         let observed = witness.recheck(&staged, &staged.member_manifest, &source, &exact);
         witness.files.pop();
-        assert_eq!(observed.err().unwrap(), "external_provenance_content_binding_changed");
-        witness.recheck(&staged, &staged.member_manifest, &source, &exact).unwrap();
+        assert_eq!(
+            observed.err().unwrap(),
+            "external_provenance_content_binding_changed"
+        );
+        witness
+            .recheck(&staged, &staged.member_manifest, &source, &exact)
+            .unwrap();
         assert_eq!(exact.deadline(), b.deadline());
         drop(witness);
         let writable = std::sync::Arc::get_mut(&mut lease).unwrap();
-        let row = writable.staged_file_guards.iter().find(|(path, _, _)| path == &staged.cargo_manifest).unwrap();
+        let row = writable
+            .staged_file_guards
+            .iter()
+            .find(|(path, _, _)| path == &staged.cargo_manifest)
+            .unwrap();
         let duplicate = (row.0.clone(), row.1.clone(), row.2.try_clone().unwrap());
         writable.staged_file_guards.push(duplicate);
-        assert_eq!(writable.native_source_identity(&staged.member_manifest, &source, &b).err().unwrap(),
-            "external_provenance_input_ambiguous");
+        assert_eq!(
+            writable
+                .native_source_identity(&staged.member_manifest, &source, &b)
+                .err()
+                .unwrap(),
+            "external_provenance_input_ambiguous"
+        );
         writable.staged_file_guards.pop();
         assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
     }
@@ -8933,7 +10565,14 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn external_source_native_proposal_confirmation_is_postvalidation_and_same_candidate() {
-        for mode in ["early", "old_digest", "foreign_tag", "success", "publish", "interrupted"] {
+        for mode in [
+            "early",
+            "old_digest",
+            "foreign_tag",
+            "success",
+            "publish",
+            "interrupted",
+        ] {
             let fixture = Fixture::new();
             seed_publication_fixture(&fixture);
             let b = budget();
@@ -9023,7 +10662,11 @@ mod tests {
                                         panic!("prevalidated bridge interruption");
                                     }
                                 },
-                                || crate::transactions::publish_external_prevalidated_source(permit, &b),
+                                || {
+                                    crate::transactions::publish_external_prevalidated_source(
+                                        permit, &b,
+                                    )
+                                },
                             )
                         }))
                         .is_err());
@@ -11921,7 +13564,6 @@ mod tests {
             fixture_all_entry_oracle::capture(&[("ungranted", outside.as_path())], &b).unwrap(),
             outside_before
         );
-        drop(authority);
         drop(guards);
         std::fs::remove_dir(&parent).unwrap();
     }
@@ -13071,8 +14713,14 @@ mod tests {
     #[cfg(windows)]
     fn private_copy_test_writer(path: &Path) -> File {
         use std::os::windows::fs::OpenOptionsExt;
-        OpenOptions::new().read(true).write(true).create_new(true)
-            .custom_flags(0x0020_0000).share_mode(1).open(path).unwrap()
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .custom_flags(0x0020_0000)
+            .share_mode(1)
+            .open(path)
+            .unwrap()
     }
     #[cfg(windows)]
     #[test]
@@ -13089,8 +14737,15 @@ mod tests {
         let mut writer = private_copy_test_writer(&output);
         let sha256 = crate::sha256_hex(&bytes);
         let expected = copy_checked_private_artifact(
-            &source_path, &source, &before, &sha256, &output, &mut writer, &b,
-        ).unwrap();
+            &source_path,
+            &source,
+            &before,
+            &sha256,
+            &output,
+            &mut writer,
+            &b,
+        )
+        .unwrap();
         assert_eq!(expected.bytes, bytes.len() as u64);
         assert_ne!(expected.identity, before.identity);
         assert_eq!(std::io::Seek::stream_position(&mut &source).unwrap(), 17);
@@ -13116,12 +14771,24 @@ mod tests {
         let cancel = || {
             if std::fs::metadata(&output).unwrap().len() >= 65536 {
                 Err("private_copy_test_cancelled".into())
-            } else { Ok(()) }
+            } else {
+                Ok(())
+            }
         };
         let cancelled = b.with_check(&cancel);
-        assert_eq!(copy_checked_private_artifact(&source_path, &source, &before,
-            &crate::sha256_hex(&bytes), &output, &mut writer, &cancelled).unwrap_err(),
-            "private_copy_test_cancelled");
+        assert_eq!(
+            copy_checked_private_artifact(
+                &source_path,
+                &source,
+                &before,
+                &crate::sha256_hex(&bytes),
+                &output,
+                &mut writer,
+                &cancelled
+            )
+            .unwrap_err(),
+            "private_copy_test_cancelled"
+        );
         assert_eq!(writer.metadata().unwrap().len(), 65536);
         assert_eq!(std::fs::read(&output).unwrap(), bytes[..65536]);
         assert_eq!(std::io::Seek::stream_position(&mut &source).unwrap(), 13);
@@ -13130,9 +14797,19 @@ mod tests {
         let mut expired_writer = private_copy_test_writer(&expired_path);
         let mut expired = b.with_check(b.check_cancelled);
         expired.deadline = Instant::now();
-        assert_eq!(copy_checked_private_artifact(&source_path, &source, &before,
-            &crate::sha256_hex(&bytes), &expired_path, &mut expired_writer, &expired).unwrap_err(),
-            "external_staging_deadline");
+        assert_eq!(
+            copy_checked_private_artifact(
+                &source_path,
+                &source,
+                &before,
+                &crate::sha256_hex(&bytes),
+                &expired_path,
+                &mut expired_writer,
+                &expired
+            )
+            .unwrap_err(),
+            "external_staging_deadline"
+        );
         assert_eq!(expired_writer.metadata().unwrap().len(), 0);
         assert_eq!(std::io::Seek::stream_position(&mut &source).unwrap(), 13);
     }
@@ -13149,27 +14826,58 @@ mod tests {
         let before = stamp(&source).unwrap();
         let refused = fixture.base.join("private-copy-wrong-digest.dll");
         let mut partial = private_copy_test_writer(&refused);
-        assert_eq!(copy_checked_private_artifact(&source_path, &source, &before,
-            &"0".repeat(64), &refused, &mut partial, &b).unwrap_err(),
-            "external_private_artifact_input_changed");
+        assert_eq!(
+            copy_checked_private_artifact(
+                &source_path,
+                &source,
+                &before,
+                &"0".repeat(64),
+                &refused,
+                &mut partial,
+                &b
+            )
+            .unwrap_err(),
+            "external_private_artifact_input_changed"
+        );
         assert_eq!(partial.metadata().unwrap().len(), bytes.len() as u64);
         assert_eq!(std::io::Seek::stream_position(&mut &source).unwrap(), 3);
         let output = fixture.base.join("private-copy-output.dll");
         let mut writer = private_copy_test_writer(&output);
         let mut wrong_identity = before.clone();
         wrong_identity.identity.volume ^= 1;
-        assert_eq!(copy_checked_private_artifact(&source_path, &source, &wrong_identity,
-            &crate::sha256_hex(bytes), &output, &mut writer, &b).unwrap_err(),
-            "external_private_artifact_input_changed");
+        assert_eq!(
+            copy_checked_private_artifact(
+                &source_path,
+                &source,
+                &wrong_identity,
+                &crate::sha256_hex(bytes),
+                &output,
+                &mut writer,
+                &b
+            )
+            .unwrap_err(),
+            "external_private_artifact_input_changed"
+        );
         assert_eq!(writer.metadata().unwrap().len(), 0);
-        let expected = copy_checked_private_artifact(&source_path, &source, &before,
-            &crate::sha256_hex(bytes), &output, &mut writer, &b).unwrap();
+        let expected = copy_checked_private_artifact(
+            &source_path,
+            &source,
+            &before,
+            &crate::sha256_hex(bytes),
+            &output,
+            &mut writer,
+            &b,
+        )
+        .unwrap();
         std::io::Seek::seek(&mut writer, std::io::SeekFrom::Start(0)).unwrap();
         writer.write_all(b"!").unwrap();
         writer.flush().unwrap();
         writer.sync_all().unwrap();
-        assert_eq!(check_private_artifact_copy(&output, &writer, &expected,
-            &crate::sha256_hex(bytes), &b).unwrap_err(), "external_private_artifact_changed");
+        assert_eq!(
+            check_private_artifact_copy(&output, &writer, &expected, &crate::sha256_hex(bytes), &b)
+                .unwrap_err(),
+            "external_private_artifact_changed"
+        );
         assert_eq!(stamp(&source).unwrap(), before);
         assert_eq!(std::io::Seek::stream_position(&mut &source).unwrap(), 3);
         assert_eq!(std::fs::read(&source_path).unwrap(), bytes);
@@ -13183,8 +14891,10 @@ mod tests {
         let maximum = crate::candidate_workspace::WORKSPACE_BYTES;
         private_artifact_admission(17, maximum - 17, &b).unwrap();
         for (bytes, used) in [(0, 0), (18, 0), (17, maximum - 16), (17, u64::MAX)] {
-            assert_eq!(private_artifact_admission(bytes, used, &b).unwrap_err(),
-                "external_private_artifact_storage_admission_refused");
+            assert_eq!(
+                private_artifact_admission(bytes, used, &b).unwrap_err(),
+                "external_private_artifact_storage_admission_refused"
+            );
         }
         b.max_bytes = 16;
         assert!(private_artifact_admission(17, 0, &b).is_err());
@@ -13204,29 +14914,43 @@ mod tests {
         parent: &mut crate::external_native::ParentDeadline,
         controller: &crate::worker_windows::StreamController,
         b: &Budget<'_>,
-    ) -> (PreparedSourcePublication, ValidatedSourceCandidate, crate::candidate_workspace::Workspace) {
+    ) -> (
+        PreparedSourcePublication,
+        ValidatedSourceCandidate,
+        crate::candidate_workspace::Workspace,
+    ) {
         let plan = seeded_publication_plan(fixture, b);
         let mut prepared = PreparedSourcePublication::prepare(
-            &plan, &RootId::new("engine").unwrap(), publication_changes(fixture), b,
-        ).unwrap();
+            &plan,
+            &RootId::new("engine").unwrap(),
+            publication_changes(fixture),
+            b,
+        )
+        .unwrap();
         controller.bind_parent(broker).unwrap();
-        let mut workspace = crate::candidate_workspace::Workspace::for_test_project(&fixture.app).unwrap();
+        let mut workspace =
+            crate::candidate_workspace::Workspace::for_test_project(&fixture.app).unwrap();
         let envelope = workspace.source_envelope(b.deadline()).unwrap();
-        let proposal = prepared.stage_for_native_validation(
-            &plan, &envelope, parent, broker, cancelled, b,
-        ).unwrap();
+        let proposal = prepared
+            .stage_for_native_validation(&plan, &envelope, parent, broker, cancelled, b)
+            .unwrap();
         drop(envelope);
         // Move the sole lease into Workspace; this helper does not clone its Arc.
-        workspace.retain_compilation(std::sync::Arc::new(
-            proposal.staged.compilation_lease(b).unwrap(),
-        )).unwrap();
+        workspace
+            .retain_compilation(std::sync::Arc::new(
+                proposal.staged.compilation_lease(b).unwrap(),
+            ))
+            .unwrap();
         let ownership = workspace.retire_compilation_for_publication(b).unwrap();
         let artifact = workspace.path.join("custody-synthetic-refusal.dll");
         std::fs::write(&artifact, b"synthetic refusal fixture only\n").unwrap();
         let candidate = ValidatedSourceCandidate {
-            proposal, ownership, workspace: workspace.path.clone(),
+            proposal,
+            ownership,
+            workspace: workspace.path.clone(),
             artifact_hash: crate::sha256_file(&artifact).unwrap(),
-            artifact_guard: open_compile_source(&artifact, b).unwrap(), artifact,
+            artifact_guard: open_compile_source(&artifact, b).unwrap(),
+            artifact,
             native_validation_tag: Some("synthetic-cannot-prove-custody".into()),
             compiler_provenance: CandidateCompilerProvenance::SyntheticAuthorityOnly,
         };
@@ -13239,7 +14963,10 @@ mod tests {
         handle: usize,
         workspace_path: &Path,
     ) {
-        assert_eq!(std::os::windows::io::AsRawHandle::as_raw_handle(&candidate.artifact_guard) as usize, handle);
+        assert_eq!(
+            std::os::windows::io::AsRawHandle::as_raw_handle(&candidate.artifact_guard) as usize,
+            handle
+        );
         assert_eq!(workspace.path, workspace_path);
         assert!(workspace.path.join("workspace.lock").is_file());
         assert!(candidate.artifact_guard.metadata().unwrap().is_file());
@@ -13256,23 +14983,42 @@ mod tests {
         let mut parent = crate::external_native::ParentDeadline::at(b.deadline()).unwrap();
         let controller = crate::worker_windows::StreamController::for_runtime();
         let (prepared, candidate, workspace) = custody_synthetic_refusal_fixture(
-            &fixture, &broker, cancelled.clone(), &mut parent, &controller, &b,
+            &fixture,
+            &broker,
+            cancelled.clone(),
+            &mut parent,
+            &controller,
+            &b,
         );
-        let handle = std::os::windows::io::AsRawHandle::as_raw_handle(&candidate.artifact_guard) as usize;
+        let handle =
+            std::os::windows::io::AsRawHandle::as_raw_handle(&candidate.artifact_guard) as usize;
         let workspace_path = workspace.path.clone();
-        let foreign = crate::candidate_workspace::Workspace::for_test_project(&fixture.app).unwrap();
+        let foreign =
+            crate::candidate_workspace::Workspace::for_test_project(&fixture.app).unwrap();
         let foreign_path = foreign.path.clone();
-        let (error, candidate, foreign) = candidate.into_artifact_custody(foreign, &parent, &controller, &b).err().unwrap();
+        let (error, candidate, foreign) = candidate
+            .into_artifact_custody(foreign, &parent, &controller, &b)
+            .err()
+            .unwrap();
         assert_eq!(error, "external_artifact_custody_parent_or_seal_mismatch");
         custody_assert_returned_inputs(&candidate, &foreign, handle, &foreign_path);
         drop(foreign);
-        let mut other_parent = crate::external_native::ParentDeadline::at(parent.instant()).unwrap();
-        other_parent.bind_read_owner(&broker, cancelled, ProposalLimits::from_budget(&b)).unwrap();
-        let (error, candidate, workspace) = candidate.into_artifact_custody(workspace, &other_parent, &controller, &b).err().unwrap();
+        let mut other_parent =
+            crate::external_native::ParentDeadline::at(parent.instant()).unwrap();
+        other_parent
+            .bind_read_owner(&broker, cancelled, ProposalLimits::from_budget(&b))
+            .unwrap();
+        let (error, candidate, workspace) = candidate
+            .into_artifact_custody(workspace, &other_parent, &controller, &b)
+            .err()
+            .unwrap();
         assert_eq!(error, "external_artifact_custody_parent_or_seal_mismatch");
         custody_assert_returned_inputs(&candidate, &workspace, handle, &workspace_path);
         let other_controller = crate::worker_windows::StreamController::for_runtime();
-        let (error, candidate, workspace) = candidate.into_artifact_custody(workspace, &parent, &other_controller, &b).err().unwrap();
+        let (error, candidate, workspace) = candidate
+            .into_artifact_custody(workspace, &parent, &other_controller, &b)
+            .err()
+            .unwrap();
         assert_eq!(error, "external_compile_read_controller_binding_mismatch");
         custody_assert_returned_inputs(&candidate, &workspace, handle, &workspace_path);
         drop(candidate);
@@ -13292,16 +15038,28 @@ mod tests {
         let mut parent = crate::external_native::ParentDeadline::at(b.deadline()).unwrap();
         let controller = crate::worker_windows::StreamController::for_runtime();
         let (prepared, candidate, workspace) = custody_synthetic_refusal_fixture(
-            &fixture, &broker, std::sync::Arc::new(AtomicBool::new(false)), &mut parent, &controller, &b,
+            &fixture,
+            &broker,
+            std::sync::Arc::new(AtomicBool::new(false)),
+            &mut parent,
+            &controller,
+            &b,
         );
-        let handle = std::os::windows::io::AsRawHandle::as_raw_handle(&candidate.artifact_guard) as usize;
+        let handle =
+            std::os::windows::io::AsRawHandle::as_raw_handle(&candidate.artifact_guard) as usize;
         let path = workspace.path.clone();
         let mut wider = b.with_check(b.check_cancelled);
         wider.max_files += 1;
-        let (error, candidate, workspace) = candidate.into_artifact_custody(workspace, &parent, &controller, &wider).err().unwrap();
+        let (error, candidate, workspace) = candidate
+            .into_artifact_custody(workspace, &parent, &controller, &wider)
+            .err()
+            .unwrap();
         assert_eq!(error, "external_source_original_proposal_limits_widened");
         custody_assert_returned_inputs(&candidate, &workspace, handle, &path);
-        let (error, candidate, workspace) = candidate.into_artifact_custody(workspace, &parent, &controller, &b).err().unwrap();
+        let (error, candidate, workspace) = candidate
+            .into_artifact_custody(workspace, &parent, &controller, &b)
+            .err()
+            .unwrap();
         assert_eq!(error, "external_source_synthetic_provenance_refused");
         custody_assert_returned_inputs(&candidate, &workspace, handle, &path);
         drop(candidate);
@@ -13323,21 +15081,36 @@ mod tests {
             let mut parent = crate::external_native::ParentDeadline::at(b.deadline()).unwrap();
             let controller = crate::worker_windows::StreamController::for_runtime();
             let (prepared, candidate, workspace) = custody_synthetic_refusal_fixture(
-                &fixture, &broker, cancelled.clone(), &mut parent, &controller, &b,
+                &fixture,
+                &broker,
+                cancelled.clone(),
+                &mut parent,
+                &controller,
+                &b,
             );
-            let handle = std::os::windows::io::AsRawHandle::as_raw_handle(&candidate.artifact_guard) as usize;
+            let handle = std::os::windows::io::AsRawHandle::as_raw_handle(&candidate.artifact_guard)
+                as usize;
             let path = workspace.path.clone();
             // A narrowed expired copy is refusal-only; it is never renewed or accepted.
             let mut expired = b.with_check(b.check_cancelled);
             expired.deadline = Instant::now() - Duration::from_millis(1);
-            if cancel { cancelled.store(true, Ordering::Release); }
+            if cancel {
+                cancelled.store(true, Ordering::Release);
+            }
             let observed = if cancel {
                 candidate.into_artifact_custody(workspace, &parent, &controller, &b)
             } else {
                 candidate.into_artifact_custody(workspace, &parent, &controller, &expired)
             };
             let (error, candidate, workspace) = observed.err().unwrap();
-            assert_eq!(error, if cancel { "external_compile_read_owner_cancelled_or_closed" } else { "external_staging_deadline" });
+            assert_eq!(
+                error,
+                if cancel {
+                    "external_compile_read_owner_cancelled_or_closed"
+                } else {
+                    "external_staging_deadline"
+                }
+            );
             custody_assert_returned_inputs(&candidate, &workspace, handle, &path);
             drop(candidate);
             drop(workspace);
@@ -13356,129 +15129,248 @@ mod tests {
     }
     #[cfg(windows)]
     fn public_configfile_fixture_request(
-        fixture: &Fixture, broker: &crate::workspace_access::Broker,
-        budget: &Budget<'_>, compile_native: bool,
+        fixture: &Fixture,
+        broker: &crate::workspace_access::Broker,
+        budget: &Budget<'_>,
+        compile_native: bool,
     ) -> Result<serde_json::Value, String> {
-        let revision=Revision::new(&current_revision(&fixture.app,budget)?)?;
-        let project=ImportedProject::bind(&fixture.app,revision,budget)?;
-        let engine="a".repeat(32);let vendor="b".repeat(32);
-        let engine_root=canonical_directory(&fixture.engine,budget)?.0;
-        let vendor_root=canonical_directory(&fixture.vendor,budget)?.0;
-        let grants=vec![
-            (engine.clone(),issue_grant(&PublicationFixtureOwner { project: &project, canonical_root: &engine_root },&project,RootId::new(&engine)?,&fixture.engine,Mode::DependencyRead,budget)?),
-            (vendor.clone(),issue_grant(&PublicationFixtureOwner { project: &project, canonical_root: &vendor_root },&project,RootId::new(&vendor)?,&fixture.vendor,Mode::DependencyRead,budget)?),
+        let revision = Revision::new(&current_revision(&fixture.app, budget)?)?;
+        let project = ImportedProject::bind(&fixture.app, revision, budget)?;
+        let engine = "a".repeat(32);
+        let vendor = "b".repeat(32);
+        let engine_root = canonical_directory(&fixture.engine, budget)?.0;
+        let vendor_root = canonical_directory(&fixture.vendor, budget)?.0;
+        let grants = vec![
+            (
+                engine.clone(),
+                issue_grant(
+                    &PublicationFixtureOwner {
+                        project: &project,
+                        canonical_root: &engine_root,
+                    },
+                    &project,
+                    RootId::new(&engine)?,
+                    &fixture.engine,
+                    Mode::DependencyRead,
+                    budget,
+                )?,
+            ),
+            (
+                vendor.clone(),
+                issue_grant(
+                    &PublicationFixtureOwner {
+                        project: &project,
+                        canonical_root: &vendor_root,
+                    },
+                    &project,
+                    RootId::new(&vendor)?,
+                    &fixture.vendor,
+                    Mode::DependencyRead,
+                    budget,
+                )?,
+            ),
         ];
         // Same accepted layout as seeded_publication_plan, with only public IDs remapped.
-        let placements=Fixture::placements().into_iter().map(|placement| {
-            let root_id=match placement.root_id.as_str() {
-                "project"=>"project", "engine"=>engine.as_str(), "vendor"=>vendor.as_str(),
-                _=>unreachable!("fixed fixture root identity"),
-            };
-            serde_json::json!({"root_id":root_id,"slot":placement.slot})
-        }).collect::<Vec<_>>();
+        let placements = Fixture::placements()
+            .into_iter()
+            .map(|placement| {
+                let root_id = match placement.root_id.as_str() {
+                    "project" => "project",
+                    "engine" => engine.as_str(),
+                    "vendor" => vendor.as_str(),
+                    _ => unreachable!("fixed fixture root identity"),
+                };
+                serde_json::json!({"root_id":root_id,"slot":placement.slot})
+            })
+            .collect::<Vec<_>>();
         // Genuine retained test-owned grants, not attended approval UI proof.
         broker.insert_simulated_grants_for_test(grants);
-        let mut request=serde_json::json!({"op":"external_workspace_validate","root_ids":[engine,vendor],
+        let mut request = serde_json::json!({"op":"external_workspace_validate","root_ids":[engine,vendor],
             "placements":placements,"workspace":{"root_id":engine,"path":"Cargo.toml"},
             "member":{"root_id":engine,"path":"native/Cargo.toml"},"compile_native":compile_native});
         if compile_native {
-            request["gdextension_manifest"]=serde_json::json!({"root_id":"project","path":"bin/checked.gdextension"});
+            request["gdextension_manifest"] =
+                serde_json::json!({"root_id":"project","path":"bin/checked.gdextension"});
         }
         Ok(request)
     }
     #[cfg(windows)]
     #[test]
     fn configfile_parser_public_request_stages_granted_dependency_layout_without_compiler() {
-        let fixture=Fixture::new();seed_private_gdextension_fixture(&fixture);
-        let b=budget();let operation=crate::operation_context::OperationContext::new(b.deadline());
-        operation.scope(|| {
-            let runtime=crate::native_operations::NativeRuntime::controller(&fixture.app);
-            let (broker,controller)=runtime.original_managed_output_for_test(&fixture.app).unwrap();
-            let before=fixture_oracle(&fixture,&b).unwrap();
-            let request=public_configfile_fixture_request(&fixture,broker,&b,false).unwrap();
-            assert_eq!(request["compile_native"],false);
-            assert!(request.get("gdextension_manifest").is_none());
-            assert_eq!(request["placements"][2]["slot"],"vendor/value-lib");
-            let pool=std::env::temp_dir().join(format!("aurum-candidate-fixture-{}",
-                crate::sha256_hex(fixture.app.to_string_lossy().as_bytes())));
-            assert!(!pool.exists());
-            let mut wrong=request.clone();wrong["placements"][2]["slot"]=serde_json::json!("vendor");
-            assert_eq!(crate::project_ops::execute_in_runtime(&fixture.app,&wrong,false,&runtime).unwrap_err(),
-                "relative_layout_mismatch");
-            assert!(!pool.exists());
-            let value=crate::project_ops::execute_in_runtime(&fixture.app,&request,false,&runtime).unwrap();
-            assert_eq!(value["ok"],true);assert_eq!(value["validation"],"confined_source_staging");
-            assert_eq!(value["cargo_manifest"],"engine/Cargo.toml");
-            for flag in ["cargo_executed","native_artifact_produced","source_publish","originals_mutated","manifest_transformed"] {
-                assert_eq!(value[flag],false);
-            }
-            assert_eq!(value["candidate_lease_owned"],true);assert_eq!(value["private_workspace_cleaned"],true);
-            assert!(value.get("configfile_comparison").is_none());
-            let roots=value["roots"].as_array().unwrap();assert_eq!(roots.len(),3);
-            for expected in ["app","engine","vendor/value-lib"] {
-                assert_eq!(roots.iter().filter(|row|row["slot"]==expected).count(),1);
-            }
-            assert!(std::fs::read_dir(&pool).unwrap().all(|entry| {
-                let entry=entry.unwrap();
-                !entry.file_type().unwrap().is_dir() || !entry.file_name().to_string_lossy().starts_with("candidate-")
-            }));
-            assert_eq!(controller.retained(),0);runtime.close();
-            assert!(!broker.managed_output_is_open());assert_eq!(controller.retained(),0);
-            assert_eq!(fixture_oracle(&fixture,&b).unwrap(),before);operation.check().unwrap();
-        }).unwrap();
+        let fixture = Fixture::new();
+        seed_private_gdextension_fixture(&fixture);
+        let b = budget();
+        let operation = crate::operation_context::OperationContext::new(b.deadline());
+        operation
+            .scope(|| {
+                let runtime = crate::native_operations::NativeRuntime::controller(&fixture.app);
+                let (broker, controller) = runtime
+                    .original_managed_output_for_test(&fixture.app)
+                    .unwrap();
+                let before = fixture_oracle(&fixture, &b).unwrap();
+                let request =
+                    public_configfile_fixture_request(&fixture, broker, &b, false).unwrap();
+                assert_eq!(request["compile_native"], false);
+                assert!(request.get("gdextension_manifest").is_none());
+                assert_eq!(request["placements"][2]["slot"], "vendor/value-lib");
+                let pool = std::env::temp_dir().join(format!(
+                    "aurum-candidate-fixture-{}",
+                    crate::sha256_hex(fixture.app.to_string_lossy().as_bytes())
+                ));
+                assert!(!pool.exists());
+                let mut wrong = request.clone();
+                wrong["placements"][2]["slot"] = serde_json::json!("vendor");
+                assert_eq!(
+                    crate::project_ops::execute_in_runtime(&fixture.app, &wrong, false, &runtime)
+                        .unwrap_err(),
+                    "relative_layout_mismatch"
+                );
+                assert!(!pool.exists());
+                let value =
+                    crate::project_ops::execute_in_runtime(&fixture.app, &request, false, &runtime)
+                        .unwrap();
+                assert_eq!(value["ok"], true);
+                assert_eq!(value["validation"], "confined_source_staging");
+                assert_eq!(value["cargo_manifest"], "engine/Cargo.toml");
+                for flag in [
+                    "cargo_executed",
+                    "native_artifact_produced",
+                    "source_publish",
+                    "originals_mutated",
+                    "manifest_transformed",
+                ] {
+                    assert_eq!(value[flag], false);
+                }
+                assert_eq!(value["candidate_lease_owned"], true);
+                assert_eq!(value["private_workspace_cleaned"], true);
+                assert!(value.get("configfile_comparison").is_none());
+                let roots = value["roots"].as_array().unwrap();
+                assert_eq!(roots.len(), 3);
+                for expected in ["app", "engine", "vendor/value-lib"] {
+                    assert_eq!(
+                        roots.iter().filter(|row| row["slot"] == expected).count(),
+                        1
+                    );
+                }
+                assert!(std::fs::read_dir(&pool).unwrap().all(|entry| {
+                    let entry = entry.unwrap();
+                    !entry.file_type().unwrap().is_dir()
+                        || !entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("candidate-")
+                }));
+                assert_eq!(controller.retained(), 0);
+                runtime.close();
+                assert!(!broker.managed_output_is_open());
+                assert_eq!(controller.retained(), 0);
+                assert_eq!(fixture_oracle(&fixture, &b).unwrap(), before);
+                operation.check().unwrap();
+            })
+            .unwrap();
     }
     #[cfg(windows)]
     #[test]
     #[ignore = "requires separately authorized real public compiler and configured ConfigFile engine"]
     fn real_public_configfile_comparison() {
         const LOCK: &str = "version = 4\n\n[[package]]\nname = \"native-game\"\nversion = \"0.1.0\"\ndependencies = [\"value-lib\"]\n\n[[package]]\nname = \"value-lib\"\nversion = \"0.1.0\"\n";
-        let admitted=std::env::var_os("AURUM_ARTIFACT_CUSTODY_GATE_TEMP").expect("fresh admitted private TEMP required");
-        assert_eq!(crate::project::clean_path(std::env::temp_dir()),crate::project::clean_path(PathBuf::from(admitted)));
+        let admitted = std::env::var_os("AURUM_ARTIFACT_CUSTODY_GATE_TEMP")
+            .expect("fresh admitted private TEMP required");
+        assert_eq!(
+            crate::project::clean_path(std::env::temp_dir()),
+            crate::project::clean_path(PathBuf::from(admitted))
+        );
         assert!(crate::operation_context::OperationContext::current().is_none());
-        let fixture=Fixture::new();
+        let fixture = Fixture::new();
         seed_private_gdextension_fixture(&fixture);
-        std::fs::write(fixture.engine.join("Cargo.lock"),LOCK).unwrap();
-        let started=Instant::now();let deadline=started+Duration::from_secs(60);
-        let operation=std::mem::ManuallyDrop::new(crate::operation_context::OperationContext::new(deadline));
-        let runtime=std::mem::ManuallyDrop::new(crate::native_operations::NativeRuntime::controller(&fixture.app));
-        let (broker,controller)=runtime.original_managed_output_for_test(&fixture.app).unwrap();
-        let mut before=None;let mut after=None;let mut runtime_closed=false;
-        let result=operation.scope(|| -> Result<serde_json::Value,String> {
-            let check=|| operation.check().map_err(|_|"public_parser_original_deadline".into());
-            let budget=Budget::clipped(deadline,&check)?;
-            before=Some(fixture_oracle(&fixture,&budget));
-            before.as_ref().ok_or("public_parser_before")?.as_ref().map_err(|_|"public_parser_before")?;
-            let request=public_configfile_fixture_request(&fixture,broker,&budget,true)?;
-            let value=crate::project_ops::execute_in_runtime(&fixture.app,&request,false,&runtime)?;
-            operation.check().map_err(|_|"public_parser_original_deadline")?;
-            if value["ok"]!=true || value["cargo_executed"]!=true
-                || value["configfile_comparison"]["status"]!="matched_supported_quoted_subset"
-                || value["configfile_comparison"]["entry_symbol"]!="value"
-                || value["configfile_comparison"]["library_relative"]!="bin/external_logic.dll"
-                || value["configfile_comparison"]["parser_workspace_cleaned"]!=true
-                || value["private_workspace_cleaned"]!=true || controller.retained()!=0
-            {return Err("public_parser_actual_result_or_retirement".into());}
-            runtime.close();
-            runtime_closed=!broker.managed_output_is_open()&&controller.retained()==0;
-            if !runtime_closed{return Err("public_parser_runtime_close".into());}
-            after=Some(fixture_oracle(&fixture,&budget));
-            if !matches!((&before,&after),(Some(Ok(a)),Some(Ok(z))) if a==z){return Err("public_parser_original_roots_changed".into());}
-            operation.check().map_err(|_|"public_parser_original_deadline")?;
-            Ok(value)
-        }).map_err(|_|"public_parser_original_scope".to_owned()).and_then(|value|value);
-        let succeeded=result.is_ok();
-        let report=serde_json::json!({"schema":"real_public_configfile_fixture_v1","succeeded":succeeded,
+        std::fs::write(fixture.engine.join("Cargo.lock"), LOCK).unwrap();
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(60);
+        let operation =
+            std::mem::ManuallyDrop::new(crate::operation_context::OperationContext::new(deadline));
+        let runtime = std::mem::ManuallyDrop::new(
+            crate::native_operations::NativeRuntime::controller(&fixture.app),
+        );
+        let (broker, controller) = runtime
+            .original_managed_output_for_test(&fixture.app)
+            .unwrap();
+        let mut before = None;
+        let mut after = None;
+        let mut runtime_closed = false;
+        let result = operation
+            .scope(|| -> Result<serde_json::Value, String> {
+                let check = || {
+                    operation
+                        .check()
+                        .map_err(|_| "public_parser_original_deadline".into())
+                };
+                let budget = Budget::clipped(deadline, &check)?;
+                before = Some(fixture_oracle(&fixture, &budget));
+                before
+                    .as_ref()
+                    .ok_or("public_parser_before")?
+                    .as_ref()
+                    .map_err(|_| "public_parser_before")?;
+                let request = public_configfile_fixture_request(&fixture, broker, &budget, true)?;
+                let value = crate::project_ops::execute_in_runtime(
+                    &fixture.app,
+                    &request,
+                    false,
+                    &runtime,
+                )?;
+                operation
+                    .check()
+                    .map_err(|_| "public_parser_original_deadline")?;
+                if value["ok"] != true
+                    || value["cargo_executed"] != true
+                    || value["configfile_comparison"]["status"] != "matched_supported_quoted_subset"
+                    || value["configfile_comparison"]["entry_symbol"] != "value"
+                    || value["configfile_comparison"]["library_relative"]
+                        != "bin/external_logic.dll"
+                    || value["configfile_comparison"]["parser_workspace_cleaned"] != true
+                    || value["private_workspace_cleaned"] != true
+                    || controller.retained() != 0
+                {
+                    return Err("public_parser_actual_result_or_retirement".into());
+                }
+                runtime.close();
+                runtime_closed = !broker.managed_output_is_open() && controller.retained() == 0;
+                if !runtime_closed {
+                    return Err("public_parser_runtime_close".into());
+                }
+                after = Some(fixture_oracle(&fixture, &budget));
+                if !matches!((&before,&after),(Some(Ok(a)),Some(Ok(z))) if a==z) {
+                    return Err("public_parser_original_roots_changed".into());
+                }
+                operation
+                    .check()
+                    .map_err(|_| "public_parser_original_deadline")?;
+                Ok(value)
+            })
+            .map_err(|_| "public_parser_original_scope".to_owned())
+            .and_then(|value| value);
+        let succeeded = result.is_ok();
+        let report = serde_json::json!({"schema":"real_public_configfile_fixture_v1","succeeded":succeeded,
             "result":result.as_ref().ok(),"failure":result.as_ref().err(),"original_budget_ms":60000,
             "elapsed_ms":started.elapsed().as_millis(),"runtime_known_closed":runtime_closed,
             "controller_retained":controller.retained(),"before":before.as_ref().map(fixture_all_entry_oracle::status),
             "after":after.as_ref().map(fixture_all_entry_oracle::status),"source_publication":false,"loaded":false,
             "abi_verified":false,"read_grant_scope":"test-owned genuine retained file grants; no attended UI claim"});
-        let bytes=serde_json::to_vec_pretty(&report).unwrap();assert!(bytes.len()<=65536);
-        let path=fixture.base.join("real-public-configfile-result.json");
-        let mut file=OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
-        std::io::Write::write_all(&mut file,&bytes).unwrap();file.sync_all().unwrap();
-        println!("public_configfile_fixture_receipt={}",path.display());
-        assert!(succeeded,"first public parser result retained without retry");
+        let bytes = serde_json::to_vec_pretty(&report).unwrap();
+        assert!(bytes.len() <= 65536);
+        let path = fixture.base.join("real-public-configfile-result.json");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        std::io::Write::write_all(&mut file, &bytes).unwrap();
+        file.sync_all().unwrap();
+        println!("public_configfile_fixture_receipt={}", path.display());
+        assert!(
+            succeeded,
+            "first public parser result retained without retry"
+        );
     }
     #[cfg(windows)]
     #[test]
@@ -13490,16 +15382,21 @@ mod tests {
     fn artifact_custody_real_compile_fixture(diagnostic_requested: bool) {
         fn held_copy_bytes(file: &File, budget: &Budget<'_>) -> Result<Vec<u8>, String> {
             let mut reader = file;
-            let position = std::io::Seek::stream_position(&mut reader).map_err(|_| "custody_gate_cursor")?;
+            let position =
+                std::io::Seek::stream_position(&mut reader).map_err(|_| "custody_gate_cursor")?;
             let observed = (|| -> Result<Vec<u8>, String> {
                 budget.check()?;
-                std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(0)).map_err(|_| "custody_gate_seek")?;
+                std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(0))
+                    .map_err(|_| "custody_gate_seek")?;
                 let mut bytes = Vec::new();
                 let mut buffer = [0u8; 65536];
                 loop {
                     budget.check()?;
-                    let count = std::io::Read::read(&mut reader, &mut buffer).map_err(|_| "custody_gate_read")?;
-                    if count == 0 { break; }
+                    let count = std::io::Read::read(&mut reader, &mut buffer)
+                        .map_err(|_| "custody_gate_read")?;
+                    if count == 0 {
+                        break;
+                    }
                     if bytes.len().saturating_add(count) as u64 > budget.max_file {
                         return Err("custody_gate_replica_bound".into());
                     }
@@ -13510,36 +15407,63 @@ mod tests {
             })();
             let restored = std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(position));
             match (observed, restored) {
-                (Ok(bytes), Ok(_)) => { budget.check()?; Ok(bytes) }
+                (Ok(bytes), Ok(_)) => {
+                    budget.check()?;
+                    Ok(bytes)
+                }
                 (Err(error), Ok(_)) => Err(error),
                 (_, Err(_)) => Err("custody_gate_cursor_restore_failed".into()),
             }
         }
         fn delete_access_refused(path: &Path, directory: bool) -> bool {
             use std::os::windows::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new().access_mode(0x0001_0000).share_mode(7)
+            std::fs::OpenOptions::new()
+                .access_mode(0x0001_0000)
+                .share_mode(7)
                 .custom_flags(0x0020_0000 | if directory { 0x0200_0000 } else { 0 })
-                .open(path).is_err()
+                .open(path)
+                .is_err()
         }
         const LOCK: &str = "version = 4\n\n[[package]]\nname = \"native-game\"\nversion = \"0.1.0\"\ndependencies = [\"value-lib\"]\n\n[[package]]\nname = \"value-lib\"\nversion = \"0.1.0\"\n";
-        const ORIGINAL: &[u8] = b"#[no_mangle] pub extern \"C\" fn value() -> i32 { value_lib::value() }\n";
-        const EDITED: &[u8] = b"#[no_mangle] pub extern \"C\" fn value() -> i32 { value_lib::value() + 12 }\n";
+        const ORIGINAL: &[u8] =
+            b"#[no_mangle] pub extern \"C\" fn value() -> i32 { value_lib::value() }\n";
+        const EDITED: &[u8] =
+            b"#[no_mangle] pub extern \"C\" fn value() -> i32 { value_lib::value() + 12 }\n";
         let admitted = std::env::var_os("AURUM_ARTIFACT_CUSTODY_GATE_TEMP")
             .expect("separately admitted exact private TEMP is required");
-        assert_eq!(crate::project::clean_path(std::env::temp_dir()), crate::project::clean_path(PathBuf::from(admitted)));
+        assert_eq!(
+            crate::project::clean_path(std::env::temp_dir()),
+            crate::project::clean_path(PathBuf::from(admitted))
+        );
         assert!(crate::operation_context::OperationContext::current().is_none());
         let fixture = Fixture::new();
-        assert_eq!(std::fs::read(fixture.engine.join("native/src/lib.rs")).unwrap(), ORIGINAL);
+        assert_eq!(
+            std::fs::read(fixture.engine.join("native/src/lib.rs")).unwrap(),
+            ORIGINAL
+        );
         seed_private_gdextension_fixture(&fixture);
         std::fs::write(fixture.engine.join("Cargo.lock"), LOCK).unwrap();
-        std::fs::write(fixture.app.join("accepted.dll"), b"previous accepted DLL fixture\n").unwrap();
+        std::fs::write(
+            fixture.app.join("accepted.dll"),
+            b"previous accepted DLL fixture\n",
+        )
+        .unwrap();
         std::fs::create_dir(fixture.app.join("userdata")).unwrap();
-        std::fs::write(fixture.app.join("userdata/save.bin"), b"working userdata fixture\n").unwrap();
+        std::fs::write(
+            fixture.app.join("userdata/save.bin"),
+            b"working userdata fixture\n",
+        )
+        .unwrap();
         let started = Instant::now();
         let fixed_deadline = started + Duration::from_secs(60);
-        let operation = std::mem::ManuallyDrop::new(crate::operation_context::OperationContext::new(fixed_deadline));
-        let runtime = std::mem::ManuallyDrop::new(crate::native_operations::NativeRuntime::controller(&fixture.app));
-        let (broker, original_controller) = runtime.original_managed_output_for_test(&fixture.app)
+        let operation = std::mem::ManuallyDrop::new(
+            crate::operation_context::OperationContext::new(fixed_deadline),
+        );
+        let runtime = std::mem::ManuallyDrop::new(
+            crate::native_operations::NativeRuntime::controller(&fixture.app),
+        );
+        let (broker, original_controller) = runtime
+            .original_managed_output_for_test(&fixture.app)
             .expect("the actual original runtime must issue its own read controller");
         let cancelled = std::sync::Arc::new(AtomicBool::new(false));
         let controller = std::mem::ManuallyDrop::new(original_controller);
@@ -13866,35 +15790,57 @@ mod tests {
         }).map_err(|_| "custody_gate_original_native_scope_refused".to_owned()).and_then(|inner| inner);
         let mut runtime_known_closed = false;
         let result = result.and_then(|value| {
-            operation.check().map_err(|_| "custody_gate_original_context_expired")?;
-            if controller.retained() != 0 || retained_workspace.is_some() || retained_candidate.is_some() {
+            operation
+                .check()
+                .map_err(|_| "custody_gate_original_context_expired")?;
+            if controller.retained() != 0
+                || retained_workspace.is_some()
+                || retained_candidate.is_some()
+            {
                 return Err("custody_gate_runtime_close_not_settled".into());
             }
             // No previews, jobs or dialogs were created by this fixture. Close
             // only after known worker retirement, cleanup and the unchanged
             // four-root oracle. On every earlier failure the runtime is retained.
             runtime.close();
-            if broker.managed_output_is_open() || controller.retained() != 0
-                || runtime.check_managed_native_output(&fixture.app, &controller).is_ok()
-            { return Err("custody_gate_runtime_close_unconfirmed".into()); }
-            operation.check().map_err(|_| "custody_gate_original_context_expired")?;
+            if broker.managed_output_is_open()
+                || controller.retained() != 0
+                || runtime
+                    .check_managed_native_output(&fixture.app, &controller)
+                    .is_ok()
+            {
+                return Err("custody_gate_runtime_close_unconfirmed".into());
+            }
+            operation
+                .check()
+                .map_err(|_| "custody_gate_original_context_expired")?;
             runtime_known_closed = true;
             Ok(value)
         });
         let succeeded = result.is_ok();
         let failure = result.as_ref().err().cloned();
         let mut report = result.unwrap_or_else(|error| serde_json::json!({"failure":error}));
-        report["schema"] = serde_json::json!("native_artifact_custody_terminal_fixture_observations_v1");
+        report["schema"] =
+            serde_json::json!("native_artifact_custody_terminal_fixture_observations_v1");
         report["api_observations_succeeded"] = serde_json::json!(succeeded);
         report["failure"] = serde_json::json!(failure);
         report["real_native_calls"] = serde_json::json!(native_calls);
         report["original_native_parent_and_source_budget_ms"] = serde_json::json!(60000);
         report["postseal_budget_or_publication_window_created"] = serde_json::json!(false);
-        report["fixture_oracle_before"] = before.as_ref().map(fixture_all_entry_oracle::status).unwrap_or_else(|| serde_json::json!({"status":"NOT_ATTEMPTED"}));
-        report["fixture_oracle_after"] = after.as_ref().map(fixture_all_entry_oracle::status).unwrap_or_else(|| serde_json::json!({"status":"UNAVAILABLE_NO_RENEWAL_AFTER_FAILURE"}));
+        report["fixture_oracle_before"] = before
+            .as_ref()
+            .map(fixture_all_entry_oracle::status)
+            .unwrap_or_else(|| serde_json::json!({"status":"NOT_ATTEMPTED"}));
+        report["fixture_oracle_after"] = after
+            .as_ref()
+            .map(fixture_all_entry_oracle::status)
+            .unwrap_or_else(
+                || serde_json::json!({"status":"UNAVAILABLE_NO_RENEWAL_AFTER_FAILURE"}),
+            );
         report["controller_retained"] = serde_json::json!(controller.retained());
         report["original_native_runtime_known_closed"] = serde_json::json!(runtime_known_closed);
-        report["compiler_phase_raw_receipts"] = serde_json::json!("UNEXPORTED_BY_CURRENT_VALIDATED_CANDIDATE_API");
+        report["compiler_phase_raw_receipts"] =
+            serde_json::json!("UNEXPORTED_BY_CURRENT_VALIDATED_CANDIDATE_API");
         report["elapsed_ms"] = serde_json::json!(started.elapsed().as_millis());
         report["remaining_boundary"] = serde_json::json!("Selected-input custody only; no dependency content closure/exact build units, relocation, SourcePublish, DLL or GDExtension loading");
         if diagnostic_requested {
@@ -13919,12 +15865,24 @@ mod tests {
         }
         let bytes = serde_json::to_vec_pretty(&report).unwrap();
         assert!(bytes.len() <= 65536);
-        let receipt = fixture.base.join("actual-native-artifact-custody-terminal.json");
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&receipt).unwrap();
+        let receipt = fixture
+            .base
+            .join("actual-native-artifact-custody-terminal.json");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&receipt)
+            .unwrap();
         std::io::Write::write_all(&mut file, &bytes).unwrap();
         file.sync_all().unwrap();
-        println!("native_artifact_custody_real_producer_receipt={}", receipt.display());
-        assert!(succeeded, "terminal custody observations refused; receipt retained");
+        println!(
+            "native_artifact_custody_real_producer_receipt={}",
+            receipt.display()
+        );
+        assert!(
+            succeeded,
+            "terminal custody observations refused; receipt retained"
+        );
         assert_eq!(native_calls, 1);
         assert_eq!(controller.retained(), 0);
         assert!(retained_workspace.is_none() && retained_candidate.is_none());
@@ -13935,8 +15893,10 @@ mod tests {
     #[ignore = "requires separately admitted staged-content producer and exact private TEMP"]
     fn native_staged_content_custody_real_compile_first_owner_gate() {
         use std::os::windows::fs::OpenOptionsExt;
-        const ORIGINAL: &[u8] = b"#[no_mangle] pub extern \"C\" fn value() -> i32 { value_lib::value() }\n";
-        const EDITED: &[u8] = b"#[no_mangle] pub extern \"C\" fn value() -> i32 { value_lib::value() + 12 }\n";
+        const ORIGINAL: &[u8] =
+            b"#[no_mangle] pub extern \"C\" fn value() -> i32 { value_lib::value() }\n";
+        const EDITED: &[u8] =
+            b"#[no_mangle] pub extern \"C\" fn value() -> i32 { value_lib::value() + 12 }\n";
         const EXPECTED_STAGED_FILES: [(&str, &str); 16] = [
             ("project", "app/accepted.dll"),
             ("project", "app/aurum.toml"),
@@ -13955,24 +15915,47 @@ mod tests {
             ("vendor", "vendor/value-lib/support/Cargo.toml"),
             ("vendor", "vendor/value-lib/support/src/lib.rs"),
         ];
-        const EXPECTED_ANCHORS: [&str; 4] = ["engine/Cargo.toml", "engine/native/Cargo.toml",
-            "engine/native/src/lib.rs", "engine/Cargo.lock"];
+        const EXPECTED_ANCHORS: [&str; 4] = [
+            "engine/Cargo.toml",
+            "engine/native/Cargo.toml",
+            "engine/native/src/lib.rs",
+            "engine/Cargo.lock",
+        ];
         let admitted = std::env::var_os("AURUM_STAGED_CONTENT_CUSTODY_GATE_TEMP")
             .expect("separately admitted exact private TEMP is required");
-        assert_eq!(crate::project::clean_path(std::env::temp_dir()), crate::project::clean_path(PathBuf::from(admitted)));
+        assert_eq!(
+            crate::project::clean_path(std::env::temp_dir()),
+            crate::project::clean_path(PathBuf::from(admitted))
+        );
         assert!(crate::operation_context::OperationContext::current().is_none());
         let fixture = Fixture::new();
         seed_staged_content_fixture(&fixture);
-        assert_eq!(std::fs::read(fixture.engine.join("native/src/lib.rs")).unwrap(), ORIGINAL);
-        std::fs::write(fixture.app.join("accepted.dll"), b"previous accepted DLL fixture\n").unwrap();
+        assert_eq!(
+            std::fs::read(fixture.engine.join("native/src/lib.rs")).unwrap(),
+            ORIGINAL
+        );
+        std::fs::write(
+            fixture.app.join("accepted.dll"),
+            b"previous accepted DLL fixture\n",
+        )
+        .unwrap();
         std::fs::create_dir(fixture.app.join("userdata")).unwrap();
-        std::fs::write(fixture.app.join("userdata/save.bin"), b"working userdata fixture\n").unwrap();
+        std::fs::write(
+            fixture.app.join("userdata/save.bin"),
+            b"working userdata fixture\n",
+        )
+        .unwrap();
         let started = Instant::now();
         let fixed_deadline = started + Duration::from_secs(60);
-        let operation = std::mem::ManuallyDrop::new(crate::operation_context::OperationContext::new(fixed_deadline));
-        let broker = std::mem::ManuallyDrop::new(std::sync::Arc::new(crate::workspace_access::Broker::default()));
+        let operation = std::mem::ManuallyDrop::new(
+            crate::operation_context::OperationContext::new(fixed_deadline),
+        );
+        let broker = std::mem::ManuallyDrop::new(std::sync::Arc::new(
+            crate::workspace_access::Broker::default(),
+        ));
         let cancelled = std::sync::Arc::new(AtomicBool::new(false));
-        let controller = std::mem::ManuallyDrop::new(crate::worker_windows::StreamController::for_runtime());
+        let controller =
+            std::mem::ManuallyDrop::new(crate::worker_windows::StreamController::for_runtime());
         let mut parent = None;
         let mut retained_workspace = None;
         let mut retained_candidate = None;
@@ -14139,21 +16122,39 @@ mod tests {
         report["postseal_budget_or_publication_window_created"] = serde_json::json!(false);
         report["dependency_content_closure_verified"] = serde_json::json!(false);
         report["exact_build_units_verified"] = serde_json::json!(false);
-        report["fixture_oracle_before"] = before.as_ref().map(fixture_all_entry_oracle::status)
+        report["fixture_oracle_before"] = before
+            .as_ref()
+            .map(fixture_all_entry_oracle::status)
             .unwrap_or_else(|| serde_json::json!({"status":"NOT_ATTEMPTED"}));
-        report["fixture_oracle_after"] = after.as_ref().map(fixture_all_entry_oracle::status)
-            .unwrap_or_else(|| serde_json::json!({"status":"UNAVAILABLE_NO_RENEWAL_AFTER_FAILURE"}));
+        report["fixture_oracle_after"] = after
+            .as_ref()
+            .map(fixture_all_entry_oracle::status)
+            .unwrap_or_else(
+                || serde_json::json!({"status":"UNAVAILABLE_NO_RENEWAL_AFTER_FAILURE"}),
+            );
         report["controller_retained"] = serde_json::json!(controller.retained());
         report["elapsed_ms"] = serde_json::json!(started.elapsed().as_millis());
         report["remaining_boundary"] = serde_json::json!("Staged local-source custody only; compiler read closure, exact build units, relocation, publication and loading remain unverified");
         let bytes = serde_json::to_vec_pretty(&report).unwrap();
         assert!(bytes.len() <= 65536);
-        let receipt = fixture.base.join("actual-native-staged-content-custody.json");
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&receipt).unwrap();
+        let receipt = fixture
+            .base
+            .join("actual-native-staged-content-custody.json");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&receipt)
+            .unwrap();
         std::io::Write::write_all(&mut file, &bytes).unwrap();
         file.sync_all().unwrap();
-        println!("native_staged_content_custody_real_producer_receipt={}", receipt.display());
-        assert!(succeeded, "staged content custody refused; original receipt retained");
+        println!(
+            "native_staged_content_custody_real_producer_receipt={}",
+            receipt.display()
+        );
+        assert!(
+            succeeded,
+            "staged content custody refused; original receipt retained"
+        );
         assert_eq!(native_calls, 1);
         assert_eq!(controller.retained(), 0);
         assert!(retained_workspace.is_none() && retained_candidate.is_none());
@@ -14412,9 +16413,13 @@ mod tests {
                         return Err("gate_original_native_seal_or_retirement_unproven".into());
                     }
                     let provenance_observations = match &mut candidate.compiler_provenance {
-                        CandidateCompilerProvenance::Real(record) => record.check_corruptions_for_test(
-                            &candidate.proposal.staged, &candidate.artifact, &candidate.artifact_hash, &inspected,
-                        )?,
+                        CandidateCompilerProvenance::Real(record) => record
+                            .check_corruptions_for_test(
+                                &candidate.proposal.staged,
+                                &candidate.artifact,
+                                &candidate.artifact_hash,
+                                &inspected,
+                            )?,
                         CandidateCompilerProvenance::SyntheticAuthorityOnly => {
                             return Err("gate_genuine_compiler_provenance_missing".into());
                         }

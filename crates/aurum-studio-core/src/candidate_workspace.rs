@@ -22,7 +22,7 @@ pub(crate) struct LifetimeFence(Arc<AtomicUsize>);
 #[cfg(any(windows, test))]
 pub(crate) struct LifetimeClaim(Option<Arc<AtomicUsize>>);
 impl LifetimeFence {
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     pub(crate) fn same_origin_for_cargo_fixture(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
@@ -218,10 +218,14 @@ impl ResolvedCompilation {
         {
             return Err("external_artifact_custody_workspace_owner_mismatch".into());
         }
-        let lease = workspace.lease.as_ref()
+        let lease = workspace
+            .lease
+            .as_ref()
             .ok_or("external_artifact_custody_workspace_lease_missing")?;
         crate::snapshot::check_opened_path(
-            &lease.0, &workspace.path.join("workspace.lock"), budget.deadline(),
+            &lease.0,
+            &workspace.path.join("workspace.lock"),
+            budget.deadline(),
         )?;
         budget.check()
     }
@@ -235,7 +239,8 @@ impl ResolvedCompilation {
         budget: &crate::external_workspace::Budget<'_>,
     ) -> Result<PrivateArtifactSlot, String> {
         self.check_workspace_owner(workspace, envelope, budget)?;
-        let directory = crate::snapshot::open_checked_directory(&workspace.path, budget.deadline())?;
+        let directory =
+            crate::snapshot::open_checked_directory(&workspace.path, budget.deadline())?;
         let slot = PrivateArtifactSlot {
             path: workspace.path.join("checked-artifact.dll"),
             directory,
@@ -257,7 +262,9 @@ pub(crate) struct PrivateArtifactSlot {
 }
 #[cfg(windows)]
 impl PrivateArtifactSlot {
-    pub(crate) fn path(&self) -> &Path { &self.path }
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
 
     pub(crate) fn recheck(
         &self,
@@ -287,8 +294,13 @@ impl PrivateArtifactSlot {
         self.recheck(resolved, workspace, envelope, budget)?;
         // Retain the returned writer before any further fallible work. Both the
         // parent guard and this non-reparse CreateNew handle deny replacement.
-        OpenOptions::new().read(true).write(true).create_new(true)
-            .custom_flags(0x0020_0000).share_mode(1).open(&self.path)
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .custom_flags(0x0020_0000)
+            .share_mode(1)
+            .open(&self.path)
             .map_err(|_| "external_private_artifact_create_new_refused".into())
     }
 }
@@ -316,13 +328,20 @@ impl SourceEnvelope<'_> {
 impl Workspace {
     /// A separate recognized allocation and fresh fence. Never recover or
     /// delete another slot while admitting a parser under the original budget.
+    #[cfg(any(windows, test))]
     pub(crate) fn parser_peer_checked(
-        &self, deadline: Instant, check: &dyn Fn() -> Result<(), String>,
+        &self,
+        deadline: Instant,
+        check: &dyn Fn() -> Result<(), String>,
     ) -> Result<Self, String> {
-        if self.lease.is_none() { return Err("configfile_parser_original_allocation_required".into()); }
+        if self.lease.is_none() {
+            return Err("configfile_parser_original_allocation_required".into());
+        }
         let checked = || {
             check()?;
-            if Instant::now() >= deadline { return Err("configfile_parser_allocation_deadline".into()); }
+            if Instant::now() >= deadline {
+                return Err("configfile_parser_allocation_deadline".into());
+            }
             Ok(())
         };
         Self::in_pool_controlled(&self.pool, SLOTS, None, Some(&checked))
@@ -428,7 +447,9 @@ impl Workspace {
         Self::in_pool_controlled(pool, slots, check, None)
     }
     fn in_pool_controlled(
-        pool: &Path, slots: usize, check: Option<CompilerPathCheck>,
+        pool: &Path,
+        slots: usize,
+        check: Option<CompilerPathCheck>,
         control: Option<&dyn Fn() -> Result<(), String>>,
     ) -> Result<Self, String> {
         let checkpoint = || control.map_or(Ok(()), |check| check());
@@ -507,7 +528,10 @@ impl Workspace {
         let lease = open_lock(&path.join("workspace.lock"), true)?;
         lease.try_lock().map_err(|error| error.to_string())?;
         // Keep a failed partial allocation's original lease until host exit.
-        if let Err(error) = checkpoint() { std::mem::forget(lease); return Err(error); }
+        if let Err(error) = checkpoint() {
+            std::mem::forget(lease);
+            return Err(error);
+        }
         crate::files::write_atomic(
             &path.join("workspace.json"),
             &serde_json::to_vec(&Manifest {
@@ -527,7 +551,10 @@ impl Workspace {
             #[cfg(windows)]
             retained_compilation: None,
         };
-        if let Err(error) = checkpoint() { std::mem::forget(workspace); return Err(error); }
+        if let Err(error) = checkpoint() {
+            std::mem::forget(workspace);
+            return Err(error);
+        }
         Ok(workspace)
     }
     pub(crate) fn clean(&mut self) -> Result<(), String> {
@@ -661,27 +688,34 @@ mod tests {
     use super::*;
     #[test]
     fn configfile_parser_peer_is_fresh_and_never_recovers_stale_state() {
-        let pool = std::env::temp_dir().join(format!("parser-pool-{}",crate::random::session_id()));
+        let pool =
+            std::env::temp_dir().join(format!("parser-pool-{}", crate::random::session_id()));
         let mut original = Workspace::in_pool(&pool).unwrap();
         assert!(original.lifetime.close_if_resolved());
-        let deadline = Instant::now()+Duration::from_secs(3);
-        let mut parser = original.parser_peer_checked(deadline,&||Ok(())).unwrap();
-        assert_ne!(original.path,parser.path);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut parser = original.parser_peer_checked(deadline, &|| Ok(())).unwrap();
+        assert_ne!(original.path, parser.path);
+        #[cfg(windows)]
         assert!(original.source_envelope(deadline).is_err());
-        let mut claim = parser.lifetime.claim().unwrap();claim.resolve();
+        let mut claim = parser.lifetime.claim().unwrap();
+        claim.resolve();
         let stale = parser.path.clone();
         drop(parser.lease.take());
         std::mem::forget(parser);
-        assert!(original.parser_peer_checked(deadline,&||Ok(())).is_err());
+        assert!(original.parser_peer_checked(deadline, &|| Ok(())).is_err());
         assert!(stale.exists());
         let before = std::fs::read_dir(&pool).unwrap().count();
-        assert!(original.parser_peer_checked(Instant::now(),&||Ok(())).is_err());
-        assert!(original.parser_peer_checked(deadline,&||Err("original cancelled".into())).is_err());
-        assert_eq!(std::fs::read_dir(&pool).unwrap().count(),before);
+        assert!(original
+            .parser_peer_checked(Instant::now(), &|| Ok(()))
+            .is_err());
+        assert!(original
+            .parser_peer_checked(deadline, &|| Err("original cancelled".into()))
+            .is_err());
+        assert_eq!(std::fs::read_dir(&pool).unwrap().count(), before);
         original.clean().unwrap();
         // Only the exact test-owned stale slot is removed after proving that
         // admission preserved it. No production recovery path was exercised.
-        remove(&pool,&stale).unwrap();
+        remove(&pool, &stale).unwrap();
         std::fs::remove_file(pool.join("pool.lock")).unwrap();
         std::fs::remove_dir(pool).unwrap();
     }
@@ -717,29 +751,49 @@ mod tests {
     fn external_source_artifact_custody_resolved_owner_requires_same_fence_and_lease() {
         let pool = Pool::new();
         let mut workspace = Workspace::in_pool(&pool.0).unwrap();
-        let budget = crate::external_workspace::Budget::new(
-            std::time::Duration::from_secs(30), &|| Ok(()),
-        ).unwrap();
+        let budget =
+            crate::external_workspace::Budget::new(std::time::Duration::from_secs(30), &|| Ok(()))
+                .unwrap();
         let envelope = workspace.path.join("external-sources");
         // Owner-join unit evidence only, not a positive native compilation witness.
         assert!(workspace.lifetime.close_if_resolved());
         let resolved = ResolvedCompilation {
-            workspace: workspace.path.clone(), envelope: envelope.clone(),
+            workspace: workspace.path.clone(),
+            envelope: envelope.clone(),
             lifetime: workspace.lifetime.clone(),
         };
-        resolved.check_workspace_owner(&workspace, &envelope, &budget).unwrap();
+        resolved
+            .check_workspace_owner(&workspace, &envelope, &budget)
+            .unwrap();
         let original_fence = workspace.lifetime.clone();
         workspace.lifetime = LifetimeFence::default();
-        assert_eq!(resolved.check_workspace_owner(&workspace, &envelope, &budget).err().unwrap(),
-            "external_artifact_custody_workspace_owner_mismatch");
+        assert_eq!(
+            resolved
+                .check_workspace_owner(&workspace, &envelope, &budget)
+                .err()
+                .unwrap(),
+            "external_artifact_custody_workspace_owner_mismatch"
+        );
         workspace.lifetime = original_fence;
         let lease = workspace.lease.take().unwrap();
-        assert_eq!(resolved.check_workspace_owner(&workspace, &envelope, &budget).err().unwrap(),
-            "external_artifact_custody_workspace_lease_missing");
+        assert_eq!(
+            resolved
+                .check_workspace_owner(&workspace, &envelope, &budget)
+                .err()
+                .unwrap(),
+            "external_artifact_custody_workspace_lease_missing"
+        );
         workspace.lease = Some(lease);
-        resolved.check_workspace_owner(&workspace, &envelope, &budget).unwrap();
-        assert_eq!(resolved.check_workspace_owner(&workspace, &pool.0.join("foreign"), &budget).err().unwrap(),
-            "external_artifact_custody_workspace_owner_mismatch");
+        resolved
+            .check_workspace_owner(&workspace, &envelope, &budget)
+            .unwrap();
+        assert_eq!(
+            resolved
+                .check_workspace_owner(&workspace, &pool.0.join("foreign"), &budget)
+                .err()
+                .unwrap(),
+            "external_artifact_custody_workspace_owner_mismatch"
+        );
         drop(resolved);
         workspace.clean().unwrap();
         assert!(!workspace.path.exists());
@@ -752,30 +806,45 @@ mod tests {
         let pool = Pool::new();
         let mut workspace = Workspace::in_pool(&pool.0).unwrap();
         let mut foreign = Workspace::in_pool(&pool.0).unwrap();
-        let b = crate::external_workspace::Budget::new(Duration::from_secs(30), &|| Ok(())).unwrap();
+        let b =
+            crate::external_workspace::Budget::new(Duration::from_secs(30), &|| Ok(())).unwrap();
         let envelope = workspace.path.join("external-sources");
         // This unit exercises the allocation capability, not real compiler issuance.
         assert!(workspace.lifetime.close_if_resolved());
         let resolved = ResolvedCompilation {
-            workspace: workspace.path.clone(), envelope: envelope.clone(),
+            workspace: workspace.path.clone(),
+            envelope: envelope.clone(),
             lifetime: workspace.lifetime.clone(),
         };
-        let slot = resolved.private_artifact_slot(&workspace, &envelope, &b).unwrap();
+        let slot = resolved
+            .private_artifact_slot(&workspace, &envelope, &b)
+            .unwrap();
         assert_eq!(slot.path(), workspace.path.join("checked-artifact.dll"));
-        assert!(workspace.source_envelope(b.deadline()).is_err(), "retired source staging stays refused");
+        assert!(
+            workspace.source_envelope(b.deadline()).is_err(),
+            "retired source staging stays refused"
+        );
         assert!(slot.create_new(&resolved, &foreign, &envelope, &b).is_err());
         assert!(!foreign.path.join("checked-artifact.dll").exists());
         let original_lifetime = workspace.lifetime.clone();
         workspace.lifetime = LifetimeFence::default();
-        assert!(slot.create_new(&resolved, &workspace, &envelope, &b).is_err());
+        assert!(slot
+            .create_new(&resolved, &workspace, &envelope, &b)
+            .is_err());
         workspace.lifetime = original_lifetime;
         let lease = workspace.lease.take().unwrap();
-        assert!(slot.create_new(&resolved, &workspace, &envelope, &b).is_err());
+        assert!(slot
+            .create_new(&resolved, &workspace, &envelope, &b)
+            .is_err());
         workspace.lease = Some(lease);
-        let mut writer = slot.create_new(&resolved, &workspace, &envelope, &b).unwrap();
+        let mut writer = slot
+            .create_new(&resolved, &workspace, &envelope, &b)
+            .unwrap();
         writer.write_all(b"first exact bytes").unwrap();
         writer.sync_all().unwrap();
-        assert!(slot.create_new(&resolved, &workspace, &envelope, &b).is_err());
+        assert!(slot
+            .create_new(&resolved, &workspace, &envelope, &b)
+            .is_err());
         assert_eq!(std::fs::read(slot.path()).unwrap(), b"first exact bytes");
         drop(writer);
         drop(slot);

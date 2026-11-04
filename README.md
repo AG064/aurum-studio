@@ -81,7 +81,7 @@ Use **Run** to play in the workspace. **Live tuning** and the **Runtime inspecto
 
 ## Get started on Windows
 
-The **0.4.1 development candidate** opens through `Aurum Studio.exe` at the installation or extracted package root. Its adjacent `bin/aurum.exe` remains the CLI/MCP entrypoint. [Candidate build commands and verification scope](docs/RELEASES.md#041-development-candidate).
+The **0.4.1 development candidate** opens through `Aurum Studio.exe` at the installation or extracted package root. Its adjacent `bin/aurum.exe` remains the CLI/MCP entrypoint. [Candidate build commands and verification scope](docs/RELEASES.md#041-locally-verified-windows-candidate).
 
 The currently published download is **0.4.0**. Extract that ZIP into a writable folder and open its `Launch Aurum Studio.vbs`; it predates the direct executable launcher. The Godot runtime and Web templates are included. Script-only projects need no Rust compiler or separate editor installation. [Published packages, checksums and optional Rust setup](docs/RELEASES.md#v040-published-download).
 
@@ -92,7 +92,7 @@ Prerequisites: PowerShell 7, Rust with the Windows C++ build tools, and the full
 ```powershell
 git clone https://github.com/AG064/aurum-studio.git A:/Projects/aurum-studio
 Set-Location A:/Projects/aurum-studio
-$buildDirectory = Join-Path A:/CodexData/temp ('aurum-041-build-' + [guid]::NewGuid().ToString('N'))
+$buildDirectory = Join-Path ([IO.Path]::GetTempPath()) ('aurum-041-build-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path (Join-Path $buildDirectory 'tmp') -Force | Out-Null
 $env:TEMP = Join-Path $buildDirectory 'tmp'
 $env:TMP = $env:TEMP

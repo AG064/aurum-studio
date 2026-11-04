@@ -75,12 +75,16 @@ pub(crate) trait ExternalReadIo {
         revision: &str,
         name: &str,
     ) -> Result<Option<crate::external_workspace::DirectoryIdentity>, String>;
-    fn source_entries(&self, path: &str) -> Result<Option<Vec<(String, bool, u64)>>, String>;
+    fn source_entries(&self, path: &str) -> Result<Option<SourceEntries>, String>;
 }
+#[cfg(windows)]
+type SourceEntries = Vec<(String, bool, u64)>;
 #[cfg(windows)]
 type Object = crate::external_workspace::ExternalObject;
 #[cfg(windows)]
 type Identity = crate::external_workspace::DirectoryIdentity;
+#[cfg(windows)]
+type BlobPair = (Option<(Object, Vec<u8>)>, Option<(Object, Vec<u8>)>);
 /// A recorded location inside the same approved root. This is evidence only;
 /// native operations separately require the consumed sealed repair admission.
 #[cfg(windows)]
@@ -200,7 +204,7 @@ pub(crate) struct ExternalV3Snapshot {
     head: Object,
     sequence: usize,
     state: State,
-    blobs: Vec<(Option<(Object, Vec<u8>)>, Option<(Object, Vec<u8>)>)>,
+    blobs: Vec<BlobPair>,
     temps: Vec<Option<Object>>,
     olds: Vec<Option<Object>>,
     targets: Vec<Option<Object>>,
@@ -416,16 +420,19 @@ pub(crate) fn inspect_external_v3(
                 let valid = if snapshot.sequence == 0 {
                     state == State::Prepared
                 } else {
-                    match (&snapshot.state, &state) {
+                    matches!(
+                        (&snapshot.state, &state),
                         (State::Prepared, State::Publishing | State::RollingBack)
-                        | (State::Publishing, State::Committed)
-                        | (
-                            State::Publishing | State::RecoveryConflict | State::RollingBack,
-                            State::RollingBack,
-                        )
-                        | (State::RollingBack, State::RolledBack | State::RecoveryConflict) => true,
-                        _ => false,
-                    }
+                            | (State::Publishing, State::Committed)
+                            | (
+                                State::Publishing | State::RecoveryConflict | State::RollingBack,
+                                State::RollingBack,
+                            )
+                            | (
+                                State::RollingBack,
+                                State::RolledBack | State::RecoveryConflict
+                            )
+                    )
                 };
                 if !valid {
                     return Err(v3_conflict("state transition"));
@@ -814,12 +821,15 @@ fn binding_cleanup(snapshot: &ExternalV3Snapshot, path: &str) -> bool {
 }
 
 #[cfg(windows)]
+// Reached only by tests until external-source publication is connected.
+#[cfg_attr(not(test), allow(dead_code))]
 struct V3Publication<'a, 'b> {
     io: crate::external_workspace::ExternalRevisionIo<'a, 'b>,
     snapshot: ExternalV3Snapshot,
     activation_attempted: bool,
 }
 #[cfg(windows)]
+#[cfg_attr(not(test), allow(dead_code))]
 impl<'a, 'b> V3Publication<'a, 'b> {
     fn inventory(&self) -> Result<(), String> {
         self.io.check()?;
@@ -908,6 +918,8 @@ impl<'a, 'b> V3Publication<'a, 'b> {
         v3_checkpoint("after_event", self.snapshot.sequence - 1);
         Ok(())
     }
+    // Internal plumbing: each argument is an independent input to one publication.
+    #[allow(clippy::too_many_arguments)]
     fn prepare(
         io: crate::external_workspace::ExternalRevisionIo<'a, 'b>,
         changes: Vec<ChangeBytes>,
@@ -1487,8 +1499,12 @@ fn v3_parent(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |p| p.0)
 }
 #[cfg(all(test, windows))]
-thread_local! {static V3_HOOK:std::cell::RefCell<Option<Box<dyn FnMut(&str,usize)>>> = const {std::cell::RefCell::new(None)};}
+type V3Hook = Box<dyn FnMut(&str, usize)>;
+#[cfg(all(test, windows))]
+thread_local! {static V3_HOOK:std::cell::RefCell<Option<V3Hook>> = const {std::cell::RefCell::new(None)};}
 #[cfg(windows)]
+// Reached only by tests until external-source publication is connected.
+#[cfg_attr(not(test), allow(dead_code))]
 fn v3_checkpoint(_phase: &str, _index: usize) {
     #[cfg(test)]
     V3_HOOK.with(|hook| {
@@ -1609,6 +1625,9 @@ fn state_root(root: &Path) -> Result<PathBuf, String> {
 fn active(root: &Path) -> Result<PathBuf, String> {
     Ok(state_root(root)?.join("active.json"))
 }
+// Reached only by tests until external-source publication is connected.
+#[cfg(windows)]
+#[cfg_attr(not(test), allow(dead_code))]
 fn active_revision(root: &Path) -> Result<String, String> {
     let pointer = active(root)?;
     crate::diagnostics::checked_path(&pointer).map_err(|error| error.to_string())?;
@@ -2263,7 +2282,7 @@ fn recover_locked(
     directories: Option<&dyn DirectoryAuthority>,
 ) -> Result<Value, String> {
     authority()?;
-    let pointer = active(&root)?;
+    let pointer = active(root)?;
     if !pointer.exists() {
         return Ok(json!({"ok":true,"recovered":false}));
     }
@@ -2284,7 +2303,7 @@ fn recover_locked(
         .as_str()
         .ok_or("invalid active revision pointer")?;
     id(revision)?;
-    let directory = state_root(&root)?.join(revision);
+    let directory = state_root(root)?.join(revision);
     let mut journal = load(&directory)?;
     let actual_scope = journal
         .external
@@ -2303,7 +2322,7 @@ fn recover_locked(
     }
     if journal.state == State::Committed || journal.state == State::RolledBack {
         let commit = commit_barrier()?;
-        if let Err(error) = clear_active(&root) {
+        if let Err(error) = clear_active(root) {
             recovery_required();
             return Err(error);
         }
@@ -2315,7 +2334,7 @@ fn recover_locked(
         );
     }
     restore_authorized(
-        &root,
+        root,
         &directory,
         &mut journal,
         false,
@@ -2361,6 +2380,8 @@ fn publish_rows_bound_with(
         None,
     )
 }
+// Internal plumbing: each argument is an independent authority, hook or input.
+#[allow(clippy::too_many_arguments)]
 fn publish_rows_authorized_with(
     root: &Path,
     changes: Vec<ChangeBytes>,
@@ -2977,6 +2998,8 @@ fn undo_locked(
 /// Read-only lookup, including when project configuration cannot be opened.
 /// The returned provenance cannot be used as a mutation permit.
 #[cfg(windows)]
+// Reached only by tests until external-source publication is connected.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn external_repair_scope(
     root: &Path,
     revision: &str,
@@ -3014,6 +3037,8 @@ pub(crate) fn external_repair_scope(
 }
 
 #[cfg(windows)]
+// Reached only by tests until external-source publication is connected.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn publish_external_source(
     permit: crate::external_workspace::SourcePublicationPermit,
     candidate: crate::external_workspace::ValidatedSourceCandidate,
@@ -3025,6 +3050,8 @@ pub(crate) fn publish_external_source(
 
 /// Publish only the candidate retained by the exact postvalidation confirmation.
 #[cfg(windows)]
+// Reached only by tests until external-source publication is connected.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn publish_external_prevalidated_source(
     permit: crate::external_workspace::SourcePublicationPermit,
     budget: &crate::external_workspace::Budget<'_>,
@@ -3034,6 +3061,8 @@ pub(crate) fn publish_external_prevalidated_source(
 }
 
 #[cfg(windows)]
+// Reached only by tests until external-source publication is connected.
+#[cfg_attr(not(test), allow(dead_code))]
 fn publish_external_admission(
     admission: &crate::external_workspace::SourceAdmission,
     budget: &crate::external_workspace::Budget<'_>,
@@ -3060,6 +3089,8 @@ fn publish_external_admission(
 }
 
 #[cfg(windows)]
+// Reached only by tests until external-source publication is connected.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn repair_external_source(
     permit: crate::external_workspace::SourceRepairPermit,
     budget: &crate::external_workspace::Budget<'_>,
@@ -3367,7 +3398,7 @@ mod tests {
                 "native/src/new".to_string(),
                 "native/src/new/deep".to_string(),
             ];
-            let changes = vec![
+            let changes = [
                 (
                     "native/src/new/deep/created.rs".to_string(),
                     None,

@@ -324,9 +324,15 @@ impl DiagnosticHandle {
         compiler_codes(&d.channels[0].prefix)
     }
     pub(crate) fn write_private(&self) -> io::Result<()> {
-        if self.write_started.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
-            return Err(io::Error::new(io::ErrorKind::AlreadyExists,
-                "known Cargo diagnostic write already attempted"));
+        if self
+            .write_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "known Cargo diagnostic write already attempted",
+            ));
         }
         let d = self
             .sink
@@ -600,6 +606,7 @@ pub(crate) mod tests {
     }
     #[test]
     fn known_cargo_prefix_caps_keep_distinct_counts_and_no_cleanup_receipt() {
+        let _serial = crate::worker_windows::binary::pool_test_lock();
         let controller = StreamController::for_runtime();
         let sink = Sink::new(&controller).unwrap();
         sink.bytes(Pipe::Stdout, &vec![b'x'; CAP * 2]);
@@ -623,29 +630,47 @@ pub(crate) mod tests {
     }
     #[test]
     fn known_cargo_private_dump_keeps_first_bytes_and_never_retries_on_drop() {
-        let root = std::env::temp_dir().join(format!("cargo-diagnostic-write-{}", crate::random::session_id()));
+        let _serial = crate::worker_windows::binary::pool_test_lock();
+        let root = std::env::temp_dir().join(format!(
+            "cargo-diagnostic-write-{}",
+            crate::random::session_id()
+        ));
         std::fs::create_dir(&root).unwrap();
         let controller = StreamController::for_runtime();
         let handle = DiagnosticHandle {
-            sink: Sink::new(&controller).unwrap(), controller: controller.clone(),
+            sink: Sink::new(&controller).unwrap(),
+            controller: controller.clone(),
             binding: Binding {
                 program: PathBuf::from("A:/unexecuted-cargo.exe"),
-                argv0: PathBuf::from("A:/unexecuted-cargo.exe"), cwd: root.clone(),
-                env: Vec::new(), member_manifest: root.join("Cargo.toml"), target: root.join("target"),
-                application_sha256: "A".repeat(64), lifetime: LifetimeFence::default(),
+                argv0: PathBuf::from("A:/unexecuted-cargo.exe"),
+                cwd: root.clone(),
+                env: Vec::new(),
+                member_manifest: root.join("Cargo.toml"),
+                target: root.join("target"),
+                application_sha256: "A".repeat(64),
+                lifetime: LifetimeFence::default(),
                 parent_deadline: Instant::now() + Duration::from_secs(30),
             },
-            artifact_root: root.clone(), started: AtomicBool::new(false),
+            artifact_root: root.clone(),
+            started: AtomicBool::new(false),
             write_started: AtomicBool::new(false),
         };
-        handle.sink.bytes(Pipe::Stderr, b"private diagnostic fixture bytes\n");
-        handle.sink.api::<()>(Stage::Finish, &Err(io::Error::from_raw_os_error(5)));
+        handle
+            .sink
+            .bytes(Pipe::Stderr, b"private diagnostic fixture bytes\n");
+        handle
+            .sink
+            .api::<()>(Stage::Finish, &Err(io::Error::from_raw_os_error(5)));
         handle.write_private().unwrap();
         let path = root.join("real-cargo-build-private-diagnostic.bin");
         let first = std::fs::read(&path).unwrap();
-        assert!(first.windows(b"private diagnostic fixture bytes".len())
+        assert!(first
+            .windows(b"private diagnostic fixture bytes".len())
             .any(|bytes| bytes == b"private diagnostic fixture bytes"));
-        assert_eq!(handle.write_private().unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            handle.write_private().unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
         drop(handle);
         assert_eq!(std::fs::read(&path).unwrap(), first);
         std::fs::remove_file(path).unwrap();
@@ -653,6 +678,7 @@ pub(crate) mod tests {
     }
     #[test]
     fn known_cargo_typed_failure_is_not_replaced_by_cleanup() {
+        let _serial = crate::worker_windows::binary::pool_test_lock();
         let controller = StreamController::for_runtime();
         let sink = Sink::new(&controller).unwrap();
         let first: io::Result<()> = Err(io::Error::from_raw_os_error(5));

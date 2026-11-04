@@ -52,10 +52,13 @@ pub mod doctor;
 pub mod downloads;
 #[cfg(windows)]
 mod external_native;
+// External-source publication is exercised by tests, but no production operation
+// reaches it yet. Remove this allowance when that operation is connected.
 #[cfg(windows)]
+#[cfg_attr(not(test), allow(dead_code))]
 mod external_workspace;
-pub mod files;
 pub mod failure_bundle;
+pub mod files;
 pub mod gameplay;
 pub mod hash;
 pub mod jobs;

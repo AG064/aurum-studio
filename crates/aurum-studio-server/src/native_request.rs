@@ -50,8 +50,8 @@ pub(crate) fn requested(request: &Request) -> Result<bool, Response> {
 
 /// The caller must authenticate the request head before entering this function.
 pub(crate) fn receive(
-    reader: &mut BufReader<TcpStream>,
-    writer: &mut TcpStream,
+    reader: &mut BufReader<&TcpStream>,
+    writer: &mut &TcpStream,
     request: &mut Request,
 ) -> Result<OperationContext, String> {
     let length = http::body_length(&request.headers).map_err(|error| error.to_string())?;
@@ -118,11 +118,11 @@ pub(crate) fn receive(
 }
 
 /// Every ingress read consumes one absolute allowance, including partial reads.
-struct Ingress<'a> {
-    reader: &'a mut BufReader<TcpStream>,
+struct Ingress<'a, 'b> {
+    reader: &'a mut BufReader<&'b TcpStream>,
     deadline: Instant,
 }
-impl Read for Ingress<'_> {
+impl Read for Ingress<'_, '_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         let remaining = self.deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -153,9 +153,9 @@ struct PeerCancellation {
 }
 impl PeerCancellation {
     fn start(stream: &TcpStream, context: &OperationContext) -> io::Result<Self> {
-        let mut socket = stream.try_clone()?;
+        let mut socket = crate::private_clone(stream)?;
         socket.set_read_timeout(Some(WATCH_POLL))?;
-        let wake = socket.try_clone()?;
+        let wake = crate::private_clone(&socket)?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = Arc::clone(&stop);
         let operation = context.clone();

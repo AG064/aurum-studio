@@ -429,7 +429,7 @@ fn checked_open(
     #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (path, deadline, directory);
-        return Err("checked reads are unavailable on this platform".into());
+        Err("checked reads are unavailable on this platform".into())
     }
     #[cfg(any(windows, target_os = "linux"))]
     {

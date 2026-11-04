@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const CHILD_TEST: &str = "worker_windows::binary::context_tests::fixture_child";
-static SERIAL: Mutex<()> = Mutex::new(());
 static READ_HOLD: Mutex<Option<Arc<Hold>>> = Mutex::new(None);
 static CANCEL_SUCCESSES: AtomicUsize = AtomicUsize::new(0);
 struct Hold {
@@ -216,7 +215,7 @@ fn protected(workspace: &Workspace) {
 
 #[test]
 fn actual_context_cancel_is_captured_and_cancels_pending_native_io() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     assert!(OperationContext::current().is_none());
     let mut fixture = Fixture::new();
     let controller = StreamController::for_runtime();
@@ -254,7 +253,7 @@ fn actual_context_cancel_is_captured_and_cancels_pending_native_io() {
 
 #[test]
 fn actual_context_deadline_clips_stream_and_retains_original_objects_until_joined() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut fixture = Fixture::new();
     let controller = StreamController::for_runtime();
     let context = OperationContext::new(Instant::now() + Duration::from_secs(1));
@@ -291,7 +290,7 @@ fn actual_context_deadline_clips_stream_and_retains_original_objects_until_joine
 
 #[test]
 fn no_context_uncertain_retirement_blocks_exact_workspace_clean_until_verified_reap() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     assert!(OperationContext::current().is_none());
     let mut fixture = Fixture::new();
     let controller = StreamController::for_runtime();
@@ -315,7 +314,7 @@ fn no_context_uncertain_retirement_blocks_exact_workspace_clean_until_verified_r
 
 #[test]
 fn actual_context_uncertainty_stays_recovery_required_after_scope_exit() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut fixture = Fixture::new();
     let controller = StreamController::for_runtime();
     let context = OperationContext::new(Instant::now() + Duration::from_secs(30));
@@ -357,7 +356,7 @@ fn actual_context_uncertainty_stays_recovery_required_after_scope_exit() {
 
 #[test]
 fn actual_context_partial_admission_preserves_original_pending_and_workspace() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let mut fixture = Fixture::new();
     let controller = StreamController::for_runtime();
     let gate = fixture.root.join("creator");
@@ -394,7 +393,7 @@ fn actual_context_partial_admission_preserves_original_pending_and_workspace() {
 
 #[test]
 fn actual_workspace_drop_preserves_uncertain_allocation_and_lease_until_host_exit() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = crate::worker_windows::binary::pool_test_lock();
     let temporary = temporary_root();
     let project = temporary.join(format!("aurum-binary-drop-{}", crate::random::session_id()));
     fs::create_dir(&project).unwrap();

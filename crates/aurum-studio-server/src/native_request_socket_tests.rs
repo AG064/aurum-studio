@@ -189,3 +189,90 @@ fn controlled_envelope_cannot_override_authority_or_duplicate_timing() {
         assert!(!fixture.root.join("controlled.txt").exists());
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn a_child_spawned_during_a_request_cannot_hold_or_reset_its_connection() {
+    let fixture = Fixture::new();
+    let body =
+        serde_json::to_vec(&serde_json::json!({"op":"write","path":"spawned.txt","text":"ok"}))
+            .unwrap();
+    let mut stream = fixture.connect();
+    write!(
+        stream,
+        "POST /api/project HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Aurum-Token: {}\r\nContent-Length: {}\r\n\r\n",
+        fixture.server.token(),
+        body.len()
+    )
+    .unwrap();
+    // Wait until a handler owns this connection and is waiting for the body.
+    let accepted = Instant::now() + Duration::from_secs(5);
+    while fixture.server.shell.connections_count() == 0 {
+        assert!(Instant::now() < accepted, "the server never accepted");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    // std spawns with handle inheritance on, as every Studio child process does.
+    let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+    let mut child = std::process::Command::new(system.join("ping.exe"))
+        .args(["-n", "8", "127.0.0.1"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    stream.write_all(&body).unwrap();
+    let mut reply = String::new();
+    let read = stream.read_to_string(&mut reply);
+    let child_alive = child.try_wait().unwrap().is_none();
+    let _ = child.kill();
+    let _ = child.wait();
+    read.unwrap();
+    assert!(child_alive, "the reply closed only after the child exited");
+    assert!(reply.starts_with("HTTP/1.1 200 "), "{reply}");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_private_socket_clone_is_not_inheritable() {
+    use std::os::windows::io::AsRawSocket;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetHandleInformation(handle: *mut std::ffi::c_void, flags: *mut u32) -> i32;
+    }
+    let fixture = Fixture::new();
+    let stream = fixture.connect();
+    let clone = crate::private_clone(&stream).unwrap();
+    let mut flags = u32::MAX;
+    // SAFETY: `clone` owns this live socket handle for the whole call.
+    let ok = unsafe { GetHandleInformation(clone.as_raw_socket() as *mut _, &mut flags) };
+    assert_ne!(ok, 0);
+    assert_eq!(flags & 1, 0);
+}
+
+#[test]
+fn a_refused_connection_still_receives_its_503() {
+    let fixture = Fixture::new();
+    let held: Vec<_> = (0..MAX_CONNECTIONS).map(|_| fixture.connect()).collect();
+    let full = Instant::now() + Duration::from_secs(10);
+    while fixture.server.shell.connections_count() < MAX_CONNECTIONS {
+        assert!(
+            Instant::now() < full,
+            "the server never reached its ceiling"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    for _ in 0..8 {
+        let mut refused = fixture.connect();
+        // Sent before the refusal, as a browser does, so unread bytes are waiting at close.
+        write!(
+            refused,
+            "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Aurum-Token: {}\r\n\r\n",
+            fixture.server.token()
+        )
+        .unwrap();
+        let reply = response(&mut refused);
+        assert!(reply.starts_with("HTTP/1.1 503 "), "{reply}");
+    }
+    drop(held);
+}

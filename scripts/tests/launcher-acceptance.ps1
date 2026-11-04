@@ -5,14 +5,13 @@ param(
     [Parameter(Mandatory)][string]$GodotBinary,
     [Parameter(Mandatory)][string]$TemplatesDirectory,
     [string]$SourceDirectory = (Join-Path $PSScriptRoot '../..'),
-    [string]$WorkDirectory = ('A:/CodexData/temp/aurum-041-continuation-01a13506/launcher-acceptance-' + [guid]::NewGuid().ToString('N'))
+    [string]$WorkDirectory = (Join-Path ([IO.Path]::GetTempPath()) ('aurum-launcher-acceptance-' + [guid]::NewGuid().ToString('N')))
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $work = [IO.Path]::GetFullPath($WorkDirectory)
 $sourceRoot = (Resolve-Path -LiteralPath $SourceDirectory).Path
-if (-not $sourceRoot.StartsWith('A:\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Launcher qualification source must stay on A:' }
-if (-not $work.StartsWith('A:\CodexData\temp\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Launcher qualification must use a dedicated A: ephemeral directory' }
+if (-not $work.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)) { throw 'Launcher qualification must use a dedicated temporary directory' }
 if (Test-Path -LiteralPath $work) { throw 'Fresh evidence directory required' }
 New-Item -ItemType Directory -Path $work,(Join-Path $work 'tmp'),(Join-Path $work 'unrelated cwd') | Out-Null
 $env:TEMP = Join-Path $work 'tmp'

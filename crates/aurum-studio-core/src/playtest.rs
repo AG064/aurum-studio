@@ -18,10 +18,15 @@ pub fn timeout_seconds(input: &Value) -> Result<u64, String> {
 }
 
 pub(crate) fn seed(input: &Value) -> Result<Option<u32>, String> {
-    input.get("seed").map(|value| {
-        value.as_u64().and_then(|n| u32::try_from(n).ok())
-            .ok_or_else(|| "'seed' must be an integer between 0 and 4294967295".to_string())
-    }).transpose()
+    input
+        .get("seed")
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| "'seed' must be an integer between 0 and 4294967295".to_string())
+        })
+        .transpose()
 }
 
 pub fn run(
@@ -157,9 +162,11 @@ fn run_inner(
             options["seed_scene"] = json!(format!("res://{}", scene.replace('\\', "/")));
         }
         // Seed before loading project scene code, not after its _ready callback.
-        files::write_atomic(&source.join("addons/aurum_live/seed_host.tscn"),
-            b"[gd_scene format=3]\n\n[node name=\"AurumSeedHost\" type=\"Node\"]\n")
-            .map_err(|e| e.to_string())?;
+        files::write_atomic(
+            &source.join("addons/aurum_live/seed_host.tscn"),
+            b"[gd_scene format=3]\n\n[node name=\"AurumSeedHost\" type=\"Node\"]\n",
+        )
+        .map_err(|e| e.to_string())?;
     }
     if let Some(request) = &performance {
         files::write_atomic(
@@ -305,7 +312,13 @@ fn run_inner(
         args.extend(["--fixed-fps".into(), fps.to_string()]);
     }
     if seed(input)?.is_some() {
-        args.extend(["--scene".into(), source.join("addons/aurum_live/seed_host.tscn").display().to_string()]);
+        args.extend([
+            "--scene".into(),
+            source
+                .join("addons/aurum_live/seed_host.tscn")
+                .display()
+                .to_string(),
+        ]);
     } else if let Some(scene) = input.get("scene").and_then(Value::as_str) {
         args.extend([
             "--scene".into(),
