@@ -28,17 +28,27 @@ impl LifetimeFence {
     }
     #[cfg(any(windows, test))]
     pub(crate) fn claim(&self) -> std::io::Result<LifetimeClaim> {
-        self.0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < MAX_LIFETIME_CLAIMS).then_some(count + 1)
-            })
-            .map_err(|count| {
-                std::io::Error::other(if count == LIFETIME_CLOSED {
+        // A compare-exchange loop: `fetch_update` is deprecated on newer toolchains and the
+        // replacement does not exist on older ones.
+        let mut count = self.0.load(Ordering::Acquire);
+        loop {
+            if count >= MAX_LIFETIME_CLAIMS {
+                return Err(std::io::Error::other(if count == LIFETIME_CLOSED {
                     "private workspace lifetime admission is closed"
                 } else {
                     "private workspace lifetime claim limit reached"
-                })
-            })?;
+                }));
+            }
+            match self.0.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => count = current,
+            }
+        }
         Ok(LifetimeClaim(Some(self.0.clone())))
     }
     pub(crate) fn unresolved(&self) -> bool {

@@ -335,9 +335,15 @@ fn stderr_drain(mut pipe: impl Read + Send + 'static, count: Arc<AtomicUsize>) {
                 Ok(0) | Err(_) => break,
                 Ok(read) => read,
             };
-            let _ = count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_add(read).min(OUTPUT_BYTES))
-            });
+            let mut current = count.load(Ordering::Relaxed);
+            while let Err(observed) = count.compare_exchange_weak(
+                current,
+                current.saturating_add(read).min(OUTPUT_BYTES),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                current = observed;
+            }
         }
     });
 }
