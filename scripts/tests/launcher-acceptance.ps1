@@ -64,7 +64,7 @@ function ActualHome([string]$studioDirectory,[string]$Name) {
     Require ($endpoint.owner.pid -eq $ready.child_pid) ($Name + ': metadata ownership matches')
     $base = 'http://127.0.0.1:' + $endpoint.port
     $state = Invoke-RestMethod ($base + '/api/state') -Headers @{'X-Aurum-Token'=$secret} -TimeoutSec 5
-    Require ($state.studio -eq '0.4.1' -and [IO.Path]::GetFullPath($state.root) -eq [IO.Path]::GetFullPath($project)) ($Name + ': actual portable backend and version')
+    Require ($state.studio -eq '0.4.2' -and [IO.Path]::GetFullPath($state.root) -eq [IO.Path]::GetFullPath($project)) ($Name + ': actual portable backend and version')
     Require (-not $ready.raw_output_retained -and -not $ready.credentials_retained) ($Name + ': startup privacy')
     $null = Invoke-RestMethod ($base + '/api/stop') -Method Post -Headers @{'X-Aurum-Token'=$secret} -TimeoutSec 5
     Require ($process.WaitForExit(20000) -and $process.ExitCode -eq 0) ($Name + ': authenticated shutdown')
@@ -179,7 +179,7 @@ try {
     Require ((Subsystem $entry) -eq 2) 'Studio entrypoint uses Windows GUI subsystem'
     Require ((Subsystem (Join-Path $studioDirectory 'bin/aurum.exe')) -eq 3) 'CLI retains console subsystem'
     $version = Probe $entry '--version'
-    Require ($version.exit -eq 0 -and $version.text -eq 'aurum-studio 0.4.1') 'Launcher reports0.4.1'
+    Require ($version.exit -eq 0 -and $version.text -eq 'aurum-studio 0.4.2') 'Launcher reports0.4.2'
     $check = Probe $entry '--check'
     $checkValue = $check.text | ConvertFrom-Json
     Require ($check.exit -eq 0 -and $checkValue.ok -and -not $checkValue.launch_performed) 'Package check performs no Studio launch'
@@ -200,7 +200,7 @@ try {
     Require ($script:activeHost.owner.pid -eq $ready.child_pid) 'Readiness matches exact host metadata PID'
     $base = 'http://127.0.0.1:' + $script:activeHost.port
     $state = Invoke-RestMethod ($base + '/api/state') -Headers @{'X-Aurum-Token'=$script:activeToken} -TimeoutSec 5
-    Require ($state.studio -eq '0.4.1' -and [IO.Path]::GetFullPath($state.root) -eq [IO.Path]::GetFullPath($project)) 'Actual backend serves0.4.1 and portable welcome project'
+    Require ($state.studio -eq '0.4.2' -and [IO.Path]::GetFullPath($state.root) -eq [IO.Path]::GetFullPath($project)) 'Actual backend serves0.4.2 and portable welcome project'
     $ownedStart = (Get-Process -Id $ready.child_pid).StartTime.ToUniversalTime().Ticks
     $duplicate = Gui $entry
     $reuse = Receipt $studioDirectory $duplicate.Id
@@ -222,7 +222,7 @@ try {
     $release=Join-Path $work 'release output'
     & (Join-Path $sourceRoot 'scripts/package-release.ps1') -Binary $Binary -LauncherBinary $LauncherBinary -GodotBinary $GodotBinary -TemplatesDirectory $TemplatesDirectory -OutputDirectory $release *> (Join-Path $work 'package.log')
     Require ($LASTEXITCODE -eq 0) 'Actual release packaging succeeds'
-    $archive=Join-Path $release 'Aurum-Studio-0.4.1-windows-x64.zip'
+    $archive=Join-Path $release 'Aurum-Studio-0.4.2-windows-x64.zip'
     $extracted=Join-Path $work 'Fresh ZIP Studio ü'
     [IO.Compression.ZipFile]::ExtractToDirectory($archive,$extracted)
     Require ((Get-FileHash -LiteralPath (Join-Path $extracted 'Aurum Studio.exe')).Hash -eq (Get-FileHash -LiteralPath $entry).Hash) 'Fresh ZIP retains exact GUI executable'

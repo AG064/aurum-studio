@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-10
+
+Patch release for 0.4.1. It contains the preview start-up fix below and no other changes.
+
 ### Fixed
 
 - Studio waited only 30 seconds for a game's runtime bridge before marking its preview unavailable. On an RTX 2070 with a fresh browser profile, Relay Yard took about 53 seconds from "Loading game" to ready (one warm run took about 5), so four of four first loads showed "Preview unavailable" for a game that then finished starting. Studio now waits up to three minutes and says so after ten seconds. With the change, two cold Relay Yard loads and one cold Orbit Break load reached ready (84 to 108 seconds in headless Edge, with other builds running), and Orbit Break moved from its menu to the hangar on a real key press.
