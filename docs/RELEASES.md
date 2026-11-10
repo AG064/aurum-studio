@@ -17,6 +17,15 @@ It replaces only the two executables, the runtime when its hash changed, `docs`,
 
 Limits: it works only for an installed copy (a folder with `install.json` and `bin/aurum.exe`), not a build folder, and only on Windows, using the `curl` and `tar` that ship with Windows 10 and later. The check and download are limited to HTTPS from this repository's release files. The checksum shows the download is the file that was published; it does not show who published it, and the executables are not code-signed. A version that predates this feature cannot update itself, so the first install of a version containing it is by hand. `AURUM_UPDATE_FEED=http://127.0.0.1:<port>` points the check at a local server for testing; no other address is accepted.
 
+## v0.4.3 published download
+
+[Release page](https://github.com/AG064/aurum-studio/releases/tag/v0.4.3), built from `main` at `52628a5`. The first release that can update itself from inside Studio (see above), plus a fix so closing, installing or restarting Studio waits up to ten seconds for in-flight work instead of refusing at once.
+
+- `Aurum-Studio-0.4.3-windows-x64.zip`: the same contents as 0.4.2 with the changes above. SHA-256 `F927465101E97EE58D62AA04659D912CE178873946158886C25986E8117DD413`.
+- `SHA256SUMS.txt`: the archive checksum, with Unix line endings.
+
+Install this version by hand: earlier versions cannot update themselves. Checked: the update flow end to end on real packages, with a real local server and the real dialog in a real browser, including the shipped 0.4.3 package updating itself; a build labelled 0.4.1 updating to the real 0.4.2 and to the published 0.4.3 over HTTPS, with the installed files byte-identical to the published package; and failure cases (tampered download, foreign host, missing checksum file, mid-way failure with rollback). The launcher acceptance script passed all 52 checks with the browser pinned to an isolated Edge profile. With the system default browser it still fails on the test machine at a later step than before, a first launch of a freshly extracted copy exceeding the 15-second startup deadline, and the cause is not identified. The GPU rendering and native gameplay checks were not repeated for this release, which changes no engine, runtime or game files. The executables are not signed, and devices and benchmarks were not tested.
+
 ## v0.4.2 published download
 
 [Release page](https://github.com/AG064/aurum-studio/releases/tag/v0.4.2), built from `main` at `9c9892f`. A patch release for 0.4.1 with one fix: Studio waits up to three minutes, not 30 seconds, for a game to start in the preview. On a cold first load Relay Yard took about 53 seconds on an RTX 2070, so every cold load of 0.4.1 showed "Preview unavailable".
