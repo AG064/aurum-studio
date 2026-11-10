@@ -6,6 +6,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-10
+
+The first release that can update itself from inside Studio.
+
+### Added
+
+- Updating Studio from inside Studio on Windows. **Commands → Check for updates** reads the latest GitHub release and, when it is newer, downloads it, checks it, and installs it with a backup of every replaced file. Nothing contacts the network until you click, and an install needs a second click. The archive is used only if it matches the SHA-256 in the `SHA256SUMS.txt` published with the same release, which shows the file is the one that was published but not who published it, because the programs are not code-signed. Only the two executables, the runtime when it changed, documentation, examples and scripts are replaced; projects, sessions, shortcuts and the project registry are never touched, and a failure part-way puts the replaced files back. Restart Studio from the dialog to use the new version. Only an installed copy updates itself, and the first install of a version that contains this feature has to be done by hand.
+
+### Fixed
+
+- Closing, updating or restarting Studio no longer fails with "An operation is still running" when clicked just after the page loads. Loading the page starts a scene inspection that takes about 2.8 seconds on this machine, and those requests refused the moment anything was running; they now wait up to ten seconds for it to finish.
+
 ## [0.4.2] - 2026-11-10
 
 Patch release for 0.4.1. It contains the preview start-up fix below and no other changes.

@@ -1325,6 +1325,99 @@
             },
             true,
         );
+        // ---- Updates: always started by a click, never in the background ----
+        const updateBusy = ["checking", "downloading", "extracting", "verifying", "installing"];
+        let updateTimer = null;
+        const megabytes = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`;
+        function renderUpdate(state) {
+            const release = state.release;
+            const working = updateBusy.includes(state.phase);
+            const canInstall =
+                state.phase === "available" && state.installed_copy && state.platform_can_update;
+            let summary = "";
+            if (state.phase === "checking") summary = "Checking for updates...";
+            else if (state.phase === "current") summary = `Studio ${state.current} is up to date.`;
+            else if (state.phase === "available")
+                summary = `Studio ${release.version} is available. You have ${state.current}.`;
+            else if (state.phase === "downloading")
+                summary = state.downloaded_bytes
+                    ? `Downloading Studio ${release.version}: ${megabytes(state.downloaded_bytes)} of ${megabytes(release.archive_bytes)}`
+                    : `Preparing to download Studio ${release.version}...`;
+            else if (state.phase === "extracting") summary = "Unpacking the download...";
+            else if (state.phase === "verifying") summary = "Checking that the new version runs...";
+            else if (state.phase === "installing")
+                summary = "Installing. Each replaced file is kept in the backups folder first.";
+            else if (state.phase === "installed")
+                summary = `Studio ${state.installed.to} is installed: ${state.installed.replaced} files replaced, ${state.installed.unchanged} unchanged. Backups are in ${state.installed.backups}. Restart Studio to use it.`;
+            else if (state.phase === "idle") summary = "Check whether a newer Studio has been released.";
+            $("update-summary").textContent = summary;
+            if (state.phase === "available" && !canInstall)
+                $("update-summary").textContent +=
+                    " " + (state.not_installed_reason || "Updating from inside Studio is only available on Windows.");
+            $("update-notes").hidden = !(release && state.phase === "available");
+            $("update-notes").textContent = release ? release.notes || "(No release notes.)" : "";
+            const progress = $("update-progress");
+            progress.hidden = !working || state.phase === "checking";
+            if (state.phase === "downloading" && release && release.archive_bytes) {
+                progress.max = release.archive_bytes;
+                progress.value = state.downloaded_bytes;
+            } else progress.removeAttribute("value");
+            $("update-trust").hidden = state.phase !== "available";
+            $("update-error").textContent = state.phase === "failed" ? state.error || "The update failed." : "";
+            const page = $("update-page");
+            const official = release && /^https:\/\/github\.com\/AG064\/aurum-studio\//.test(release.page);
+            page.hidden = !(release && official && state.phase === "available");
+            if (!page.hidden) page.href = release.page;
+            $("update-check").hidden = working || state.phase === "installed";
+            $("update-check").textContent = state.phase === "idle" ? "Check now" : "Check again";
+            $("update-install").hidden = !canInstall;
+            $("update-restart").hidden = state.phase !== "installed";
+            $("update-close").disabled = ["downloading", "extracting", "verifying", "installing"].includes(state.phase);
+        }
+        async function showUpdate() {
+            const state = await api("/api/update");
+            renderUpdate(state);
+            if (updateBusy.includes(state.phase)) pollUpdate();
+            return state;
+        }
+        function pollUpdate() {
+            clearTimeout(updateTimer);
+            updateTimer = setTimeout(async () => {
+                try {
+                    await showUpdate();
+                } catch (error) {
+                    $("update-error").textContent = error.message;
+                }
+            }, 700);
+        }
+        async function updateAction(action) {
+            $("update-error").textContent = "";
+            try {
+                const state = await api("/api/update", { action });
+                if (action === "restart") {
+                    $("update-summary").textContent =
+                        "Studio is restarting. This page will stop responding; the new Studio opens in a new browser tab in a few seconds, and this tab can be closed.";
+                    for (const id of ["update-install", "update-restart", "update-check", "update-close"]) $(id).hidden = true;
+                    return;
+                }
+                renderUpdate(state);
+                pollUpdate();
+            } catch (error) {
+                $("update-error").textContent = error.message;
+            }
+        }
+        $("check-updates").addEventListener("click", async () => {
+            document.querySelector(".app-menu").open = false;
+            $("update-dialog").showModal();
+            const state = await showUpdate().catch((error) => {
+                $("update-error").textContent = error.message;
+            });
+            if (state && ["idle", "current", "failed"].includes(state.phase)) updateAction("check");
+        });
+        $("update-check").addEventListener("click", () => updateAction("check"));
+        $("update-install").addEventListener("click", () => updateAction("install"));
+        $("update-restart").addEventListener("click", () => updateAction("restart"));
+        $("update-close").addEventListener("click", () => $("update-dialog").close());
         // ---- Studio shell: menus, tabs, drawers, dock, editor, receipts ----
         const app = document.querySelector(".app");
         const menu = document.querySelector(".app-menu");

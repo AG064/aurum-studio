@@ -42,6 +42,7 @@ mod native_request;
 #[cfg(test)]
 mod native_request_socket_tests;
 mod preview;
+mod updates;
 
 use std::io::{BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -49,7 +50,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aurum_studio_core::supervisor::{Command, Event, Supervisor, SupervisorConfig};
 use aurum_studio_core::Project;
@@ -126,6 +127,7 @@ struct Shell {
     fallback_preview: Arc<Mutex<Option<preview::Preview>>>,
     preview_epoch: Arc<AtomicUsize>,
     preview_builds: Arc<Mutex<std::collections::BTreeMap<PathBuf, usize>>>,
+    updates: Arc<updates::Updates>,
 }
 
 struct PreviewBuildGuard<'a> {
@@ -228,6 +230,7 @@ impl Server {
                 fallback_preview: Arc::new(Mutex::new(None)),
                 preview_epoch: Arc::new(AtomicUsize::new(0)),
                 preview_builds: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+                updates: Arc::new(updates::Updates::new()),
             }),
             address,
         })
@@ -331,7 +334,33 @@ impl Stopper {
     }
 }
 
+/// How long a request that needs Studio to be idle waits for in-flight work before refusing.
+const IDLE_WAIT: Duration = Duration::from_secs(10);
+
 impl Shell {
+    /// Whether something is running that closing, updating or restarting would interrupt.
+    fn working(&self, including_updates: bool) -> bool {
+        self.operations.load(Ordering::SeqCst) > 0
+            || self.supervisor.is_busy()
+            || (including_updates && self.updates.busy())
+    }
+
+    /// Wait for in-flight work to finish, and say whether Studio is now idle.
+    ///
+    /// Opening Studio's page starts an engine run of a few seconds, so refusing the
+    /// moment anything is running made "Close Studio" fail when clicked just after
+    /// the page loaded. A short wait lets that pass, and long work still refuses.
+    fn wait_until_idle(&self, including_updates: bool) -> bool {
+        let deadline = Instant::now() + IDLE_WAIT;
+        while self.working(including_updates) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        true
+    }
+
     fn connections_count(&self) -> usize {
         self.connections.load(Ordering::SeqCst)
     }
@@ -583,6 +612,54 @@ fn handle_connection(stream: TcpStream, shell: &Arc<Shell>) {
     }
 }
 
+/// `POST /api/update`: `check`, `install` or `restart`.
+///
+/// Each is an explicit request. Studio never starts one on its own.
+fn handle_update(request: &Request, shell: &Arc<Shell>) -> Response {
+    let action = serde_json::from_slice::<serde_json::Value>(&request.body)
+        .ok()
+        .and_then(|value| value["action"].as_str().map(str::to_string));
+    let refuse =
+        |error: String| Response::json(409, &serde_json::json!({"ok": false, "error": error}));
+    match action.as_deref() {
+        Some("check") => match shell.updates.check() {
+            Ok(()) => Response::json(200, &shell.updates.snapshot()),
+            Err(error) => refuse(error),
+        },
+        Some("install") => {
+            if !shell.wait_until_idle(false) {
+                return refuse(
+                    "An operation is still running. Wait for it to finish before updating.".into(),
+                );
+            }
+            match shell.updates.install() {
+                Ok(()) => Response::json(200, &shell.updates.snapshot()),
+                Err(error) => refuse(error),
+            }
+        }
+        Some("restart") => {
+            if !shell.wait_until_idle(false) {
+                return refuse(
+                    "An operation is still running. Wait for it to finish before restarting."
+                        .into(),
+                );
+            }
+            match shell.updates.schedule_restart() {
+                Ok(()) => {
+                    shell.native_runtime.close();
+                    shell.running.store(false, Ordering::SeqCst);
+                    Response::json(200, &serde_json::json!({"ok": true, "restarting": true}))
+                }
+                Err(error) => refuse(error),
+            }
+        }
+        _ => Response::json(
+            400,
+            &serde_json::json!({"ok": false, "error": "action must be check, install or restart"}),
+        ),
+    }
+}
+
 fn authenticate(request: &Request, shell: &Shell) -> Result<(), Response> {
     // Preserve the existing order, before any controlled ready acknowledgement.
     check_local(request)?;
@@ -712,16 +789,20 @@ impl Drop for Operation {
 }
 
 fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
-    let _operation = if request.method == "POST" && request.path != "/api/stop" {
-        shell.operations.fetch_add(1, Ordering::SeqCst);
-        let guard = Operation(Arc::clone(&shell.operations));
-        if !shell.running.load(Ordering::SeqCst) {
-            return Routed::Once(Response::error(503, "Studio is stopping"));
-        }
-        Some(guard)
-    } else {
-        None
-    };
+    // Stop and update are not counted: they are the requests that ask whether anything
+    // else is still running, and the update controller tracks its own work.
+    let _operation =
+        if request.method == "POST" && request.path != "/api/stop" && request.path != "/api/update"
+        {
+            shell.operations.fetch_add(1, Ordering::SeqCst);
+            let guard = Operation(Arc::clone(&shell.operations));
+            if !shell.running.load(Ordering::SeqCst) {
+                return Routed::Once(Response::error(503, "Studio is stopping"));
+            }
+            Some(guard)
+        } else {
+            None
+        };
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => Routed::Once(
             Response::html(assets::INDEX_HTML)
@@ -915,8 +996,12 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
             Routed::Stream { id, receiver }
         }
 
+        ("GET", "/api/update") => Routed::Once(Response::json(200, &shell.updates.snapshot())),
+
+        ("POST", "/api/update") => Routed::Once(handle_update(request, shell)),
+
         ("POST", "/api/stop") => {
-            if shell.operations.load(Ordering::SeqCst) > 0 || shell.supervisor.is_busy() {
+            if !shell.wait_until_idle(true) {
                 return Routed::Once(Response::error(
                     409,
                     "An operation is still running. Wait for it to finish before closing Studio.",

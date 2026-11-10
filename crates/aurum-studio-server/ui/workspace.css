@@ -1100,3 +1100,25 @@
         width: min(250px, calc(100vw - 16px));
     }
 }
+
+.update-notes {
+    max-height: 14em;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    padding: 10px 12px;
+    margin: 8px 0;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+    font-size: 0.9em;
+}
+#update-dialog {
+    max-width: min(640px, 92vw);
+}
+#update-progress {
+    width: 100%;
+}
+#update-error:empty {
+    display: none;
+}

@@ -276,3 +276,92 @@ fn a_refused_connection_still_receives_its_503() {
     }
     drop(held);
 }
+
+fn update_request(fixture: &Fixture, method: &str, body: &str) -> String {
+    let mut stream = fixture.connect();
+    write!(
+        stream,
+        "{method} /api/update HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Aurum-Token: {}\r\nContent-Length: {}\r\n\r\n{body}",
+        fixture.server.token(),
+        body.len()
+    )
+    .unwrap();
+    response(&mut stream)
+}
+
+#[test]
+fn the_update_api_reports_its_state_and_is_not_blocked_by_its_own_request() {
+    let fixture = Fixture::new();
+    let state = update_request(&fixture, "GET", "");
+    assert!(state.starts_with("HTTP/1.1 200 "), "{state}");
+    let body: serde_json::Value =
+        serde_json::from_str(state.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(body["phase"], "idle");
+    assert_eq!(body["current"], env!("CARGO_PKG_VERSION"));
+    // A test binary is not an installed copy, so it is told so rather than updated.
+    assert_eq!(body["installed_copy"], false);
+
+    // The request that asks must not count itself as the running operation it checks for.
+    let install = update_request(&fixture, "POST", r#"{"action":"install"}"#);
+    assert!(install.starts_with("HTTP/1.1 409 "), "{install}");
+    assert!(install.contains("build folder"), "{install}");
+    assert!(!install.contains("still running"), "{install}");
+
+    let restart = update_request(&fixture, "POST", r#"{"action":"restart"}"#);
+    assert!(
+        restart.starts_with("HTTP/1.1 409 ") && !restart.contains("still running"),
+        "{restart}"
+    );
+
+    let unknown = update_request(&fixture, "POST", r#"{"action":"format-disk"}"#);
+    assert!(unknown.starts_with("HTTP/1.1 400 "), "{unknown}");
+    let malformed = update_request(&fixture, "POST", "not json");
+    assert!(malformed.starts_with("HTTP/1.1 400 "), "{malformed}");
+}
+
+#[test]
+fn the_update_api_requires_the_session_token() {
+    let fixture = Fixture::new();
+    let mut stream = fixture.connect();
+    write!(
+        stream,
+        "GET /api/update HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+    )
+    .unwrap();
+    assert!(response(&mut stream).starts_with("HTTP/1.1 401 "));
+    let mut wrong = fixture.connect();
+    write!(wrong, "POST /api/update HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Aurum-Token: nope\r\nContent-Length: 18\r\n\r\n{{\"action\":\"check\"}}").unwrap();
+    assert!(response(&mut wrong).starts_with("HTTP/1.1 401 "));
+}
+
+#[test]
+fn closing_waits_for_in_flight_work_instead_of_refusing_at_once() {
+    let fixture = Fixture::new();
+    // The counter every project operation holds while it runs, as when the page has just loaded.
+    fixture
+        .server
+        .shell
+        .operations
+        .fetch_add(1, Ordering::SeqCst);
+    let operations = Arc::clone(&fixture.server.shell.operations);
+    let finishing = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(700));
+        operations.fetch_sub(1, Ordering::SeqCst);
+    });
+    let started = Instant::now();
+    let mut stream = fixture.connect();
+    write!(
+        stream,
+        "POST /api/stop HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Aurum-Token: {}\r\nContent-Length: 0\r\n\r\n",
+        fixture.server.token()
+    )
+    .unwrap();
+    let reply = response(&mut stream);
+    finishing.join().unwrap();
+    assert!(reply.starts_with("HTTP/1.1 200 "), "{reply}");
+    assert!(
+        started.elapsed() >= Duration::from_millis(600),
+        "it did not wait for the work to finish"
+    );
+    assert!(!reply.contains("still running"), "{reply}");
+}

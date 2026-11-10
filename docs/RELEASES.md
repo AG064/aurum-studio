@@ -2,6 +2,21 @@
 
 Release packages are separate from source commits. Check the [GitHub release page](https://github.com/AG064/aurum-studio/releases) for published downloads; `main` can contain later development changes. An existing installation is not updated by pulling or pushing the repository.
 
+## Updating from inside Studio
+
+An installed Studio on Windows can update itself: **Commands → Check for updates**. This reads the newest release of this repository, shows its version and notes, and offers **Download and install** when it is newer than the running Studio. Nothing is checked in the background, and the install is a second, explicit click.
+
+What it does, in order:
+
+1. Downloads `SHA256SUMS.txt` and the `windows-x64` ZIP from that release, and discards the ZIP unless its SHA-256 matches the published one.
+2. Unpacks it into a scratch folder under the installation, refusing a package with an unsafe path or a link, and runs the new `aurum.exe` and `Aurum Studio.exe` with `--version` to confirm they are the version that was announced.
+3. Moves each file that differs into `backups/update-<from>-to-<to>-<id>/`, places the new one, and checks the installed `aurum.exe` reports the new version. If any step fails, the files already placed are restored.
+4. Updates `install.json`. **Restart Studio** then closes this Studio and opens the new one in a new browser tab.
+
+It replaces only the two executables, the runtime when its hash changed, `docs`, `examples`, `scripts` and the top-level notices. Projects, sessions, shortcuts, the project registry and the launcher script are never touched. The restarted Studio opens the same project the launcher normally does, not necessarily the one that was open.
+
+Limits: it works only for an installed copy (a folder with `install.json` and `bin/aurum.exe`), not a build folder, and only on Windows, using the `curl` and `tar` that ship with Windows 10 and later. The check and download are limited to HTTPS from this repository's release files. The checksum shows the download is the file that was published; it does not show who published it, and the executables are not code-signed. A version that predates this feature cannot update itself, so the first install of a version containing it is by hand. `AURUM_UPDATE_FEED=http://127.0.0.1:<port>` points the check at a local server for testing; no other address is accepted.
+
 ## v0.4.2 published download
 
 [Release page](https://github.com/AG064/aurum-studio/releases/tag/v0.4.2), built from `main` at `9c9892f`. A patch release for 0.4.1 with one fix: Studio waits up to three minutes, not 30 seconds, for a game to start in the preview. On a cold first load Relay Yard took about 53 seconds on an RTX 2070, so every cold load of 0.4.1 showed "Preview unavailable".

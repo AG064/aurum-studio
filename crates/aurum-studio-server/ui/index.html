@@ -77,6 +77,7 @@
                             <button data-native data-command="build" data-args='{"release":true}' role="menuitem">Build release extension</button>
                             <div class="menu-group" role="presentation">Studio</div>
                             <button data-command="doctor" role="menuitem">Check runtime</button>
+                            <button id="check-updates" role="menuitem">Check for updates</button>
                             <a href="/licenses.txt" target="_blank" rel="noopener" role="menuitem">Icon license</a>
                             <button id="shutdown" class="danger" role="menuitem">Close Studio</button>
                         </div>
@@ -470,6 +471,27 @@
                     <button type="submit" class="primary">Open project</button>
                 </div>
             </form>
+        </dialog>
+        <dialog id="update-dialog" aria-labelledby="update-dialog-title">
+            <div>
+                <h2 id="update-dialog-title">Studio updates</h2>
+                <p id="update-summary" role="status"></p>
+                <pre id="update-notes" class="update-notes" hidden tabindex="0" aria-label="Release notes"></pre>
+                <progress id="update-progress" max="100" hidden></progress>
+                <p id="update-trust" class="hint" hidden>
+                    The download is checked against the SHA-256 published with the release. The programs are not
+                    code-signed, so this confirms the file is the one that was published, not who published it.
+                    Every file that is replaced is kept in the backups folder, and your projects are not touched.
+                </p>
+                <p id="update-error" role="alert"></p>
+                <div class="row dialog-actions">
+                    <a id="update-page" href="#" target="_blank" rel="noopener noreferrer" hidden>Release page</a>
+                    <button type="button" id="update-close">Close</button>
+                    <button type="button" id="update-check">Check again</button>
+                    <button type="button" id="update-install" class="primary" hidden>Download and install</button>
+                    <button type="button" id="update-restart" class="primary" hidden>Restart Studio</button>
+                </div>
+            </div>
         </dialog>
         <script src="/app.js"></script>
         <script src="/workspace.js"></script>
