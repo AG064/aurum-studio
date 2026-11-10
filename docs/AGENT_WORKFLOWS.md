@@ -104,7 +104,7 @@ The game's version 3 checkpoints validate before changing the mission and recons
 ## Compact source context
 
 Development source adds `context_snapshot`, `context_delta` and `context_forget`.
-These are not included in the 0.4.0 download. They work through the same CLI,
+These are not in the 0.4.0 download; they ship in 0.4.1. They work through the same CLI,
 HTTP and MCP project contract without starting Godot. Create an explicit scoped
 baseline, then request only the changed paths and content hashes:
 
@@ -166,7 +166,7 @@ and prior failed or partial studies remain preserved.
 Development source adds project-scoped `job_submit`, `job_status`, `job_result`,
 `job_list`, `job_cancel`, `job_forget` and `job_reconnect` operations through the
 same CLI, authenticated HTTP and MCP controller. These are not in the 0.4.0
-download. Submit an ordinary project request and retain the returned 32-character
+download; they ship in 0.4.1. Submit an ordinary project request and retain the returned 32-character
 job ID and 64-character owner capability. Keep that bearer capability private;
 a job ID alone grants no access.
 

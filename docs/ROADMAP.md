@@ -71,7 +71,7 @@ review verified all copied files and the three probes' normal exits and closure.
 ### 1. Bounded diagnostics
 
 Status: published on `main`, with Windows acceptance and passing hosted
-cross-platform CI. Not included in the 0.4.0 download.
+cross-platform CI. Not included in the 0.4.0 download; it ships in 0.4.1.
 
 - Structured operation IDs, start/completion timestamps, duration, outcome and
   stable failure categories shared by CLI, HTTP and MCP.
@@ -249,7 +249,7 @@ Checkpoint/host-crash recovery and shared CLI/MCP/Studio controller routing are
 implemented in development source. Self-contained native dependency staging is
 also in development source. Shared jobs now provide qualified owned
 cancellation paths. External native dependencies and final release
-qualification remain open. This work is not in the 0.4.0 download.
+qualification remain open. This work is not in the 0.4.0 download; it ships in 0.4.1.
 
 The opt-in private runtime bridge binds loopback on an ephemeral port and uses
 a per-launch token, versioned JSON framing, a 1 MiB request/reply bound, four

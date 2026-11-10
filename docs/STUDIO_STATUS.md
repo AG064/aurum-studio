@@ -7,13 +7,13 @@ The supported workflow is Windows Studio plus local MCP and CLI access, using th
 ## Delivered
 
 For planned work and unreleased development milestones, see the [roadmap](ROADMAP.md)
-and [bounded logging contract](LOGGING.md). The list below describes the 0.4.0 baseline.
+and [bounded logging contract](LOGGING.md). The list below describes the 0.4.0 baseline; the development-source paragraphs after it ship in 0.4.1.
 
 Development source also contains journaled script/resource revisions, private
 Windows native sessions, verified checkpoint replacement, retained save-data
 generations, host-crash recovery and a shared CLI/MCP/Studio controller. See
 [native session commands](HOT_RELOAD.md#managed-native-sessions). These are not
-part of the 0.4.0 download. Self-contained private Rust/GDExtension preparation
+part of the 0.4.0 download; they ship in 0.4.1. Self-contained private Rust/GDExtension preparation
 and source-only revision publication/undo are also implemented in development
 source. Native candidates compile before validation; their generated DLLs are
 verified but excluded from source journals and undo, preserving working
@@ -33,7 +33,7 @@ source passed 773 focused Rust/doc tests before two PE-reader lint repairs;
 18 metadata unit tests, strict Clippy and CLI build passed after those repairs.
 See [qualification receipts](INTEGRATION_VERIFICATION.md#read-only-target-preflight-gate-2026-10-14).
 Synthetic SDK/JDK/template metadata and real Godot version-resource evidence
-keep export, signing and devices unverified. Hosted confirmation is pending.
+keep export, signing and devices unverified. Hosted CI passed on the 0.4.1 merge.
 External workspace/dependency staging outside the imported root, shared
 compilation caching, runtime/dependency context, agent benchmarks and
 device/release qualification remain open gates.
