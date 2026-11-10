@@ -2,6 +2,15 @@
 
 Release packages are separate from source commits. Check the [GitHub release page](https://github.com/AG064/aurum-studio/releases) for published downloads; `main` can contain later development changes. An existing installation is not updated by pulling or pushing the repository.
 
+## v0.4.2 published download
+
+[Release page](https://github.com/AG064/aurum-studio/releases/tag/v0.4.2), built from `main` at `9c9892f`. A patch release for 0.4.1 with one fix: Studio waits up to three minutes, not 30 seconds, for a game to start in the preview. On a cold first load Relay Yard took about 53 seconds on an RTX 2070, so every cold load of 0.4.1 showed "Preview unavailable".
+
+- `Aurum-Studio-0.4.2-windows-x64.zip`: the same contents as 0.4.1 with the fix. SHA-256 `CF53880E74E42B5663E6110D1C9A484F246BDE06CFE6C7F64F62994066D1E747`.
+- `SHA256SUMS.txt`: the archive checksum, with Unix line endings.
+
+Checked on an RTX 2070 with fresh browser profiles: two cold loads of Relay Yard and one of Orbit Break reached "Preview ready", and Orbit Break responded to a real key press. The launcher acceptance script passed all 55 checks with the browser pinned to an isolated Edge profile. With the system default browser it failed to stop Studio ("An operation is still running"), also for 0.4.1, and the cause is not identified. The native game verifications ran on the 0.4.1 package. The executables are not signed, and devices and benchmarks were not tested.
+
 ## v0.4.1 published download
 
 [Release page](https://github.com/AG064/aurum-studio/releases/tag/v0.4.1), built from `main` at `64d6a24`.
