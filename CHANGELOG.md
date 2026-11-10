@@ -6,9 +6,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Target release: 0.4.1. Windows delivery requires a directly launchable
-`Aurum Studio.exe`; the published 0.4.0 downloads remain the released baseline
-until the 0.4.1 package passes its release gates.
+## [0.4.1] - 2026-11-10
+
+Published as [release v0.4.1](https://github.com/AG064/aurum-studio/releases/tag/v0.4.1).
+Windows delivery uses a directly launchable `Aurum Studio.exe`. The package is unsigned;
+its verification scope and limits are in [release delivery](docs/RELEASES.md#v041-published-download).
 
 ### Added
 

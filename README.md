@@ -4,7 +4,7 @@ A local game-development workspace for people and agents. Edit scenes and code, 
 
 Godot 4.7 handles rendering and resources underneath. Aurum owns the project workflow, the local interface, and the agent-facing operations. You do not need to keep a Godot editor open. Use GDScript for gameplay and Rust GDExtensions when native code is useful.
 
-[Release v0.4.0](https://github.com/AG064/aurum-studio/releases/tag/v0.4.0) · [Get started](#get-started-on-windows) · [Playable examples](#playable-examples) · [Connect an agent](#headless-by-design) · [Documentation](docs/README.md) · [CI results](https://github.com/AG064/aurum-studio/actions/workflows/ci.yml)
+[Release v0.4.1](https://github.com/AG064/aurum-studio/releases/tag/v0.4.1) · [Get started](#get-started-on-windows) · [Playable examples](#playable-examples) · [Connect an agent](#headless-by-design) · [Documentation](docs/README.md) · [CI results](https://github.com/AG064/aurum-studio/actions/workflows/ci.yml)
 
 ![Aurum Studio workbench with Relay Yard running in the browser, scene explorer, inspector and diagnostics](docs/media/studio.png)
 
@@ -12,8 +12,8 @@ The screenshot is the implemented workbench running against the Rust backend, ca
 
 | Choose | What you get |
 | --- | --- |
-| [Versioned Windows package](docs/RELEASES.md) | Studio 0.4.0 with the redesigned workbench, runtime, Web templates, operation contracts and both games. No compiler needed for script-only projects. |
-| [Build current main](#get-started-on-windows) | The 0.4.1 development candidate with a direct `Aurum Studio.exe` entrypoint. Requires the source-build prerequisites below; it is not a published download. |
+| [Versioned Windows package](docs/RELEASES.md) | Studio 0.4.1 with a direct `Aurum Studio.exe` launcher, the runtime, Web templates, operation contracts and the example sources. The 0.4.0 standalone game downloads remain available. No compiler needed for script-only projects. |
+| [Build current main](#get-started-on-windows) | Current `main`, which can be ahead of the latest release. Requires the source-build prerequisites below. |
 
 Pushing source does not update an installed application or the release ZIP. [Current capabilities and limits](docs/STUDIO_STATUS.md).
 
@@ -81,9 +81,9 @@ Use **Run** to play in the workspace. **Live tuning** and the **Runtime inspecto
 
 ## Get started on Windows
 
-The **0.4.1 development candidate** opens through `Aurum Studio.exe` at the installation or extracted package root. Its adjacent `bin/aurum.exe` remains the CLI/MCP entrypoint. [Candidate build commands and verification scope](docs/RELEASES.md#041-locally-verified-windows-candidate).
+**Studio 0.4.1** opens through `Aurum Studio.exe` at the installation or extracted package root. Its adjacent `bin/aurum.exe` remains the CLI/MCP entrypoint. [Package, checksum and verification scope](docs/RELEASES.md#v041-published-download); [build commands](docs/RELEASES.md#041-locally-verified-windows-candidate).
 
-The currently published download is **0.4.0**. Extract that ZIP into a writable folder and open its `Launch Aurum Studio.vbs`; it predates the direct executable launcher. The Godot runtime and Web templates are included. Script-only projects need no Rust compiler or separate editor installation. [Published packages, checksums and optional Rust setup](docs/RELEASES.md#v040-published-download).
+Download **0.4.1**, extract the ZIP into a new writable folder and open `Aurum Studio.exe`. The 0.4.0 package opens through `Launch Aurum Studio.vbs` and predates the direct launcher. The Godot runtime and Web templates are included. Script-only projects need no Rust compiler or separate editor installation. [Published packages, checksums and optional Rust setup](docs/RELEASES.md#v040-published-download).
 
 To build from source:
 

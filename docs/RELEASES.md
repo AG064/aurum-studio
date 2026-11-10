@@ -2,9 +2,20 @@
 
 Release packages are separate from source commits. Check the [GitHub release page](https://github.com/AG064/aurum-studio/releases) for published downloads; `main` can contain later development changes. An existing installation is not updated by pulling or pushing the repository.
 
+## v0.4.1 published download
+
+[Release page](https://github.com/AG064/aurum-studio/releases/tag/v0.4.1), built from `main` at `64d6a24`.
+
+- `Aurum-Studio-0.4.1-windows-x64.zip`: Studio with the direct `Aurum Studio.exe` launcher, CLI/MCP, the Godot 4.7 runtime, ordinary and extension-enabled Web templates, notices, documentation and example sources. SHA-256 `3EF48D6523A6663CD75A05B17323F9141FC9EB26F2ED93797F372A3AECA381A5`.
+- `SHA256SUMS.txt`: the archive checksum.
+
+Extract into a new writable folder and open `Aurum Studio.exe`; keep `bin` and `runtime` beside it. Standalone game packages were not republished, so the 0.4.0 Orbit Break and Relay Yard downloads remain current.
+
+The packaged executables passed the project's launcher acceptance, 55 checks covering fresh install, shortcut, relocation and fresh extraction, with no failures; all 13 hosted CI jobs passed on the merged source. The executables are not digitally signed. Browser rendering of this exact package, physical devices, gameplay on hardware and model-provider benchmarks were not verified.
+
 ## 0.4.1 locally verified Windows candidate
 
-The source targets 0.4.1; this is not a published 0.4.1 release. The primary Windows entrypoint is `Aurum Studio.exe` at the package root. Keep `bin/aurum.exe`, `runtime/godot.exe` and the rest of the package beside it. The console CLI and MCP entrypoint remain separate.
+This section describes how the 0.4.1 package was built and verified locally; the published download is described above. The primary Windows entrypoint is `Aurum Studio.exe` at the package root. Keep `bin/aurum.exe`, `runtime/godot.exe` and the rest of the package beside it. The console CLI and MCP entrypoint remain separate.
 
 From an A: source checkout with PowerShell 7, Rust 1.98/Windows C++ tools and the full Godot 4.7 runtime, build both binaries and install into a dedicated folder:
 
