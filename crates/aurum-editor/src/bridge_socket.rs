@@ -155,8 +155,10 @@ fn serve(
     _port: &Arc<AtomicU16>,
 ) -> std::io::Result<()> {
     let _ = stream.set_nodelay(true);
-    let mut writer = stream.try_clone()?;
-    let mut reader = BufReader::new(stream);
+    // Borrow instead of cloning: try_clone can return an inheritable socket on Windows, and
+    // a child spawned meanwhile would hold the connection open and reset it when it exits.
+    let mut writer = &stream;
+    let mut reader = BufReader::new(&stream);
 
     loop {
         if !running.load(Ordering::SeqCst) {
@@ -221,7 +223,7 @@ fn serve(
     }
 }
 
-fn reply(writer: &mut TcpStream, body: &str) -> std::io::Result<()> {
+fn reply(writer: &mut &TcpStream, body: &str) -> std::io::Result<()> {
     // One request per line and one response per line, so a client can pipeline
     // without a length prefix and a partial read cannot split a response.
     writer.write_all(body.as_bytes())?;

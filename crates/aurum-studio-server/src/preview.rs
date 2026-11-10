@@ -461,36 +461,36 @@ fn source_revision(project: &Project) -> Result<String, String> {
     aurum_studio_core::snapshot::fingerprint(root)
 }
 
-fn serve_connection(mut stream: TcpStream, content: &Content) {
+fn serve_connection(stream: TcpStream, content: &Content) {
     // Windows accepted sockets can inherit the listener's nonblocking mode.
     // Asset writes must wait for backpressure instead of truncating Wasm/JS.
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
-    serve_response(&mut stream, content);
+    serve_response(&stream, content);
     // Explicitly finish the HTTP response before the last socket handle closes.
     let _ = stream.shutdown(Shutdown::Write);
 }
 
-fn serve_response(stream: &mut TcpStream, content: &Content) {
-    let Ok(reader) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(reader);
+fn serve_response(stream: &TcpStream, content: &Content) {
+    // Borrow instead of cloning: try_clone can return an inheritable socket on Windows, and
+    // a child spawned meanwhile would hold the connection open and reset it when it exits.
+    let mut writer = stream;
+    let mut reader = BufReader::new(stream);
     let Ok(Some(request)) = http::read_request(&mut reader) else {
         return;
     };
     if !matches!(request.method.as_str(), "GET" | "HEAD") {
-        let _ = Response::error(405, "The preview is read-only").write_to(stream);
+        let _ = Response::error(405, "The preview is read-only").write_to(&mut writer);
         return;
     }
     if request.header("host") != Some(format!("127.0.0.1:{}", content.port).as_str()) {
-        let _ = Response::error(403, "Invalid preview host").write_to(stream);
+        let _ = Response::error(403, "Invalid preview host").write_to(&mut writer);
         return;
     }
     let prefix = format!("/{}/", content.session);
     let Some(relative) = request.path.strip_prefix(&prefix) else {
-        let _ = Response::error(404, "Not found").write_to(stream);
+        let _ = Response::error(404, "Not found").write_to(&mut writer);
         return;
     };
     let response = if relative == "live.json" {
@@ -508,31 +508,31 @@ fn serve_response(stream: &mut TcpStream, content: &Content) {
         let _ = response
             .with_header("Cache-Control", "no-store")
             .with_header("X-Content-Type-Options", "nosniff")
-            .write_to(stream);
+            .write_to(&mut writer);
         return;
     }
     let Ok(path) = files::confined(&content.root, relative) else {
-        let _ = Response::error(403, "Invalid asset path").write_to(stream);
+        let _ = Response::error(403, "Invalid asset path").write_to(&mut writer);
         return;
     };
     let Some(mime) = mime(&path) else {
-        let _ = Response::error(404, "Not found").write_to(stream);
+        let _ = Response::error(404, "Not found").write_to(&mut writer);
         return;
     };
     let Ok(metadata) = std::fs::metadata(&path) else {
-        let _ = Response::error(404, "Not found").write_to(stream);
+        let _ = Response::error(404, "Not found").write_to(&mut writer);
         return;
     };
     if !metadata.is_file() || metadata.len() > 256 * 1024 * 1024 {
-        let _ = Response::error(413, "Asset exceeds preview limit").write_to(stream);
+        let _ = Response::error(413, "Asset exceeds preview limit").write_to(&mut writer);
         return;
     }
     let Ok(mut file) = std::fs::File::open(&path) else {
         return;
     };
     let head=format!("HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nCross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Embedder-Policy: require-corp\r\nCross-Origin-Resource-Policy: cross-origin\r\nContent-Security-Policy: frame-ancestors {}\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",metadata.len(),content.parent_origin);
-    if stream.write_all(head.as_bytes()).is_ok() && request.method == "GET" {
-        let _ = std::io::copy(&mut file, stream);
+    if writer.write_all(head.as_bytes()).is_ok() && request.method == "GET" {
+        let _ = std::io::copy(&mut file, &mut writer);
     }
 }
 

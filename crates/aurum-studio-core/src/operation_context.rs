@@ -96,6 +96,11 @@ impl OperationContext {
     pub fn current() -> Option<Self> {
         CURRENT.with(|stack| stack.borrow().last().cloned())
     }
+    // Only the Windows external-native path uses this.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn same_operation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
     /// Nested scopes may reuse this job but cannot override another job's control.
     pub fn scope<T>(&self, work: impl FnOnce() -> T) -> io::Result<T> {
         self.check()?;

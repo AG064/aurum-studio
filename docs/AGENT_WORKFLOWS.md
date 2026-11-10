@@ -57,6 +57,36 @@ aurum project C:/Projects/MyGame --request-json '{"op":"describe","operation":"p
 See [playtest requests and verdicts](AGENT_PLAYTESTS.md) and
 [scene transactions](WORKFLOW.md#scene-transactions) for concrete contracts.
 
+## External workspace manifest comparison
+
+Development source adds an optional `gdextension_manifest` selection to
+`external_workspace_validate`. Add these fields to an otherwise complete
+external-workspace validation request with its existing `root_ids`, `placements`,
+`workspace` and `member` selections:
+
+```json
+{"compile_native":true,"gdextension_manifest":{"root_id":"project","path":"godot/addons/game/game.gdextension"}}
+```
+
+The selector contains exactly `root_id` and `path`. Its root is `project` or one
+of that request's existing attended dependency-read grants. Its path is a bounded,
+confined relative `.gdextension` path in that staged root. Paths do not grant
+access. Cargo `workspace` and `member` selections still require selected external
+read-grant IDs; accepting `project` for this selector does not broaden them.
+
+Supplying the selector requires Boolean `compile_native:true`. Omitting it keeps
+the existing staging or opt-in compilation behavior. The optional comparison
+uses the configured held Godot engine and reports declared Windows debug/x86_64
+target tags separately from observed engine tags. Its supported dependency subset
+is empty. Compilation and ConfigFile agreement do not establish library loading,
+GDExtension ABI compatibility, activation or source publication.
+
+Use the CLI request route, authenticated HTTP `/api/project`, or MCP
+`aurum_project_action`. This action requires write permission because it creates
+an owned disposable workspace and can start bounded workers. MCP
+`aurum_project_query` and CLI `--read-only` cannot execute it. Read-only `describe`
+remains available for inspecting the shared contract without starting a worker.
+
 ## A verified 3D workflow
 
 [Relay Yard: Night Shift](../examples/relay-yard) is a small complete 3D action-extraction game that exercises the authoring and game workflow:
@@ -102,8 +132,34 @@ project state.
 Scopes hash at most 512 MiB of public source with bounded nesting/file counts.
 Two scans detect drift, but external editors do not participate in an atomic
 filesystem snapshot. These are compact source-context operations, not runtime
-state, dependency analysis or measured model-token savings. Runtime/dependency
-context and token/latency/task-success benchmarks remain roadmap work.
+state, dependency analysis or measured model-token savings. Development source
+separately implements `runtime_context` for bounded inspection of an accepted
+Windows runtime, source freshness and dependency hashes. Matching executable
+qualification now covers nine public CLI, HTTP and MCP discovery, no-session
+and unknown-field refusal checks on the Windows 0.4.1 candidate. No-session
+reports return `unavailable` with `no_accepted_session`; they do not establish
+live-runtime inspection.
+
+Development source also accepts an optional `resources` list with 1 to 16 unique,
+exact `res://*.gdextension` manifest names. It filters returned dependency rows
+in prepared-manifest order; all accepted-session identity, source, dependency
+and health checks still cover the whole session. Omitting the list preserves
+the existing response. Nine new and three affected unit tests passed for this
+change. A fresh Windows 0.4.1 release build passed 15 CLI, HTTP and MCP checks
+for discovery, no-session reports and invalid-selection refusal. Independent
+review verified the matching reports and owned-resource closure after a final
+collector error; the collector's failed result is preserved. Accepted-game
+filtering and package verification remain open. Output filtering alone
+establishes no I/O or model-token savings.
+
+A later frozen six-row authoring comparison completed 18 model calls and 110
+Aurum calls. Independent review accepted its execution and resource closure;
+all automatic checks of supplied semantic evidence passed. Formal task grading
+remains unavailable under the frozen grader contract. Reported input totals were
+131,997 for compact rows and 136,765 for full rows, a descriptive 3.49% difference
+in this fixed-order sample. The actual returned model identifier was unreported.
+These results do not establish causal token savings or pure provider latency,
+and prior failed or partial studies remain preserved.
 
 ## Shared background jobs
 
@@ -173,9 +229,9 @@ real offline compiler cancellation/deadline/privacy checks on the same binary.
 The matching source passed 746 focused Rust/doc tests and strict Clippy.
 See [job verification evidence](INTEGRATION_VERIFICATION.md#shared-background-job-gate-2026-10-13)
 for binary identity, counts and retained failure history.
-Runtime/dependency
-context plus real model-token, latency and authoring-success benchmarks remain
-required before the efficient-agent milestone is complete.
+Accepted-runtime context verification and formal authoring-success grading remain
+required before the efficient-agent milestone is complete. The six-row comparison
+above supplies reported usage and client transport timings, with the stated limits.
 
 ## Read-only target preflight
 
@@ -206,6 +262,22 @@ checks afterward. See the [qualified receipts and limits](INTEGRATION_VERIFICATI
 The SDK/JDK/template evidence is synthetic metadata, with a real Godot 4.7
 Windows version resource. Published job/package qualification 746/158/31 remains
 separate from this target-report slice and from actual platform builds or devices.
+
+For configured Rust Android projects, the report also checks explicitly selected
+ABI/profile mappings in one confined add-on `.gdextension` manifest. Set all four
+`architectures/armeabi-v7a`, `architectures/arm64-v8a`, `architectures/x86` and
+`architectures/x86_64` preset options to Boolean values; omitted defaults are not
+inferred from the host CPU. Each enabled ABI gets a separate missing, mismatch,
+unverified or available metadata result for its mapped `.so` file.
+
+The check reads at most 64 ELF header bytes to observe class, machine,
+little-endian encoding and shared-object type. An available header result does
+not establish Rust provenance, symbols, dependencies, linking or GDExtension ABI
+compatibility. `rust_android_artifacts` and build/load/export/device readiness
+remain unverified. Ordinary-path and link checks are bounded filesystem
+observations, not stable namespace custody or a security sandbox. See the
+[Android ABI reference](https://developer.android.com/ndk/guides/abis) and
+[ELF header specification](https://gabi.xinuos.com/elf/02-eheader.html).
 
 ## Remaining boundaries
 

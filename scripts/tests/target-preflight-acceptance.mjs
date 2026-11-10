@@ -134,12 +134,46 @@ try {
         check(tool.isError === true && !JSON.stringify(tool).includes(credentialSentinel), "Read-only MCP refuses malformed/credential input without echoing credentials");
     }
     assert.deepEqual(await capture(), transportBaseline, "HTTP/MCP reports create no additional private state and preserve every protected fixture tree"); checks++;
+    // A second fixture phase authors local metadata, then proves each query is
+    // read-only through the same three interfaces. Header bytes are not a library.
+    await save(join(project, "aurum.toml"), 'schema_version=1\nname="preflight"\ngodot_version="4.7"\nmodules=[]\nrust_package="test-game"\naddon_destination="addons/aurum"\n');
+    const abiOptions = enabled => ["armeabi-v7a", "arm64-v8a", "x86", "x86_64"].map(abi => `architectures/${abi}=${enabled.includes(abi)}\n`).join("");
+    const nativePreset = enabled => `[preset.0]\nname="Android"\nplatform="Android"\n[preset.0.options]\n${abiOptions(enabled)}keystore/debug=${q(paths.key)}\n`;
+    const header = Buffer.alloc(64); header.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]); header.writeUInt16LE(3, 16); header.writeUInt16LE(183, 18); header.writeUInt32LE(1, 20); header.writeUInt16LE(64, 52);
+    const wrongMachine = Buffer.from(header); wrongMachine.writeUInt16LE(62, 18);
+    const nativeCases = [
+        {name: "arm64-header-only", manifest: 'android.debug.arm64="game.so"', bytes: header, status: "available"},
+        {name: "release-profile", manifest: 'android.debug.arm64="missing.so"\nandroid.release.arm64="game.so"', bytes: header, status: "available", debug: false},
+        {name: "missing-library", manifest: 'android.debug.arm64="missing.so"', bytes: header, status: "missing"},
+        {name: "wrong-machine", manifest: 'android.debug.arm64="game.so"', bytes: wrongMachine, status: "mismatch"},
+        {name: "truncated-header", manifest: 'android.debug.arm64="game.so"', bytes: header.subarray(0, 30), status: "unverified"},
+        {name: "host-map-only", manifest: 'windows.debug.x86_64="host.dll"', bytes: header, status: "missing"},
+        {name: "escaping-map", manifest: 'android.debug.arm64="res://../outside.so"', bytes: header, status: "unverified"},
+        {name: "multiple-selected-abis", manifest: 'android.debug.arm64="game.so"\nandroid.debug.x86_64="missing-x86.so"', bytes: header, status: "available", enabled: ["arm64-v8a", "x86_64"], otherMissing: true},
+        {name: "no-enabled-abi", manifest: 'android.debug.arm64="game.so"', bytes: header, enabled: [], abiStatus: "mismatch"},
+        {name: "string-abi-flag", manifest: 'android.debug.arm64="game.so"', bytes: header, malformed: true, abiStatus: "unverified"},
+    ];
+    for (const test of nativeCases) {
+        await save(join(project, "export_presets.cfg"), test.malformed ? nativePreset(["arm64-v8a"]).replace("architectures/arm64-v8a=true", 'architectures/arm64-v8a="true"') : nativePreset(test.enabled ?? ["arm64-v8a"]));
+        await save(join(project, "addons/aurum/bin/game.gdextension"), `[libraries]\n${test.manifest}\n`);
+        await save(join(project, "addons/aurum/bin/game.so"), test.bytes);
+        const before = await capture(), request = {...good, debug: test.debug ?? true};
+        const reply = await runCli(request); assert.equal(reply.code, 0, JSON.stringify(reply.value)); readOnlyReport(reply.value);
+        check(row(reply.value, "rust_android_artifacts").status === "unverified" && reply.value.prerequisites_detected === false, `${test.name}: headers never qualify build/link/load/export`);
+        check(row(reply.value, test.abiStatus ? "rust_android_abis" : "rust_android_arm64_v8a").status === (test.abiStatus ?? test.status), `${test.name}: exact per-ABI metadata status`);
+        if (test.otherMissing) check(row(reply.value, "rust_android_x86_64").status === "missing", "Every explicitly selected ABI is inspected");
+        const httpReply = await http(request); assert.equal(httpReply.status, 200); assert.deepEqual(httpReply.value, reply.value); checks++;
+        const tool = (await rpc("tools/call", {name: "aurum_project_query", arguments: request})).result; assert.notEqual(tool.isError, true); assert.deepEqual(tool.structuredContent, reply.value); checks++;
+        assert.deepEqual(await capture(), before, `${test.name}: native metadata queries preserve every fixture byte`); checks++;
+    }
+    evidence.native_artifact_metadata_cases = nativeCases.length;
     evidence.ok = true;
 } catch (error) { evidence.ok = false; evidence.error = error.stack ?? String(error); throw error; }
 finally {
     if (mcpChild && mcpChild.exitCode === null && mcpChild.signalCode === null) { mcpChild.stdin.end(); try { await bound(mcpDone, 10000, "MCP closure"); } catch { mcpChild.kill(); await bound(mcpDone, 5000, "MCP termination"); } }
     if (address) { const url = new URL(address.url); try { await fetch(`${url.origin}/api/stop`, {method: "POST", headers: {"X-Aurum-Token": url.searchParams.get("t")}, signal: AbortSignal.timeout(5000)}); } catch {} }
     if (server && server.exitCode === null && server.signalCode === null) { try { await bound(serverDone, 10000, "Host closure"); } catch { server.kill(); await bound(serverDone, 5000, "Host termination"); } }
+    evidence.process_exit = {mcp: mcpChild?.exitCode ?? null, studio: server?.exitCode ?? null};
     evidence.checks = checks; await writeFile(join(root, "studio-stderr.log"), serverStderr); await writeFile(join(root, "verification.json"), JSON.stringify(evidence, null, 2));
 }
 console.log(JSON.stringify({checks, status: "passed", evidence: root}));

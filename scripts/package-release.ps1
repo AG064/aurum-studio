@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Binary,
+    [Parameter(Mandatory)][string]$LauncherBinary,
     [Parameter(Mandatory)][string]$GodotBinary,
     [Parameter(Mandatory)][string]$TemplatesDirectory,
     [Parameter(Mandatory)][string]$OutputDirectory,
@@ -12,15 +13,19 @@ param(
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+. (Join-Path $PSScriptRoot 'release/binary-version.ps1')
 $Binary=(Resolve-Path -LiteralPath $Binary).Path
+$LauncherBinary=(Resolve-Path -LiteralPath $LauncherBinary).Path
 $GodotBinary=(Resolve-Path -LiteralPath $GodotBinary).Path
 $TemplatesDirectory=(Resolve-Path -LiteralPath $TemplatesDirectory).Path
 $OutputDirectory=[IO.Path]::GetFullPath($OutputDirectory)
 if($OutputDirectory.TrimEnd('\','/') -eq [IO.Path]::GetPathRoot($OutputDirectory).TrimEnd('\','/')){throw 'Use a new dedicated release directory, not a drive root'}
 if(Test-Path -LiteralPath $OutputDirectory){throw 'Release output already exists; nothing was overwritten'}
-$text=(& $Binary --version | Out-String).Trim()
-if($LASTEXITCODE -or $text -notmatch '^aurum (\d+\.\d+\.\d+)$'){throw 'The release binary did not return a valid version'}
-$version=$Matches[1]
+$version=Get-AurumBinaryVersion -Path $Binary -Prefix 'aurum'
+$text='aurum ' + $version
+$guiVersion=Get-AurumBinaryVersion -Path $LauncherBinary -Prefix 'aurum-studio'
+$launcherText='aurum-studio ' + $guiVersion
+if($guiVersion -ne $version){throw 'The release CLI and Studio launcher versions must match'}
 $templates=@('web_nothreads_release.zip','web_nothreads_debug.zip','web_dlink_nothreads_release.zip','web_dlink_nothreads_debug.zip')
 foreach($name in $templates){if(-not (Test-Path -LiteralPath (Join-Path $TemplatesDirectory $name) -PathType Leaf)){throw "Missing matching template: $name"}}
 foreach($directory in @($WindowsGameDirectory,$WebGameDirectory,$RelayWindowsGameDirectory,$RelayWebGameDirectory)|Where-Object{$_}){
@@ -32,10 +37,10 @@ foreach($webDirectory in @($WebGameDirectory,$RelayWebGameDirectory)|Where-Objec
 }
 New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
 $studio=Join-Path $OutputDirectory 'Aurum Studio'
-& (Join-Path $PSScriptRoot 'install.ps1') -Binary $Binary -GodotBinary $GodotBinary -StudioHome $studio -NoEnvironment -NoShortcut
+& (Join-Path $PSScriptRoot 'install.ps1') -Binary $Binary -LauncherBinary $LauncherBinary -GodotBinary $GodotBinary -StudioHome $studio -NoEnvironment -NoShortcut
 if($LASTEXITCODE){throw 'Release installation failed'}
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release/Launch Aurum Studio.vbs') -Destination (Join-Path $studio 'Launch Aurum Studio.vbs') -Force
-@{version=$text;binary='bin/aurum.exe';runtime=('runtime/'+(Split-Path $GodotBinary -Leaf));binary_sha256=(Get-FileHash -LiteralPath $Binary).Hash;runtime_sha256=(Get-FileHash -LiteralPath $GodotBinary).Hash;portable=$true}|ConvertTo-Json|Out-File (Join-Path $studio 'install.json') -Encoding utf8
+@{version=$text;binary='bin/aurum.exe';launcher='Aurum Studio.exe';launcher_version=$launcherText;runtime='runtime/godot.exe';binary_sha256=(Get-FileHash -LiteralPath $Binary).Hash;launcher_sha256=(Get-FileHash -LiteralPath $LauncherBinary).Hash;runtime_sha256=(Get-FileHash -LiteralPath $GodotBinary).Hash;portable=$true}|ConvertTo-Json|Out-File (Join-Path $studio 'install.json') -Encoding utf8
 $templateOutput=Join-Path $studio 'runtime/templates/4.7.stable'
 New-Item -ItemType Directory -Path $templateOutput | Out-Null
 foreach($name in $templates){
@@ -92,7 +97,7 @@ if($RelayWindowsGameDirectory){
 if($RelayWebGameDirectory){Archive-WebGame $RelayWebGameDirectory 'Relay-Yard' 'examples/relay-yard/godot/assets/fonts/OFL.txt' 'examples/relay-yard/godot/LICENSE-assets.txt'}
 $sums=@($assets|ForEach-Object{ '{0}  {1}' -f (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant(),(Split-Path $_ -Leaf) })
 $sums|Out-File (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding utf8
-@{ok=$true;version=$version;directory=$OutputDirectory;assets=$assets;binary_sha256=(Get-FileHash -LiteralPath $Binary).Hash;runtime_sha256=(Get-FileHash -LiteralPath $GodotBinary).Hash;global_environment_changed=$false}|ConvertTo-Json -Depth 6
+@{ok=$true;version=$version;directory=$OutputDirectory;assets=$assets;binary_sha256=(Get-FileHash -LiteralPath $Binary).Hash;launcher_sha256=(Get-FileHash -LiteralPath $LauncherBinary).Hash;runtime_sha256=(Get-FileHash -LiteralPath $GodotBinary).Hash;global_environment_changed=$false}|ConvertTo-Json -Depth 6
 # Robocopy returns 1 for a successful copy. Do not leak that native status
 # from a completed release into callers that check the script's exit code.
 exit 0

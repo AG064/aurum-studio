@@ -2,7 +2,59 @@
 
 Release packages are separate from source commits. Check the [GitHub release page](https://github.com/AG064/aurum-studio/releases) for published downloads; `main` can contain later development changes. An existing installation is not updated by pulling or pushing the repository.
 
-## v0.4.0
+## 0.4.1 locally verified Windows candidate
+
+The source targets 0.4.1; this is not a published 0.4.1 release. The primary Windows entrypoint is `Aurum Studio.exe` at the package root. Keep `bin/aurum.exe`, `runtime/godot.exe` and the rest of the package beside it. The console CLI and MCP entrypoint remain separate.
+
+From an A: source checkout with PowerShell 7, Rust 1.98/Windows C++ tools and the full Godot 4.7 runtime, build both binaries and install into a dedicated folder:
+
+```powershell
+Set-Location A:/Projects/aurum-studio
+$buildDirectory = Join-Path ([IO.Path]::GetTempPath()) ('aurum-041-build-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path (Join-Path $buildDirectory 'tmp') -Force | Out-Null
+$env:TEMP = Join-Path $buildDirectory 'tmp'
+$env:TMP = $env:TEMP
+$env:CARGO_TARGET_DIR = Join-Path $buildDirectory 'target'
+cargo build --locked --release -p aurum-cli --bins
+pwsh ./scripts/install.ps1 `
+  -Binary "$env:CARGO_TARGET_DIR/release/aurum.exe" `
+  -LauncherBinary "$env:CARGO_TARGET_DIR/release/aurum-studio.exe" `
+  -GodotBinary A:/Tools/Godot_v4.7-stable_win64.exe `
+  -StudioHome A:/AurumStudio-0.4.1 `
+  -NoEnvironment -NoShortcut
+```
+
+Open `A:/AurumStudio-0.4.1/Aurum Studio.exe`. The two switches above leave user PATH and Start-menu shortcuts untouched. Omit them when deliberately installing those conveniences. The installer requires matching CLI/launcher versions, verifies file copies and preserves replaced binaries in backups. Its runtime notice probe uses isolated state. VBScript remains a compatibility fallback.
+
+For a portable candidate, supply the same built binaries, the full runtime and its four matching ordinary/extension Web templates. Provision the templates with the included checksum-pinned script if needed, then package into a new output directory:
+
+```powershell
+pwsh ./scripts/provision-godot.ps1 -Destination A:/Tools/Aurum-Godot -Mode WebTemplates
+pwsh ./scripts/package-release.ps1 `
+  -Binary "$env:CARGO_TARGET_DIR/release/aurum.exe" `
+  -LauncherBinary "$env:CARGO_TARGET_DIR/release/aurum-studio.exe" `
+  -GodotBinary A:/Tools/Godot_v4.7-stable_win64.exe `
+  -TemplatesDirectory A:/Tools/Aurum-Godot/templates/4.7.stable `
+  -OutputDirectory A:/AurumPackages/0.4.1-candidate
+```
+
+Packaging refuses an existing output directory and does not publish a GitHub release. Extract `Aurum-Studio-0.4.1-windows-x64.zip` into a fresh writable directory and open `Aurum Studio.exe`. Script-only projects need no compiler. Rust projects still need their optional toolchains.
+
+The current frozen Windows launcher/package gate passed all 51 emitted checks, covering 38 required semantics and ten owned cleanup records. It verified fresh installation, a direct shortcut target, duplicate-host reuse, relocation, visible startup failure and environment preservation. Matching GUI/CLI/Godot files were verified in four contexts, along with all four Web templates in both package contexts and the 179-entry ZIP after fresh extraction. The emitted count includes polling observations; it is not a count of distinct semantics. Strict GUI Clippy with `-D warnings` passed without diagnostics, and all seven browser-policy tests passed.
+
+This qualified candidate was installed locally. The installed executable, direct shortcut with no arguments and nonlaunch `--check` were verified at 0.4.1. Eight replaced managed files have backups verified by bytes, hashes and attributes. Studio user state and the user environment remained unchanged. The installed GUI was not launched.
+
+The GUI optionally accepts the process-local settings `AURUM_STUDIO_BROWSER_EXECUTABLE` and `AURUM_STUDIO_BROWSER_PROFILE`. Supply both together: an existing ordinary absolute `.exe` path and an existing ordinary absolute dedicated Chromium profile directory. Invalid or incomplete settings produce a redacted configuration error before browser startup. Leaving both unset preserves the system-default browser request. The installer does not persist these settings; nonlaunch `--check`, `--version` and `--help` ignore them.
+
+Browser delivery was qualified only through isolated opt-in Chromium/profile routing. OS-default delivery, new rendering evidence, signing, a public 0.4.1 download, physical devices and representative model benchmarks remain separate gates. These results cover the frozen candidate, not later unqualified source edits. Local installation and source publication do not update the published download.
+
+A later 0.4.1 Windows build corrects attended workspace access to use the packaged `Aurum Studio.exe` filename. All 19 focused workspace-access tests passed, including the two package-layout regressions. Its matching GUI and CLI release binaries also passed version checks and a nonlaunch `--check` from an unrelated directory with a private profile. That nonlaunch check confirms the adjacent runtime is present; attended confirmation and visible startup through a browser remain separate verification gates for this build.
+
+The matching portable ZIP passed metadata and content checks for all 179 entries, with all 178 files matching a fresh extraction. It includes the rebuilt GUI/CLI, full runtime, four Web templates, notices, documentation and example sources. Assembly queried the bundled Godot 4.7 runtime successfully. Matching version and nonlaunch checks also passed after relocation to a path containing spaces and Unicode, from an unrelated working directory. Independent review verified the copied files, three normal-exit probes and owned-resource closure. This local archive has SHA256 `FF4CFD9E32B0567A71EFE38166646055B1A246573BE00AD561A5797B59E9F628`. Its initial verifier rejected an empty directory with unspecified ZIP attributes; the corrected check verified the same archive without rebuilding or rerunning the runtime probe. The original failed result remains preserved.
+
+The 0.4.1 candidate containing failure bundles and the seeded-scene readiness fix also passed isolated portable verification: 47 checks, including 38 required checks and 10 cleanup records. The root `Aurum Studio.exe` and adjacent CLI/runtime were checked across four installation, relocation and extraction contexts; all 179 ZIP entries matched the exercised extraction. The private verification hosts closed normally. This package has SHA256 `E372FBA1DA72535B7DF80B2A6BAB8A54BB3937DDABBD8605574CD5987516F394` and remains a local candidate within the browser and device limits above.
+
+## v0.4.0 published download
 
 [Release page](https://github.com/AG064/aurum-studio/releases/tag/v0.4.0).
 

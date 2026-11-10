@@ -82,7 +82,13 @@ fn limit(input: &Value) -> Result<usize, String> {
 }
 fn precheck(request: &Value, read_only: bool) -> Result<(), String> {
     let op = text(request, "op")?;
-    if !crate::project_ops::OPERATIONS.contains(&op) || supported(op) || op == "native_host_stop" {
+    if !crate::project_ops::OPERATIONS.contains(&op)
+        || supported(op)
+        || matches!(
+            op,
+            "native_host_stop" | "workspace_access_request" | "workspace_access_cancel"
+        )
+    {
         return Err("nested job operation is not supported".into());
     }
     if request.get("project").is_some() {

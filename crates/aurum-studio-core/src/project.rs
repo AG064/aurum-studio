@@ -470,109 +470,119 @@ impl Project {
             value => value,
         };
         let profile = if release { "release" } else { "debug" };
-        let mut section = "";
-        for raw in text.lines() {
-            let mut quoted = false;
-            let mut escaped = false;
-            let mut end = raw.len();
-            for (index, character) in raw.char_indices() {
-                if escaped {
-                    escaped = false;
-                    continue;
-                }
-                if quoted && character == '\\' {
-                    escaped = true;
-                    continue;
-                }
-                if character == '"' {
-                    quoted = !quoted;
-                }
-                if !quoted && character == ';' {
-                    end = index;
-                    break;
-                }
-            }
-            let line = raw[..end].trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if line.starts_with('[') && line.ends_with(']') {
-                section = &line[1..line.len() - 1];
-                continue;
-            }
-            if section != "libraries" {
-                continue;
-            }
-            let (flags, value) = line
-                .split_once('=')
-                .ok_or("invalid GDExtension library assignment")?;
-            let flags = flags.trim();
-            let flags = if flags.starts_with('"') {
-                serde_json::from_str::<String>(flags)
-                    .map_err(|_| "unsupported native feature key")?
-            } else {
-                flags.into()
-            };
-            let bits = if usize::BITS == 64 { "64" } else { "32" };
-            if !flags.split('.').all(|flag| {
-                [system, architecture, profile, "single", bits].contains(&flag)
-                    || (!release && flag == "editor")
-            }) {
-                continue;
-            }
-            let value = serde_json::from_str::<String>(value.trim())
-                .map_err(|_| "native library paths must be quoted strings")?;
-            if value.is_empty() || value.contains('\\') || value.chars().any(char::is_control) {
-                return Err("invalid native library path".into());
-            }
-            let candidate = if let Some(relative) = value.strip_prefix("res://") {
-                self.godot_project_dir()
-                    .ok_or("native manifest requires project.godot")?
-                    .join(relative)
-            } else {
-                if Path::new(&value).is_absolute() || value.contains(':') {
-                    return Err("native build destination must stay inside the project".into());
-                }
-                manifest
-                    .parent()
-                    .ok_or("manifest parent is unavailable")?
-                    .join(value)
-            };
-            let relative = candidate
-                .strip_prefix(&self.root)
-                .map_err(|_| "native destination escaped the project")?;
-            let mut normalized = PathBuf::new();
-            for part in relative.components() {
-                match part {
-                    std::path::Component::Normal(name) => normalized.push(name),
-                    std::path::Component::CurDir => {}
-                    std::path::Component::ParentDir => {
-                        if !normalized.pop() {
-                            return Err("native destination escaped the project".into());
-                        }
-                    }
-                    _ => return Err("invalid native destination components".into()),
-                }
-            }
-            let result = crate::files::confined(
-                &self.root,
-                normalized
-                    .to_str()
-                    .ok_or("native destination must be UTF-8")?,
-            )?;
-            crate::diagnostics::checked_path(&result).map_err(|error| error.to_string())?;
-            if !result
-                .extension()
-                .is_some_and(|extension| extension == crate::build::dynamic_library_extension())
-            {
-                return Err("native manifest target is not a supported host library file; framework and cross-target packaging require separate staging".into());
-            }
-            return Ok(result);
+        let bits = if usize::BITS == 64 { "64" } else { "32" };
+        let mut features = vec![system, architecture, profile, "single", bits];
+        if !release {
+            features.push("editor");
         }
-        Err(format!(
-            "native manifest has no supported {system}.{profile}.{architecture} library mapping"
-        ))
+        let value = gdextension_library_mapping(text, &features)?.ok_or_else(|| {
+            format!("native manifest has no supported {system}.{profile}.{architecture} library mapping")
+        })?;
+        if value.is_empty() || value.contains('\\') || value.chars().any(char::is_control) {
+            return Err("invalid native library path".into());
+        }
+        let candidate = if let Some(relative) = value.strip_prefix("res://") {
+            self.godot_project_dir()
+                .ok_or("native manifest requires project.godot")?
+                .join(relative)
+        } else {
+            if Path::new(&value).is_absolute() || value.contains(':') {
+                return Err("native build destination must stay inside the project".into());
+            }
+            manifest
+                .parent()
+                .ok_or("manifest parent is unavailable")?
+                .join(value)
+        };
+        let relative = candidate
+            .strip_prefix(&self.root)
+            .map_err(|_| "native destination escaped the project")?;
+        let mut normalized = PathBuf::new();
+        for part in relative.components() {
+            match part {
+                std::path::Component::Normal(name) => normalized.push(name),
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    if !normalized.pop() {
+                        return Err("native destination escaped the project".into());
+                    }
+                }
+                _ => return Err("invalid native destination components".into()),
+            }
+        }
+        let result = crate::files::confined(
+            &self.root,
+            normalized
+                .to_str()
+                .ok_or("native destination must be UTF-8")?,
+        )?;
+        crate::diagnostics::checked_path(&result).map_err(|error| error.to_string())?;
+        if !result
+            .extension()
+            .is_some_and(|extension| extension == crate::build::dynamic_library_extension())
+        {
+            return Err("native manifest target is not a supported host library file; framework and cross-target packaging require separate staging".into());
+        }
+        Ok(result)
     }
+}
+
+/// Select the first mapping for an explicit feature set, without filesystem I/O.
+/// Host builds and metadata-only cross-target inspection share the same parser.
+pub(crate) fn gdextension_library_mapping(
+    text: &str,
+    features: &[&str],
+) -> Result<Option<String>, String> {
+    let mut section = "";
+    for raw in text.lines() {
+        let mut quoted = false;
+        let mut escaped = false;
+        let mut end = raw.len();
+        for (index, character) in raw.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if quoted && character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == '"' {
+                quoted = !quoted;
+            }
+            if !quoted && character == ';' {
+                end = index;
+                break;
+            }
+        }
+        let line = raw[..end].trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            section = &line[1..line.len() - 1];
+            continue;
+        }
+        if section != "libraries" {
+            continue;
+        }
+        let (flags, value) = line
+            .split_once('=')
+            .ok_or("invalid GDExtension library assignment")?;
+        let flags = flags.trim();
+        let flags = if flags.starts_with('"') {
+            serde_json::from_str::<String>(flags).map_err(|_| "unsupported native feature key")?
+        } else {
+            flags.into()
+        };
+        if !flags.split('.').all(|flag| features.contains(&flag)) {
+            continue;
+        }
+        let value = serde_json::from_str::<String>(value.trim())
+            .map_err(|_| "native library paths must be quoted strings")?;
+        return Ok(Some(value));
+    }
+    Ok(None)
 }
 
 /// Find the parts of a project, read-only.
@@ -1067,6 +1077,38 @@ command = "pwsh scripts/tests/phase0_contract.ps1"
             clean_path(PathBuf::from("/unix/path")),
             PathBuf::from("/unix/path")
         );
+    }
+
+    #[test]
+    fn explicit_library_features_do_not_borrow_host_or_other_profiles() {
+        let manifest = "[libraries]\nwindows.debug.x86_64=\"win.dll\"\nandroid.release.arm64=\"release.so\"\n\"android.debug.arm64\"=\"debug;arm64.so\" ; comment\nandroid.debug=\"fallback.so\"\n";
+        assert_eq!(
+            gdextension_library_mapping(manifest, &["android", "debug", "arm64"])
+                .unwrap()
+                .as_deref(),
+            Some("debug;arm64.so")
+        );
+        assert_eq!(
+            gdextension_library_mapping(manifest, &["android", "release", "arm64"])
+                .unwrap()
+                .as_deref(),
+            Some("release.so")
+        );
+        assert_eq!(
+            gdextension_library_mapping(manifest, &["windows", "debug", "x86_64"])
+                .unwrap()
+                .as_deref(),
+            Some("win.dll")
+        );
+        assert_eq!(
+            gdextension_library_mapping(manifest, &["android", "release", "x86_32"]).unwrap(),
+            None
+        );
+        assert!(gdextension_library_mapping(
+            "[libraries]\nandroid.debug.arm64=unquoted\n",
+            &["android", "debug", "arm64"]
+        )
+        .is_err());
     }
 
     #[test]

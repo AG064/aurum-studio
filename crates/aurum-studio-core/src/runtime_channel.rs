@@ -175,29 +175,119 @@ mod tests {
             kind: ProcessKind::Game,
         }
     }
-    fn mock(
-        reply: impl FnOnce(Value) -> Vec<u8> + Send + 'static,
-    ) -> (Channel, std::thread::JoinHandle<()>) {
+    const MOCK_BUDGET: Duration = Duration::from_secs(3);
+    #[derive(Debug)]
+    struct PeerReport {
+        accepted: bool,
+        request_received: bool,
+        reply_started: bool,
+        finished_at: Instant,
+    }
+    struct MockPeer {
+        worker: Option<std::thread::JoinHandle<Result<PeerReport, String>>>,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        deadline: Instant,
+    }
+    impl MockPeer {
+        fn retire(&mut self) -> Result<PeerReport, String> {
+            self.stop.store(true, std::sync::atomic::Ordering::Release);
+            let Some(worker) = self.worker.as_ref() else {
+                return Err("mock peer already retired".into());
+            };
+            while !worker.is_finished() {
+                if Instant::now() >= self.deadline {
+                    return Err("mock peer retirement unconfirmed before original deadline".into());
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let report = self
+                .worker
+                .take()
+                .unwrap()
+                .join()
+                .map_err(|_| "mock peer panicked".to_string())??;
+            if report.finished_at > self.deadline {
+                return Err("mock peer exceeded its original lifetime".into());
+            }
+            Ok(report)
+        }
+        fn finish(mut self) -> PeerReport {
+            self.retire()
+                .expect("mock peer must retire within its original fixture budget")
+        }
+    }
+    impl Drop for MockPeer {
+        fn drop(&mut self) {
+            // Never renew the deadline or block in join on an unfinished worker.
+            // Refusal is not successful retirement; the worker still owns its I/O.
+            if self.worker.is_some() {
+                let _ = self.retire();
+            }
+        }
+    }
+    fn mock(reply: impl FnOnce(Value) -> Vec<u8> + Send + 'static) -> (Channel, MockPeer) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
         let channel = Channel::new(
             listener.local_addr().unwrap().port(),
             "a".repeat(64),
             owner(),
         )
         .unwrap();
+        // Ownership setup is outside the server fixture lifetime. The request
+        // keeps its own unchanged total budget, including its ownership checks.
+        let deadline = Instant::now() + MOCK_BUDGET;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_stop = std::sync::Arc::clone(&stop);
         let worker = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
+            let mut stream = loop {
+                if worker_stop.load(std::sync::atomic::Ordering::Acquire)
+                    || Instant::now() >= deadline
+                {
+                    return Ok(PeerReport {
+                        accepted: false,
+                        request_received: false,
+                        reply_started: false,
+                        finished_at: Instant::now(),
+                    });
+                }
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(1))
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(io_message(error)),
+                }
+            };
+            stream.set_nonblocking(false).map_err(io_message)?;
             let mut header = [0; 4];
-            stream.read_exact(&mut header).unwrap();
-            let mut body = vec![0; u32::from_le_bytes(header) as usize];
-            stream.read_exact(&mut body).unwrap();
-            let request: Value = serde_json::from_slice(&body).unwrap();
-            let _ = stream.write_all(&reply(request));
+            read_all(&mut stream, &mut header, deadline).map_err(io_message)?;
+            let length = u32::from_le_bytes(header) as usize;
+            if length == 0 || length > MAX_BYTES {
+                return Err("mock request length outside bounds".into());
+            }
+            let mut body = vec![0; length];
+            read_all(&mut stream, &mut body, deadline).map_err(io_message)?;
+            let request: Value = serde_json::from_slice(&body)
+                .map_err(|_| "mock request schema invalid".to_string())?;
+            let bytes = reply(request);
+            write_all(&mut stream, &bytes, deadline).map_err(io_message)?;
+            Ok(PeerReport {
+                accepted: true,
+                request_received: true,
+                reply_started: true,
+                finished_at: Instant::now(),
+            })
         });
-        (channel, worker)
+        (
+            channel,
+            MockPeer {
+                worker: Some(worker),
+                stop,
+                deadline,
+            },
+        )
     }
     fn frame(value: Value) -> Vec<u8> {
         let body = serde_json::to_vec(&value).unwrap();
@@ -213,13 +303,13 @@ mod tests {
                 json!({"version":1,"id":request["id"],"pid":std::process::id(),"result":{"ok":true}}),
             )
         });
-        assert_eq!(
-            channel
-                .request(&json!({"op":"inspect"}), Duration::from_secs(3))
-                .unwrap()["ok"],
-            true
+        let result = channel.request(&json!({"op":"inspect"}), Duration::from_secs(3));
+        let report = worker.finish();
+        assert!(
+            report.accepted && report.request_received && report.reply_started,
+            "matching-reply case must exercise the transport"
         );
-        worker.join().unwrap();
+        assert_eq!(result.unwrap()["ok"], true);
     }
     #[test]
     fn stale_process_identity_is_refused_before_connecting() {
@@ -246,18 +336,23 @@ mod tests {
                 }
                 frame(value)
             });
-            let error = channel
-                .request(&json!({"op":"inspect"}), Duration::from_secs(3))
-                .unwrap_err();
+            let result = channel.request(&json!({"op":"inspect"}), Duration::from_secs(3));
+            let report = worker.finish();
+            assert!(
+                report.accepted && report.request_received && report.reply_started,
+                "reply-refusal case must exercise the transport"
+            );
+            let error = result.unwrap_err();
             assert!(!error.contains("must-not-leak"));
-            worker.join().unwrap();
         }
         let (channel, worker) = mock(|_| (MAX_BYTES as u32 + 1).to_le_bytes().to_vec());
-        assert!(channel
-            .request(&json!({"op":"inspect"}), Duration::from_secs(3))
-            .unwrap_err()
-            .contains("length"));
-        worker.join().unwrap();
+        let result = channel.request(&json!({"op":"inspect"}), Duration::from_secs(3));
+        let report = worker.finish();
+        assert!(
+            report.accepted && report.request_received && report.reply_started,
+            "oversized-reply case must exercise the transport"
+        );
+        assert!(result.unwrap_err().contains("length"));
         let channel = Channel::new(1, "a".repeat(64), owner()).unwrap();
         assert!(channel
             .request(
@@ -273,17 +368,54 @@ mod tests {
         assert!(Channel::new(1, "not-a-token".into(), owner()).is_err());
     }
     #[test]
+    fn mock_peer_finishes_when_no_client_connects() {
+        let replied = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let callback = std::sync::Arc::clone(&replied);
+        let (channel, worker) = mock(move |_| {
+            callback.store(true, std::sync::atomic::Ordering::Release);
+            panic!("a request was not expected")
+        });
+        drop(channel);
+        let began = Instant::now();
+        let report = worker.finish();
+        assert!(began.elapsed() < Duration::from_secs(4));
+        assert!(!report.accepted && !report.request_received && !report.reply_started);
+        assert!(!replied.load(std::sync::atomic::Ordering::Acquire));
+    }
+    #[test]
     fn a_slow_peer_cannot_extend_the_total_deadline() {
         let (channel, worker) = mock(|_| {
             std::thread::sleep(Duration::from_millis(1500));
             vec![]
         });
         let started = Instant::now();
-        assert!(channel
-            .request(&json!({"op":"inspect"}), Duration::from_millis(100))
-            .is_err());
-        assert!(started.elapsed() < Duration::from_secs(1));
-        worker.join().unwrap();
+        let result = channel.request(&json!({"op":"inspect"}), Duration::from_millis(500));
+        let elapsed = started.elapsed();
+        let report = worker.finish();
+        assert!(
+            report.accepted && report.request_received && report.reply_started,
+            "slow-peer transport was not exercised; early refusal is not a deadline-test pass"
+        );
+        assert!(result.is_err());
+        assert!(elapsed < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn mock_peer_retires_when_request_is_refused_before_connecting() {
+        let replied = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let callback = std::sync::Arc::clone(&replied);
+        let (mut channel, worker) = mock(move |_| {
+            callback.store(true, std::sync::atomic::Ordering::Release);
+            vec![]
+        });
+        channel.owner.started.push_str("-wrong");
+        let result = channel.request(&json!({"op":"inspect"}), Duration::from_millis(100));
+        let deadline = worker.deadline;
+        let report = worker.finish();
+        assert!(result.unwrap_err().contains("ownership"));
+        assert!(!report.accepted && !report.request_received && !report.reply_started);
+        assert!(!replied.load(std::sync::atomic::Ordering::Acquire));
+        assert!(report.finished_at <= deadline);
     }
 
     #[test]

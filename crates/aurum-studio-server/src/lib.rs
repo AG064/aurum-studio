@@ -38,6 +38,9 @@
 
 pub mod assets;
 pub mod http;
+mod native_request;
+#[cfg(test)]
+mod native_request_socket_tests;
 mod preview;
 
 use std::io::{BufReader, Write};
@@ -255,9 +258,7 @@ impl Server {
                     if self.shell.connections_count() >= MAX_CONNECTIONS {
                         // Refused rather than queued: the ceiling is the
                         // point, and a slow refusal costs nothing.
-                        let mut stream = stream;
-                        let _ =
-                            Response::error(503, "too many connections\n").write_to(&mut stream);
+                        refuse(stream);
                         continue;
                     }
                     self.shell.connections_add();
@@ -433,19 +434,70 @@ fn spawn_pump(supervisor: Arc<Supervisor>, hub: Arc<Hub>, running: Arc<AtomicBoo
 
 // -- connections ----------------------------------------------------------
 
+/// Answer a connection over the ceiling without blocking the accept loop. Closing a socket with
+/// unread request bytes resets it, which can discard the reply before the client reads it, so a
+/// short bounded drain owns the close. Past `MAX_CONNECTIONS` drains it closes at once instead.
+fn refuse(mut stream: TcpStream) {
+    use std::io::Read;
+    use std::sync::atomic::AtomicUsize;
+    static DRAINS: AtomicUsize = AtomicUsize::new(0);
+    const DRAIN_BUDGET: Duration = Duration::from_secs(1);
+    const DRAIN_QUIET: Duration = Duration::from_millis(200);
+
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_write_timeout(Some(DRAIN_QUIET));
+    let _ = Response::error(503, "too many connections\n").write_to(&mut stream);
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    if DRAINS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+        DRAINS.fetch_sub(1, Ordering::SeqCst);
+        return;
+    }
+    std::thread::spawn(move || {
+        let _ = stream.set_read_timeout(Some(DRAIN_QUIET));
+        let deadline = std::time::Instant::now() + DRAIN_BUDGET;
+        let mut unread = [0; 4096];
+        while std::time::Instant::now() < deadline
+            && matches!(stream.read(&mut unread), Ok(count) if count > 0)
+        {}
+        DRAINS.fetch_sub(1, Ordering::SeqCst);
+    });
+}
+
+/// Clone a socket for a thread that must own it, without letting child processes inherit it.
+/// A child holding a copy keeps the connection open until it exits, then resets it.
+pub(crate) fn private_clone(stream: &TcpStream) -> std::io::Result<TcpStream> {
+    let clone = stream.try_clone()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
+        }
+        const HANDLE_FLAG_INHERIT: u32 = 1;
+        // SAFETY: `clone` owns this live socket handle for the whole call.
+        let set = unsafe {
+            SetHandleInformation(clone.as_raw_socket() as *mut _, HANDLE_FLAG_INHERIT, 0)
+        };
+        if set == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(clone)
+}
+
 fn handle_connection(stream: TcpStream, shell: &Arc<Shell>) {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_nodelay(true);
 
-    let mut writer = match stream.try_clone() {
-        Ok(clone) => clone,
-        Err(_) => return,
-    };
-    let mut reader = BufReader::new(stream);
+    // Borrow instead of cloning: try_clone can return an inheritable socket on Windows, and
+    // a child spawned meanwhile would hold the connection open and reset it when it exits.
+    let mut writer = &stream;
+    let mut reader = BufReader::new(&stream);
 
-    let request = match http::read_request(&mut reader) {
+    let mut request = match http::read_request_head(&mut reader) {
         Ok(Some(request)) => request,
         Ok(None) => return,
         Err(error) => {
@@ -454,22 +506,54 @@ fn handle_connection(stream: TcpStream, shell: &Arc<Shell>) {
         }
     };
 
-    // Order matters: the loopback check runs before the token check, so a
-    // rebound request is refused without the token being compared at all.
-    if let Err(response) = check_local(&request) {
-        let _ = response.write_to(&mut writer);
-        return;
-    }
-    if let Err(response) = check_origin(&request, shell.port) {
-        let _ = response.write_to(&mut writer);
-        return;
-    }
-    if let Err(response) = check_token(&request, &shell.token) {
+    let controlled = match native_request::requested(&request) {
+        Ok(controlled) => controlled,
+        Err(response) => {
+            let _ = response.write_to(&mut writer);
+            return;
+        }
+    };
+    let context = if controlled {
+        if let Err(response) = authenticate(&request, shell) {
+            let _ = response.write_to(&mut writer);
+            return;
+        }
+        match native_request::receive(&mut reader, &mut writer, &mut request) {
+            Ok(context) => Some(context),
+            Err(message) => {
+                let _ = Response::json(400, &serde_json::json!({"ok":false,"error":message}))
+                    .write_to(&mut writer);
+                return;
+            }
+        }
+    } else {
+        request.body = match http::read_body(&mut reader, &request.headers) {
+            Ok(body) => body,
+            Err(error) => {
+                let _ = Response::error(error.status(), format!("{error}\n")).write_to(&mut writer);
+                return;
+            }
+        };
+        None
+    };
+    if let Err(response) = authenticate(&request, shell) {
         let _ = response.write_to(&mut writer);
         return;
     }
 
-    match route(&request, shell) {
+    let routed = match context {
+        Some(context) => {
+            match native_request::with_peer(reader.get_ref(), &context, || route(&request, shell)) {
+                Ok(routed) => routed,
+                Err(error) => Routed::Once(Response::json(
+                    400,
+                    &serde_json::json!({"ok":false,"error":error.to_string()}),
+                )),
+            }
+        }
+        None => route(&request, shell),
+    };
+    match routed {
         Routed::Once(mut response) => {
             response
                 .headers
@@ -497,6 +581,13 @@ fn handle_connection(stream: TcpStream, shell: &Arc<Shell>) {
             shell.hub.unsubscribe(id);
         }
     }
+}
+
+fn authenticate(request: &Request, shell: &Shell) -> Result<(), Response> {
+    // Preserve the existing order, before any controlled ready acknowledgement.
+    check_local(request)?;
+    check_origin(request, shell.port)?;
+    check_token(request, &shell.token)
 }
 
 /// Refuse anything whose `Host` is not the loopback interface.
@@ -805,7 +896,7 @@ fn route(request: &Request, shell: &Arc<Shell>) -> Routed {
         }
         ("GET", "/api/native_host") => Routed::Once(Response::json(
             200,
-            &serde_json::json!({"protocol":"aurum-native-host/1","pid":std::process::id(),"project":shell.project_root,"port":shell.port}),
+            &serde_json::json!({"protocol":"aurum-native-host/1","request_control":aurum_studio_core::native_request_control::PROTOCOL,"pid":std::process::id(),"project":shell.project_root,"port":shell.port}),
         )),
         ("GET", "/api/agent") => {
             let command = std::env::current_exe()
@@ -990,7 +1081,7 @@ fn projects_response(shell: &Arc<Shell>, request: Option<&Request>) -> Response 
 
 /// Write an event stream until the client goes away.
 fn stream_events(
-    writer: &mut TcpStream,
+    writer: &mut &TcpStream,
     receiver: Receiver<Event>,
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<()> {

@@ -21,6 +21,34 @@ pub struct Outcome {
     pub timed_out: bool,
 }
 
+#[cfg(test)]
+mod environment_policy_tests {
+    use super::*;
+
+    #[test]
+    fn clear_environment_is_private_opt_in_and_preserves_existing_command_fields() {
+        let command = Command::new("engine")
+            .args(["--metadata", "unicode ü"])
+            .directory("A:/private-work")
+            .env("EXPLICIT_VALUE", "curated");
+        assert!(!command.clear_environment);
+        let cleared = command.clone().clear_environment();
+        assert!(cleared.clear_environment);
+        assert!(command.program == cleared.program);
+        assert!(command.args == cleared.args);
+        assert!(command.environment == cleared.environment);
+        assert!(command.directory == cleared.directory);
+        assert_eq!(command.owned_tree, cleared.owned_tree);
+        assert!(command.storage_budget == cleared.storage_budget);
+        assert_eq!(
+            command.storage_budget_overflow,
+            cleared.storage_budget_overflow
+        );
+        assert!(command.lifetime.is_none() && cleared.lifetime.is_none());
+        assert!(command.describe() == cleared.describe());
+    }
+}
+
 impl Outcome {
     pub fn success(&self) -> bool {
         !self.timed_out && self.code == Some(0)
@@ -67,9 +95,13 @@ pub struct Command {
     args: Vec<String>,
     directory: Option<PathBuf>,
     environment: Vec<(String, String)>,
+    clear_environment: bool,
     owned_tree: bool,
     storage_budget: Vec<PathBuf>,
     storage_budget_overflow: bool,
+    lifetime: Option<crate::candidate_workspace::LifetimeFence>,
+    #[cfg(windows)]
+    native_output: Option<crate::worker_windows::StreamController>,
 }
 
 impl Command {
@@ -79,9 +111,13 @@ impl Command {
             args: Vec::new(),
             directory: None,
             environment: Vec::new(),
+            clear_environment: false,
             owned_tree: false,
             storage_budget: Vec::new(),
             storage_budget_overflow: false,
+            lifetime: None,
+            #[cfg(windows)]
+            native_output: None,
         }
     }
 
@@ -121,6 +157,14 @@ impl Command {
         self
     }
 
+    /// Internal callers provide the complete child environment explicitly.
+    /// This does not mutate the host environment or expose a project option.
+    #[cfg(test)]
+    pub(crate) fn clear_environment(mut self) -> Self {
+        self.clear_environment = true;
+        self
+    }
+
     /// Candidate workers must not outlive their host or leave descendants.
     /// Currently qualified on Windows 10+ only. Ordinary games are unaffected.
     pub(crate) fn owned_tree(mut self) -> Self {
@@ -141,6 +185,31 @@ impl Command {
             }
         }
         self.owned_tree()
+    }
+    pub(crate) fn lifetime_fence(
+        mut self,
+        fence: &crate::candidate_workspace::LifetimeFence,
+    ) -> Self {
+        self.lifetime = Some(fence.clone());
+        self.owned_tree()
+    }
+
+    /// Private Windows native preparation opts in with a persistent controller.
+    /// This changes no default command, Docker client or Unix execution route.
+    #[cfg(windows)]
+    pub(crate) fn owned_native_output(
+        mut self,
+        controller: &crate::worker_windows::StreamController,
+    ) -> Self {
+        self.native_output = Some(controller.clone());
+        self.owned_tree()
+    }
+
+    #[cfg(all(windows, test))]
+    pub(crate) fn native_output_controller_for_test(
+        &self,
+    ) -> Option<&crate::worker_windows::StreamController> {
+        self.native_output.as_ref()
     }
 
     pub fn program(&self) -> &Path {
@@ -164,6 +233,7 @@ impl Command {
     /// child exits deadlocks as soon as a build produces more than a pipe
     /// buffer, which a real Cargo invocation always does.
     pub fn run(&self, timeout: Duration) -> std::io::Result<Outcome> {
+        let started = Instant::now();
         if self.storage_budget_overflow {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -174,16 +244,18 @@ impl Command {
         if let Some(context) = &operation {
             context.check()?;
         }
-        let deadline = operation
-            .as_ref()
-            .map_or(Instant::now() + timeout, |context| {
-                context.deadline().min(Instant::now() + timeout)
-            });
+        let deadline = operation.as_ref().map_or(started + timeout, |context| {
+            context.deadline().min(started + timeout)
+        });
         if Instant::now() >= deadline {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "command deadline expired before spawn",
             ));
+        }
+        #[cfg(windows)]
+        if let Some(controller) = &self.native_output {
+            return self.run_owned_native_output(controller, operation.as_ref(), deadline);
         }
         // These bounded commands are transient. Accepted gameplay is launched
         // separately and is never placed in an operation's cancellation scope.
@@ -201,6 +273,9 @@ impl Command {
             .stderr(Stdio::piped());
         if let Some(directory) = &self.directory {
             command.current_dir(directory);
+        }
+        if self.clear_environment {
+            command.env_clear();
         }
         for (key, value) in &self.environment {
             command.env(key, value);
@@ -237,13 +312,20 @@ impl Command {
                 check_before_spawn(operation.as_ref(), deadline)?;
                 // Proxies such as rustup select Cargo from argv[0]. Resolve the
                 // application for launch while preserving the invoked name.
-                let (worker, stdout, stderr) = crate::worker_windows::Worker::spawn_with_argv0(
-                    &application,
-                    &program,
-                    &self.args,
-                    self.directory.as_deref(),
-                    &self.environment,
-                )?;
+                let (worker, stdout, stderr) =
+                    crate::worker_windows::Worker::spawn_with_environment(
+                        &application,
+                        &program,
+                        &self.args,
+                        self.directory.as_deref(),
+                        if self.clear_environment {
+                            crate::worker_windows::ChildEnvironment::Cleared(&self.environment)
+                        } else {
+                            crate::worker_windows::ChildEnvironment::Inherit(&self.environment)
+                        },
+                        self.lifetime.as_ref(),
+                        Some(deadline.min(started + Duration::from_secs(10))),
+                    )?;
                 (
                     Running::Owned(worker),
                     Some(Box::new(stdout) as Box<dyn Read + Send>),
@@ -294,7 +376,7 @@ impl Command {
                                 truncated |= keep < count;
                             }
                             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-                                continue
+                                continue;
                             }
                             Err(_) => break,
                         }
@@ -397,6 +479,113 @@ impl Command {
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
             timed_out,
         })
+    }
+
+    #[cfg(windows)]
+    fn run_owned_native_output(
+        &self,
+        controller: &crate::worker_windows::StreamController,
+        operation: Option<&crate::operation_context::OperationContext>,
+        deadline: Instant,
+    ) -> std::io::Result<Outcome> {
+        let lifetime = self.lifetime.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "private native output requires a workspace lifetime fence",
+            )
+        })?;
+        if !self.program.is_absolute() || self.storage_budget.is_empty() || self.clear_environment {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                "private native output requires an absolute inherited-environment candidate command"));
+        }
+        check_before_spawn(operation, deadline)?;
+        inspect_storage(
+            &self.storage_budget,
+            crate::candidate_workspace::WORKSPACE_BYTES,
+            deadline,
+            operation,
+        )?;
+        let application = self
+            .program
+            .canonicalize()
+            .map(crate::project::clean_path)?;
+        check_before_spawn(operation, deadline)?;
+        let mut capture = crate::worker_windows::Worker::spawn_native_command_output(
+            controller,
+            crate::worker_windows::CommandSpawn {
+                program: &application,
+                argv0: &self.program,
+                args: &self.args,
+                directory: self.directory.as_deref(),
+                overrides: &self.environment,
+                lifetime,
+                deadline,
+            },
+        )?;
+        let mut next_scan = Instant::now();
+        let result = capture.collect_checked(|effective| {
+            if Instant::now() >= next_scan {
+                inspect_storage(
+                    &self.storage_budget,
+                    crate::candidate_workspace::WORKSPACE_BYTES,
+                    effective,
+                    operation,
+                )?;
+                next_scan = Instant::now() + Duration::from_secs(1);
+            }
+            Ok(())
+        });
+        match result {
+            Ok(result) => {
+                let stdout = String::from_utf8_lossy(&result.stdout).into_owned();
+                let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+                // Check the capture's original effective deadline and context,
+                // including an earlier stored retirement deadline, after conversion.
+                let gate = result.acceptance_gate()?;
+                let outcome = Outcome {
+                    code: Some(result.code),
+                    stdout,
+                    stderr,
+                    timed_out: false,
+                };
+                drop(gate);
+                Ok(outcome)
+            }
+            Err(error) => {
+                let diagnostics = match capture.retire_diagnostics() {
+                    Ok(diagnostics) => diagnostics,
+                    Err(_) => {
+                        if let Some(context) = operation {
+                            context.mark_termination_unconfirmed();
+                            context.mark_recovery_required();
+                        }
+                        return Err(std::io::Error::other(
+                            "private native command retirement unconfirmed",
+                        ));
+                    }
+                };
+                if let Some(context) = operation {
+                    context.check()?;
+                }
+                if Instant::now() >= deadline
+                    && (error.kind() == std::io::ErrorKind::TimedOut
+                        || error.to_string().contains("elapsed inspection budget"))
+                {
+                    let stdout = String::from_utf8_lossy(&diagnostics.stdout).into_owned();
+                    let stderr = String::from_utf8_lossy(&diagnostics.stderr).into_owned();
+                    let gate = diagnostics.timeout_delivery_gate()?;
+                    let outcome = Outcome {
+                        code: diagnostics.observed_code,
+                        stdout,
+                        stderr,
+                        timed_out: true,
+                    };
+                    drop(gate);
+                    return Ok(outcome);
+                }
+                Err(error)
+            }
+        }
     }
 }
 

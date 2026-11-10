@@ -1,0 +1,15 @@
+{
+  "op": "play",
+  "frames": 300,
+  "timeout_seconds": 90,
+  "performance": {
+    "warmup_frames": 120,
+    "sample_frames": 120,
+    "sample_stride": 1,
+    "min_warmup_ms": 1100,
+    "wall_budget_ms": 10000,
+    "budgets": {
+      "node_count": 256
+    }
+  }
+}

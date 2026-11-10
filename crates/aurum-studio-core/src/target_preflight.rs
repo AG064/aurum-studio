@@ -564,18 +564,23 @@ fn preset_options(text: &str, name: &str) -> Option<BTreeMap<String, String>> {
                     | "keystore/debug"
                     | "keystore/release"
                     | "binary_format/architecture"
+                    | "architectures/armeabi-v7a"
+                    | "architectures/arm64-v8a"
+                    | "architectures/x86"
+                    | "architectures/x86_64"
             ) {
                 continue;
             }
             let value = value.trim();
-            let decoded = if key == "gradle_build/use_gradle_build" {
-                if !matches!(value, "true" | "false") {
-                    return None;
-                }
-                value.to_string()
-            } else {
-                serde_json::from_str::<String>(value).ok()?
-            };
+            let decoded =
+                if key == "gradle_build/use_gradle_build" || key.starts_with("architectures/") {
+                    if !matches!(value, "true" | "false") {
+                        return None;
+                    }
+                    value.to_string()
+                } else {
+                    serde_json::from_str::<String>(value).ok()?
+                };
             if decoded.len() > 4096 || decoded.chars().any(char::is_control) {
                 return None;
             }
@@ -1370,10 +1375,9 @@ fn android(
             &child(&sdk, "cmake"),
             policy.then_some("3.10.2.4988404"),
         )?;
-        if native {
-            survey.add(("rust_android_artifacts", true), Status::Unverified, None, &[], Vec::new(),
-                "Android Rust targets, ABI-specific GDExtensions and cross-linker compatibility need separate native build qualification");
-        }
+    }
+    if project.config.rust_package.is_some() {
+        android_native_artifacts(project, options, request.debug.unwrap_or(true), survey)?;
     }
     let preset_gradle = options
         .get("gradle_build/use_gradle_build")
@@ -1447,6 +1451,276 @@ fn android(
         "keystore contents, passwords, key aliases and signing credentials were not read or tested",
     );
     Ok(())
+}
+
+struct AndroidAbi {
+    option: &'static str,
+    feature: &'static str,
+    check: &'static str,
+    class: u8,
+    machine: u16,
+}
+
+const ANDROID_ABIS: [AndroidAbi; 4] = [
+    AndroidAbi {
+        option: "architectures/armeabi-v7a",
+        feature: "arm32",
+        check: "rust_android_armeabi_v7a",
+        class: 1,
+        machine: 40,
+    },
+    AndroidAbi {
+        option: "architectures/arm64-v8a",
+        feature: "arm64",
+        check: "rust_android_arm64_v8a",
+        class: 2,
+        machine: 183,
+    },
+    AndroidAbi {
+        option: "architectures/x86",
+        feature: "x86_32",
+        check: "rust_android_x86",
+        class: 1,
+        machine: 3,
+    },
+    AndroidAbi {
+        option: "architectures/x86_64",
+        feature: "x86_64",
+        check: "rust_android_x86_64",
+        class: 2,
+        machine: 62,
+    },
+];
+
+// Resolve metadata inside the project without adopting host-platform mappings.
+fn android_library_path(root: &Path, base: &Path, value: &str) -> Option<PathBuf> {
+    if value.is_empty()
+        || value.len() > 4096
+        || value.contains(['\\', ':'])
+        || value.chars().any(char::is_control)
+        || Path::new(value).is_absolute()
+    {
+        return None;
+    }
+    let candidate = base.join(value);
+    let relative = candidate.strip_prefix(root).ok()?;
+    let mut normalized = PathBuf::new();
+    for part in relative.components() {
+        match part {
+            std::path::Component::Normal(name) => normalized.push(name),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir if normalized.pop() => {}
+            _ => return None,
+        }
+    }
+    Some(root.join(normalized))
+}
+
+fn android_manifest(
+    project: &Project,
+    survey: &Survey,
+) -> Result<(Status, Option<Location>), String> {
+    let candidates = if let Some(value) = &project.config.addon_destination {
+        let Some(path) = android_library_path(&project.root, &project.root, value) else {
+            return Ok((Status::Unverified, None));
+        };
+        vec![path]
+    } else {
+        vec![
+            project.root.join("godot/addons/aurum"),
+            project.root.join("addons/aurum"),
+        ]
+    };
+    let mut found = Vec::new();
+    for addon in candidates {
+        survey.check()?;
+        let bin = addon.join("bin");
+        match local_inspection(&bin) {
+            Ok(None) => continue,
+            Ok(Some(metadata)) if metadata.is_dir() => {}
+            _ => return Ok((Status::Unverified, None)),
+        }
+        let Ok(entries) = std::fs::read_dir(&bin) else {
+            return Ok((Status::Unverified, None));
+        };
+        for (index, entry) in entries.enumerate() {
+            survey.check()?;
+            if index >= DIRECTORY_ENTRIES {
+                return Ok((Status::Unverified, None));
+            }
+            let Ok(entry) = entry else {
+                return Ok((Status::Unverified, None));
+            };
+            let path = entry.path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "gdextension")
+            {
+                match local_inspection(&path) {
+                    Ok(Some(metadata))
+                        if metadata.is_file() && metadata.len() <= METADATA_BYTES =>
+                    {
+                        found.push(Location {
+                            path,
+                            provenance: "project",
+                        });
+                    }
+                    _ => return Ok((Status::Unverified, None)),
+                }
+            }
+        }
+    }
+    survey.check()?;
+    Ok(match found.len() {
+        0 => (Status::Missing, None),
+        1 => (Status::Available, found.pop()),
+        _ => (Status::Unverified, None),
+    })
+}
+
+fn android_elf_status(header: &[u8], abi: &AndroidAbi) -> Status {
+    if header.len() < 24 || &header[..4] != b"\x7fELF" || header[6] != 1 {
+        return Status::Unverified;
+    }
+    if header[4] != abi.class || header[5] != 1 {
+        return Status::Mismatch;
+    }
+    let size = if abi.class == 1 { 52 } else { 64 };
+    let size_offset = if abi.class == 1 { 40 } else { 52 };
+    if header.len() < size
+        || u32::from_le_bytes(header[20..24].try_into().unwrap()) != 1
+        || u16::from_le_bytes(header[size_offset..size_offset + 2].try_into().unwrap())
+            != size as u16
+    {
+        return Status::Unverified;
+    }
+    if u16::from_le_bytes(header[16..18].try_into().unwrap()) != 3
+        || u16::from_le_bytes(header[18..20].try_into().unwrap()) != abi.machine
+    {
+        return Status::Mismatch;
+    }
+    Status::Available
+}
+
+fn android_library_header(
+    path: &Path,
+    abi: &AndroidAbi,
+    survey: &Survey,
+) -> Result<Status, String> {
+    survey.check()?;
+    let metadata = match local_inspection(path) {
+        Ok(None) => return Ok(Status::Missing),
+        Ok(Some(metadata)) if metadata.is_file() => metadata,
+        _ => return Ok(Status::Unverified),
+    };
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Do not follow a replaced leaf reparse point or permit writes to
+            // this open file. Ancestor observations are not a namespace lease.
+            options.share_mode(1).custom_flags(0x0020_0000);
+        }
+        let file = options.open(path).ok()?;
+        let opened = file.metadata().ok()?;
+        if !opened.is_file() || opened.len() != metadata.len() {
+            return None;
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if opened.file_attributes() & 0x400 != 0 {
+                return None;
+            }
+        }
+        let mut header = Vec::with_capacity(64);
+        file.take(64).read_to_end(&mut header).ok()?;
+        let after = local_inspection(path).ok()??;
+        if !after.is_file() || after.len() != opened.len() {
+            return None;
+        }
+        Some(android_elf_status(&header, abi))
+    })();
+    survey.check()?;
+    Ok(result.unwrap_or(Status::Unverified))
+}
+
+fn android_native_artifacts(
+    project: &Project,
+    options: &BTreeMap<String, String>,
+    debug: bool,
+    survey: &mut Survey,
+) -> Result<(), String> {
+    survey.check()?;
+    survey.add(("rust_android_artifacts", true), Status::Unverified, None, &[], Vec::new(),
+        "metadata checks do not qualify Rust compilation, linking, dependencies, GDExtension loading or Android execution");
+    let enabled: Vec<_> = ANDROID_ABIS
+        .iter()
+        .filter(|abi| options.get(abi.option).is_some_and(|value| value == "true"))
+        .collect();
+    let explicit = ANDROID_ABIS
+        .iter()
+        .all(|abi| options.contains_key(abi.option));
+    survey.add(("rust_android_abis", true),
+        if !explicit { Status::Unverified } else if enabled.is_empty() { Status::Mismatch } else { Status::Available },
+        None, &[], enabled.iter().map(|abi| abi.option.trim_start_matches("architectures/").into()).collect(),
+        "only explicit preset ABI flags are observed; omitted defaults and host CPU architecture are not inferred");
+    if enabled.is_empty() {
+        return survey.check();
+    }
+    let (mut status, manifest) = android_manifest(project, survey)?;
+    let text = manifest
+        .as_ref()
+        .and_then(|location| metadata_text(&location.path, METADATA_BYTES, survey));
+    survey.check()?;
+    if status == Status::Available && text.is_none() {
+        status = Status::Unverified;
+    }
+    survey.add(("rust_android_manifest", true), status, manifest.as_ref(), &[], Vec::new(),
+        "one confined ordinary add-on bin manifest of at most 64 KiB; ambiguous or unsafe manifests are not selected");
+    let profile = if debug { "debug" } else { "release" };
+    for abi in enabled {
+        survey.check()?;
+        let mut location = None;
+        let status = if let (Some(text), Some(manifest)) = (&text, &manifest) {
+            let bits = if abi.class == 1 { "32" } else { "64" };
+            match crate::project::gdextension_library_mapping(
+                text,
+                &["android", abi.feature, profile, "single", bits],
+            ) {
+                Ok(Some(value)) => {
+                    let (base, relative) = if let Some(relative) = value.strip_prefix("res://") {
+                        (project.godot_project_dir(), relative)
+                    } else {
+                        (manifest.path.parent(), value.as_str())
+                    };
+                    match base.and_then(|base| android_library_path(&project.root, base, relative))
+                    {
+                        Some(path)
+                            if path.extension().is_some_and(|extension| extension == "so") =>
+                        {
+                            let result = android_library_header(&path, abi, survey)?;
+                            location = Some(Location {
+                                path,
+                                provenance: "gdextension",
+                            });
+                            result
+                        }
+                        _ => Status::Unverified,
+                    }
+                }
+                Ok(None) => Status::Missing,
+                Err(_) => Status::Unverified,
+            }
+        } else {
+            status
+        };
+        survey.add((abi.check, true), status, location.as_ref(), &[profile, abi.feature], Vec::new(),
+            "at most 64 ELF header bytes: little-endian shared-object class/machine only; no symbols, dependencies, build, load or device proof");
+    }
+    survey.check()
 }
 
 #[cfg(not(windows))]
@@ -2069,6 +2343,273 @@ mod tests {
             .unwrap();
         assert!(!context.committed());
         assert!(context.commit_status_verified());
+    }
+
+    fn native_preset(enabled: &[&str]) -> String {
+        let mut text =
+            "[preset.0]\nname=\"Android\"\nplatform=\"Android\"\n[preset.0.options]\n".to_string();
+        for abi in &ANDROID_ABIS {
+            text.push_str(&format!(
+                "{}={}\n",
+                abi.option,
+                enabled.contains(&abi.feature)
+            ));
+        }
+        text
+    }
+
+    fn elf_header(abi: &AndroidAbi) -> Vec<u8> {
+        let size = if abi.class == 1 { 52 } else { 64 };
+        let mut bytes = vec![0; size];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4] = abi.class;
+        bytes[5] = 1;
+        bytes[6] = 1;
+        bytes[16..18].copy_from_slice(&3u16.to_le_bytes());
+        bytes[18..20].copy_from_slice(&abi.machine.to_le_bytes());
+        bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+        let offset = if abi.class == 1 { 40 } else { 52 };
+        bytes[offset..offset + 2].copy_from_slice(&(size as u16).to_le_bytes());
+        bytes
+    }
+
+    fn native_fixture() -> (Fixture, Value) {
+        let mut fixture = Fixture::new();
+        let input = fixture.complete();
+        fixture.0.config.rust_package = Some("test-game".into());
+        fixture.0.config.addon_destination = Some("addons/aurum".into());
+        fixture.file(presets::PRESETS_FILE, &native_preset(&["arm64"]));
+        fixture.file(
+            "addons/aurum/bin/game.gdextension",
+            "[libraries]\nandroid.debug.arm64=\"game.so\"\n",
+        );
+        (fixture, input)
+    }
+
+    #[test]
+    fn android_headers_cover_all_explicit_abis_without_build_or_device_claims() {
+        let (fixture, input) = native_fixture();
+        for abi in &ANDROID_ABIS {
+            fixture.file(presets::PRESETS_FILE, &native_preset(&[abi.feature]));
+            fixture.file("addons/aurum/bin/game.gdextension", &format!("[libraries]\nwindows.debug.x86_64=\"host.dll\"\nandroid.debug.{}=\"game.so\"\n", abi.feature));
+            std::fs::write(
+                fixture.0.root.join("addons/aurum/bin/game.so"),
+                elf_header(abi),
+            )
+            .unwrap();
+            let before = crate::snapshot::fingerprint_all(&fixture.0.root).unwrap();
+            let report = fixture.inspect(&input, Some("4.7.stable.official"));
+            assert_eq!(status(&report, "rust_android_abis"), "available");
+            assert_eq!(status(&report, abi.check), "available");
+            assert_eq!(status(&report, "rust_android_artifacts"), "unverified");
+            assert_eq!(report["prerequisites_detected"], false);
+            assert_eq!(report["export_readiness"], "unverified");
+            assert_eq!(report["tools_invoked"], false);
+            assert_eq!(report["physical_readiness"], "unverified");
+            assert_eq!(
+                before,
+                crate::snapshot::fingerprint_all(&fixture.0.root).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn android_profile_missing_and_header_mismatch_are_distinct() {
+        let (fixture, mut input) = native_fixture();
+        assert_eq!(
+            status(
+                &fixture.inspect(&input, Some("4.7.stable.official")),
+                "rust_android_arm64_v8a"
+            ),
+            "missing"
+        );
+        input["debug"] = json!(false);
+        std::fs::write(
+            fixture.0.root.join("addons/aurum/bin/game.so"),
+            elf_header(&ANDROID_ABIS[1]),
+        )
+        .unwrap();
+        assert_eq!(
+            status(
+                &fixture.inspect(&input, Some("4.7.stable.official")),
+                "rust_android_arm64_v8a"
+            ),
+            "missing"
+        );
+        fixture.file(
+            "addons/aurum/bin/game.gdextension",
+            "[libraries]\nandroid.release.arm64=\"game.so\"\n",
+        );
+        let matching = elf_header(&ANDROID_ABIS[1]);
+        for (bytes, expected) in [
+            (matching.clone(), "available"),
+            (matching[..30].to_vec(), "unverified"),
+            (
+                {
+                    let mut b = matching.clone();
+                    b[18..20].copy_from_slice(&40u16.to_le_bytes());
+                    b
+                },
+                "mismatch",
+            ),
+            (
+                {
+                    let mut b = matching.clone();
+                    b[4] = 1;
+                    b
+                },
+                "mismatch",
+            ),
+            (
+                {
+                    let mut b = matching.clone();
+                    b[5] = 2;
+                    b
+                },
+                "mismatch",
+            ),
+            (
+                {
+                    let mut b = matching.clone();
+                    b[16] = 2;
+                    b
+                },
+                "mismatch",
+            ),
+        ] {
+            std::fs::write(fixture.0.root.join("addons/aurum/bin/game.so"), bytes).unwrap();
+            assert_eq!(
+                status(
+                    &fixture.inspect(&input, Some("4.7.stable.official")),
+                    "rust_android_arm64_v8a"
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn android_unsafe_and_host_only_mappings_never_become_library_evidence() {
+        let (fixture, input) = native_fixture();
+        for (manifest, expected) in [
+            (
+                "[libraries]\nwindows.debug.x86_64=\"host.dll\"\n",
+                "missing",
+            ),
+            (
+                "[libraries]\nandroid.debug.arm64=\"game.dll\"\n",
+                "unverified",
+            ),
+            (
+                "[libraries]\nandroid.debug.arm64=\"../../../../outside.so\"\n",
+                "unverified",
+            ),
+            (
+                "[libraries]\nandroid.debug.arm64=\"C:/outside.so\"\n",
+                "unverified",
+            ),
+            (
+                "[libraries]\nandroid.debug.arm64=\"res://../outside.so\"\n",
+                "unverified",
+            ),
+            ("[libraries]\nandroid.debug.arm64=bad\n", "unverified"),
+        ] {
+            fixture.file("addons/aurum/bin/game.gdextension", manifest);
+            let before = crate::snapshot::fingerprint_all(&fixture.0.root).unwrap();
+            let report = fixture.inspect(&input, Some("4.7.stable.official"));
+            assert_eq!(status(&report, "rust_android_arm64_v8a"), expected);
+            assert_eq!(
+                before,
+                crate::snapshot::fingerprint_all(&fixture.0.root).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn android_manifest_and_preset_discovery_remain_bounded_and_explicit() {
+        let (fixture, input) = native_fixture();
+        fixture.file("addons/aurum/bin/other.gdextension", "[libraries]\n");
+        assert_eq!(
+            status(
+                &fixture.inspect(&input, Some("4.7.stable.official")),
+                "rust_android_manifest"
+            ),
+            "unverified"
+        );
+        std::fs::remove_file(fixture.0.root.join("addons/aurum/bin/other.gdextension")).unwrap();
+        fixture.file(
+            "addons/aurum/bin/game.gdextension",
+            &"X".repeat(METADATA_BYTES as usize + 1),
+        );
+        assert_eq!(
+            status(
+                &fixture.inspect(&input, Some("4.7.stable.official")),
+                "rust_android_manifest"
+            ),
+            "unverified"
+        );
+        fixture.file(presets::PRESETS_FILE, &native_preset(&[]));
+        assert_eq!(
+            status(
+                &fixture.inspect(&input, Some("4.7.stable.official")),
+                "rust_android_abis"
+            ),
+            "mismatch"
+        );
+        fixture.file(presets::PRESETS_FILE, "[preset.0]\nname=\"Android\"\nplatform=\"Android\"\n[preset.0.options]\narchitectures/arm64-v8a=\"true\"\n");
+        let report = fixture.inspect(&input, Some("4.7.stable.official"));
+        assert_eq!(status(&report, "preset_options"), "unverified");
+        assert_eq!(status(&report, "rust_android_abis"), "unverified");
+        fixture.file(presets::PRESETS_FILE, &native_preset(&["arm64"]));
+        let mut survey = Survey {
+            deadline: Instant::now(),
+            checks: Vec::new(),
+        };
+        assert!(android_native_artifacts(&fixture.0, &BTreeMap::new(), true, &mut survey).is_err());
+    }
+
+    #[test]
+    fn android_linked_library_ancestor_is_not_read_as_artifact_evidence() {
+        let (fixture, input) = native_fixture();
+        let target = fixture.0.root.join("ordinary");
+        let link = fixture.0.root.join("addons/aurum/bin/linked");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("game.so"), elf_header(&ANDROID_ABIS[1])).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let cmd = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+                .join("System32")
+                .join("cmd.exe");
+            let output = std::process::Command::new(cmd)
+                .creation_flags(0x0800_0000)
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(link.to_string_lossy().replace('/', "\\"))
+                .arg(target.to_string_lossy().replace('/', "\\"))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "ephemeral junction setup failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        fixture.file(
+            "addons/aurum/bin/game.gdextension",
+            "[libraries]\nandroid.debug.arm64=\"linked/game.so\"\n",
+        );
+        let report = fixture.inspect(&input, Some("4.7.stable.official"));
+        assert_eq!(status(&report, "rust_android_arm64_v8a"), "unverified");
+        assert_eq!(
+            std::fs::read(target.join("game.so")).unwrap(),
+            elf_header(&ANDROID_ABIS[1])
+        );
+        #[cfg(windows)]
+        std::fs::remove_dir(&link).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(&link).unwrap();
     }
 
     #[cfg(unix)]

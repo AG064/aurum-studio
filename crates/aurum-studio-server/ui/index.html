@@ -65,6 +65,8 @@
                             <div class="menu-group" role="presentation">Project</div>
                             <button id="new-project" role="menuitem">New project</button>
                             <button id="import-project" role="menuitem">Import project</button>
+                            <button id="dependency-access" role="menuitem">Read an external dependency folder</button>
+                            <button id="dependency-access-status" role="menuitem">Dependency access status</button>
                             <button id="develop" role="menuitem" title="Watch source and rebuild the native extension on change">Develop</button>
                             <div class="menu-group" role="presentation">Native runtime</div>
                             <button data-command="start-game" role="menuitem">Run native</button>
@@ -325,12 +327,32 @@
                     <input id="selected-node" value="." aria-label="Node path" class="node-path" spellcheck="false" />
                     <section class="inspector-section">
                         <h3>Transform</h3>
-                        <div class="position-inputs">
-                            <label>X<input id="pos-x" type="number" step="0.1" value="0" /></label>
-                            <label>Y<input id="pos-y" type="number" step="0.1" value="0" /></label>
-                            <label>Z<input id="pos-z" type="number" step="0.1" value="0" /></label>
+                        <p class="hint">Position</p>
+                        <div class="position-inputs" role="group" aria-label="Position">
+                            <label>X<input id="pos-x" type="number" step="0.1" value="0" aria-label="Position X" disabled /></label>
+                            <label>Y<input id="pos-y" type="number" step="0.1" value="0" aria-label="Position Y" disabled /></label>
+                            <label>Z<input id="pos-z" type="number" step="0.1" value="0" aria-label="Position Z" disabled /></label>
                         </div>
-                        <button id="apply-position" class="quiet">Save transform</button>
+                        <label>Position grid step (optional)
+                            <input id="position-snap" type="number" step="any" placeholder="No snapping" disabled />
+                        </label>
+                        <button id="apply-position" class="quiet" disabled>Save position</button>
+                        <p class="hint">Leave the grid step blank for an exact position. Grid snapping is available for 3D nodes.</p>
+                        <p class="hint">Rotation (degrees)</p>
+                        <div class="position-inputs" role="group" aria-label="Rotation in degrees">
+                            <label>X<input id="rot-x" type="number" step="0.1" value="0" aria-label="Rotation X (degrees)" disabled /></label>
+                            <label>Y<input id="rot-y" type="number" step="0.1" value="0" aria-label="Rotation Y (degrees)" disabled /></label>
+                            <label>Z<input id="rot-z" type="number" step="0.1" value="0" aria-label="Rotation Z (degrees)" disabled /></label>
+                        </div>
+                        <button id="apply-rotation" class="quiet" disabled>Save rotation</button>
+                        <p class="hint">Scale</p>
+                        <div class="position-inputs" role="group" aria-label="Scale">
+                            <label>X<input id="scale-x" type="number" min="-100000.04768371582" max="100000.04768371582" step="0.1" value="1" aria-label="Scale X" disabled /></label>
+                            <label>Y<input id="scale-y" type="number" min="-100000.04768371582" max="100000.04768371582" step="0.1" value="1" aria-label="Scale Y" disabled /></label>
+                            <label>Z<input id="scale-z" type="number" min="-100000.04768371582" max="100000.04768371582" step="0.1" value="1" aria-label="Scale Z" disabled /></label>
+                        </div>
+                        <button id="apply-scale" class="quiet" disabled>Save scale</button>
+                        <p class="hint">Scale axes must all be positive or all negative, with magnitude 0.000001 to 100000. Saved-scene rounding is accepted.</p>
                         <p class="hint">Saved to the scene file. Applies on the next preview build, not to the running game.</p>
                     </section>
                     <details class="inspector-section">

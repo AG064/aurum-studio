@@ -39,16 +39,38 @@
 //! is small enough that a focused reader is both smaller and more explicit
 //! about what it refuses.
 
+/// Windows tests keep their fixtures on the drive of the temporary directory (`A:` on one
+/// developer machine, `D:` on hosted runners) instead of assuming a particular letter.
+#[cfg(all(test, windows))]
+pub(crate) fn test_drive() -> String {
+    let temp = project::clean_path(std::env::temp_dir().canonicalize().unwrap());
+    let text = temp.to_string_lossy().to_ascii_uppercase();
+    assert_eq!(
+        text.as_bytes().get(1),
+        Some(&b':'),
+        "the temporary directory is not on a lettered drive"
+    );
+    text[..2].to_string()
+}
 pub mod agent_context;
 pub mod build;
 pub mod build_queue;
 mod candidate_workspace;
 pub mod candidates;
+mod cargo_graph;
 pub mod content_lock;
 pub mod diagnostic_relay;
 pub mod diagnostics;
 pub mod doctor;
 pub mod downloads;
+#[cfg(windows)]
+mod external_native;
+// External-source publication is exercised by tests, but no production operation
+// reaches it yet. Remove this allowance when that operation is connected.
+#[cfg(windows)]
+#[cfg_attr(not(test), allow(dead_code))]
+mod external_workspace;
+pub mod failure_bundle;
 pub mod files;
 pub mod gameplay;
 pub mod hash;
@@ -60,13 +82,16 @@ pub mod native_host;
 pub mod native_operations;
 #[cfg(windows)]
 pub mod native_preview;
+pub mod native_request_control;
 pub mod native_runtime;
 pub mod native_schema;
 pub mod native_userdata;
 pub mod operation_context;
 pub mod ownership;
+pub(crate) mod performance_budget;
 pub mod playtest;
 pub mod presets;
+pub(crate) mod private_import_artifacts;
 pub mod process;
 pub mod project;
 pub mod project_contract;
@@ -77,6 +102,7 @@ pub mod registry;
 pub mod reload;
 pub mod revisions;
 pub mod runtime_channel;
+pub mod runtime_context;
 pub mod session;
 pub mod snapshot;
 pub mod supervise;
@@ -90,6 +116,7 @@ pub mod watch;
 pub mod web_build;
 #[cfg(windows)]
 mod worker_windows;
+pub mod workspace_access;
 
 pub use build::{BuildError, BuildReport, BuildRequest, Profile};
 pub use build_queue::{BuildLock, BuildQueue, LockError, Submission};
