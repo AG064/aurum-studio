@@ -83,7 +83,7 @@ Use **Run** to play in the workspace. **Live tuning** and the **Runtime inspecto
 
 **Studio 0.4.2** opens through `Aurum Studio.exe` at the installation or extracted package root. Its adjacent `bin/aurum.exe` remains the CLI/MCP entrypoint. [Package, checksum and verification scope](docs/RELEASES.md#v042-published-download); [build commands](docs/RELEASES.md#041-locally-verified-windows-candidate).
 
-Download **0.4.2**, extract the ZIP into a new writable folder and open `Aurum Studio.exe`. The 0.4.0 package opens through `Launch Aurum Studio.vbs` and predates the direct launcher. The Godot runtime and Web templates are included. Script-only projects need no Rust compiler or separate editor installation. [Published packages, checksums and optional Rust setup](docs/RELEASES.md#v040-published-download).
+Download **0.4.2**, extract the ZIP into a new writable folder and open `Aurum Studio.exe`. The 0.4.0 package opens through `Launch Aurum Studio.vbs` and predates the direct launcher. From a version that includes it, **Commands → Check for updates** installs newer releases from inside Studio ([how it works](docs/RELEASES.md#updating-from-inside-studio)). The Godot runtime and Web templates are included. Script-only projects need no Rust compiler or separate editor installation. [Published packages, checksums and optional Rust setup](docs/RELEASES.md#v040-published-download).
 
 To build from source:
 

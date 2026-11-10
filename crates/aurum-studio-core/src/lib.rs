@@ -112,6 +112,7 @@ pub mod templates;
 pub mod toml;
 pub mod toolchain;
 pub mod transactions;
+pub mod update;
 pub mod watch;
 pub mod web_build;
 #[cfg(windows)]
