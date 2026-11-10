@@ -878,9 +878,14 @@
                 $("preview-frame").contentWindow.postMessage({ type: "aurum-runtime-request", session: preview.session, id, request }, preview.origin);
             });
         }
+        // A game's first load on a real GPU compiles shaders and took over 50 seconds for Relay Yard
+        // on an RTX 2070 (about 5 seconds once warm), so give up only well after that.
+        const GAME_READY_MS = 180000, GAME_SLOW_NOTICE_MS = 10000;
         async function restoreWhenReady(checkpoint) {
-            const deadline = Date.now() + 30000;
+            const started = Date.now(), deadline = started + GAME_READY_MS;
             while (Date.now() < deadline) {
+                if (Date.now() - started > GAME_SLOW_NOTICE_MS)
+                    $("reload-status").textContent = "Waiting for the game to start. A first load can take a minute.";
                 const probe = await runtimeRequest({ op: "inspect" }).catch(() => ({ ok: false }));
                 if (probe.ok) {
                     if (!checkpoint) { $("reload-status").textContent = "Started a fresh preview."; return; }
